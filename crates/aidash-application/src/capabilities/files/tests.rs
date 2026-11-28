@@ -882,6 +882,21 @@ async fn message_attachments_can_snapshot_saved_files_while_the_area_is_running(
 }
 
 #[tokio::test]
+async fn an_agent_attachment_recovers_the_type_of_an_older_saved_html_file() {
+	let (mut scope, run, mut file) = invoke_fixture("file_read", json!({}));
+	file.path = "index.html".into();
+	file.media_type = "application/octet-stream".into();
+	scope.area.as_mut().unwrap().manifest = json!([file]);
+
+	let attachments = snapshot_message_files(&mut scope, &run, &[file.path])
+		.await
+		.unwrap();
+
+	assert_eq!(attachments[0].0.media_type, "text/html");
+	assert_eq!(attachments[0].1, b"abcdefgh");
+}
+
+#[tokio::test]
 async fn message_files_enforce_reference_sharing_rules_for_local_and_receiving_areas() {
 	let (mut scope, run, _) = invoke_fixture("file_read", json!({}));
 	let record = Uuid::new_v4();

@@ -325,15 +325,35 @@ pub fn detect_image(bytes: &[u8]) -> Option<&'static str> {
 		.find(|media_type| validate_image(media_type, bytes).is_ok())
 }
 
-/// Prefer the existing image signatures and identify videos by filename.
+/// Prefer recognized raster image signatures, then use the file extension
+/// for generated documents, assets, video and audio.
 pub fn generated_file_media_type(path: &str, prefix: &[u8]) -> Option<&'static str> {
 	detect_image(prefix).or_else(|| {
-		let (_, extension) = path.rsplit_once('.')?;
+		let name = path.rsplit('/').next()?;
+		let (stem, extension) = name.rsplit_once('.')?;
+		if stem.is_empty() {
+			return None;
+		}
 		match extension.to_ascii_lowercase().as_str() {
+			"html" | "htm" => Some("text/html"),
+			"xhtml" => Some("application/xhtml+xml"),
+			"svg" => Some("image/svg+xml"),
+			"css" => Some("text/css"),
+			"js" | "mjs" => Some("text/javascript"),
+			"json" => Some("application/json"),
+			"md" | "markdown" => Some("text/markdown"),
+			"csv" => Some("text/csv"),
+			"pdf" => Some("application/pdf"),
 			"mp4" | "m4v" => Some("video/mp4"),
 			"webm" => Some("video/webm"),
 			"ogv" => Some("video/ogg"),
 			"mov" => Some("video/quicktime"),
+			"wav" => Some("audio/wav"),
+			"mp3" => Some("audio/mpeg"),
+			"m4a" => Some("audio/mp4"),
+			"aac" => Some("audio/aac"),
+			"ogg" | "oga" | "opus" => Some("audio/ogg"),
+			"flac" => Some("audio/flac"),
 			_ => None,
 		}
 	})

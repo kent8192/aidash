@@ -96,9 +96,12 @@ async fn only_html_and_pdf_versions_open_on_the_preview_domain() {
 	assert!(error.to_string().contains("HTML and PDF"));
 }
 
+#[rstest::rstest]
+#[case("text/html; charset=utf-8")]
+#[case("application/octet-stream")]
 #[tokio::test]
-async fn a_ticket_url_names_the_preview_domain_and_hides_only_the_digest() {
-	let mut fixture = fixture("text/html; charset=utf-8");
+async fn a_ticket_url_names_the_preview_domain_and_hides_only_the_digest(#[case] media: &str) {
+	let mut fixture = fixture(media);
 	let version = fixture.version.clone().unwrap();
 	let issued = issue(&mut fixture, version.area_id, version.file_id)
 		.await

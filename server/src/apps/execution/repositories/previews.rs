@@ -811,7 +811,8 @@ impl Gateway {
 					(files, root)
 				}
 			};
-			let root_kind = application::media_type(&root.media_type);
+			let root_type = application::file_media_type(&root.path, &root.media_type);
+			let root_kind = application::media_type(root_type);
 			let wanted = relative_path(path)?;
 			let entry = if wanted.is_empty() {
 				root.clone()
@@ -832,10 +833,10 @@ impl Gateway {
 				match root_kind {
 					"text/html" | "application/xhtml+xml" => "text/html; charset=utf-8".to_owned(),
 					"application/pdf" => "application/pdf".to_owned(),
-					_ => root.media_type.clone(),
+					_ => root_type.to_owned(),
 				}
 			} else {
-				entry.media_type.clone()
+				application::file_media_type(&entry.path, &entry.media_type).to_owned()
 			};
 			let content_disposition = (entry.file_id == root.file_id
 				&& root_kind == "application/pdf")

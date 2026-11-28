@@ -28,7 +28,7 @@ async fn area_and_file(c: &CoreFixture) -> (Uuid, Uuid) {
 	)
 	.await;
 	assert_eq!(status, 200, "{created}");
-	let (status, area) = request(
+	let (status, mut area) = request(
 		&c.app,
 		&c.token,
 		"GET",
@@ -48,6 +48,24 @@ async fn area_and_file(c: &CoreFixture) -> (Uuid, Uuid) {
 			.clone(),
 	)
 	.unwrap();
+	// Older Scratch saves kept these types as generic binary. Reuse their
+	// bytes and version IDs with the metadata that was persisted at the time.
+	for entry in area["manifest"].as_array_mut().unwrap() {
+		entry["media_type"] = json!("application/octet-stream");
+	}
+	use reinhardt::query::{Alias, Expr, IntoValue as _, PostgresQueryBuilder, Query};
+	let updated = sqlx::query(
+		&Query::update()
+			.table(Alias::new("core_manifest_revisions"))
+			.value(Alias::new("manifest"), area["manifest"].take().into_value())
+			.and_where(Expr::col(Alias::new("area_id")).eq(Expr::value(area_id)))
+			.and_where(Expr::col(Alias::new("revision")).eq(area["revision"].as_i64().unwrap()))
+			.to_string(PostgresQueryBuilder),
+	)
+	.execute(c.f.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	assert_eq!(updated.rows_affected(), 1);
 	(area_id, file)
 }
 
@@ -188,7 +206,18 @@ async fn an_expired_session_is_refused_while_a_live_one_is_served(
 		.view(&format!("{}.LOCALHOST", label.as_str()), &live, "/")
 		.await
 		.unwrap();
+	assert_eq!(page.media_type, "text/html; charset=utf-8");
 	assert!(String::from_utf8(page.bytes).unwrap().contains("preview"));
+	let asset = gateway(&c)
+		.view(
+			&format!("{}.LOCALHOST", label.as_str()),
+			&live,
+			"/assets/app.js",
+		)
+		.await
+		.unwrap();
+	assert_eq!(asset.media_type, "text/javascript");
+	assert_eq!(asset.bytes, b"app()\n");
 	c.close().await;
 }
 

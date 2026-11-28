@@ -166,3 +166,18 @@ fn a_saved_image_records_its_image_type_so_a_model_can_read_it() {
 		"application/octet-stream"
 	);
 }
+
+#[rstest::rstest]
+#[case("site/INDEX.HTML", "text/html")]
+#[case("site/logo.svg", "image/svg+xml")]
+#[case("site/style.css", "text/css")]
+#[case("site/script.js", "text/javascript")]
+#[case("data.json", "application/json")]
+#[case("readme.md", "text/markdown")]
+#[case("table.csv", "text/csv")]
+#[case("voice.mp3", "audio/mpeg")]
+#[case("guide.pdf", "application/pdf")]
+#[case("site.css/data", "application/octet-stream")]
+fn a_saved_file_records_its_type_from_its_extension(#[case] path: &str, #[case] expected: &str) {
+	assert_eq!(media_type(path, b""), expected);
+}

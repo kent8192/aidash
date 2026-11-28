@@ -331,6 +331,11 @@ impl Api<'_> {
 		if bytes.len() > 8 * 1024 * 1024 {
 			return Err(Error::Invalid("attachment exceeds 8 MiB".into()));
 		}
+		let media = if media == "application/octet-stream" {
+			aidash_domain::provider::generated_file_media_type(filename, &bytes).unwrap_or(media)
+		} else {
+			media
+		};
 		use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
 		let query = format!(
 			"filename={}&media_type={}&idempotency_key={key}",
