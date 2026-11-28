@@ -1544,7 +1544,7 @@ async fn budget_notice_delivery_preserves_sent_windows_on_upgrade_and_rollback(
 	// can be applied and reversed independently.
 	let backfill = ("identity", "0114_policy_revision_backfill");
 	fixture
-		.migrate_excluding(&[
+		.migrate_before_goals(&[
 			("identity", name),
 			backfill,
 			("identity", "0115_suspension_resume_refusal"),
@@ -1612,7 +1612,7 @@ async fn budget_notice_delivery_preserves_sent_windows_on_upgrade_and_rollback(
 		sqlx::query_scalar(&notices).fetch_all(&pool).await.unwrap()
 	};
 
-	fixture.migrate_excluding(&[backfill]).await;
+	fixture.migrate_before_goals(&[backfill]).await;
 	assert_eq!(read_notices().await, vec![Some(sent_at)]);
 	let pending = Query::insert()
 		.into_table(Alias::new("budget_notices"))
@@ -7144,7 +7144,7 @@ async fn default_member_policy_upgrade_preserves_authorization_history(
 
 	// Act
 	fixture
-		.migrate_excluding(&[
+		.migrate_before_goals(&[
 			("identity", "0114_policy_revision_backfill"),
 			("identity", "0115_suspension_resume_refusal"),
 		])
