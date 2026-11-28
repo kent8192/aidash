@@ -14,9 +14,7 @@ pub(super) fn migration() -> Migration {
 				ColumnDefinition::new("active", FieldType::Jsonb).with_not_null(true),
 				ColumnDefinition::new("pending", FieldType::Jsonb),
 				ColumnDefinition::new("revision", FieldType::BigInteger).with_not_null(true),
-				ColumnDefinition::new("next_attempt", FieldType::TimestampTz)
-					.with_not_null(true)
-					.with_default(Some("CURRENT_TIMESTAMP".into())),
+				ColumnDefinition::new("next_attempt", FieldType::TimestampTz).with_not_null(true),
 			],
 			constraints: vec![],
 			without_rowid: None,

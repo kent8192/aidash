@@ -317,6 +317,7 @@ pub(crate) async fn change(
 					Error::Conflict("embedding settings revision exhausted".into())
 				})?,
 			),
+			Expr::value(chrono::Utc::now()),
 		])
 		.on_conflict(
 			OnConflict::column(Alias::new("tenant"))
