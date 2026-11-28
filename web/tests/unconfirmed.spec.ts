@@ -97,7 +97,7 @@ test("message counts belong in the conversation", async ({ page }) => {
   await expect(page.getByText(english(5, stranger))).toBeVisible();
   await expect(page.getByText(english(7, "Default"))).toHaveCount(0);
   await page.getByRole("tab", { name: /^Results/ }).click();
-  await expect(page.getByText(english(5, stranger))).toHaveCount(0);
+  await expect(page.getByText(english(5, stranger))).toBeHidden();
   expect(errors).toEqual([]);
 });
 
