@@ -75,6 +75,25 @@ The server embeds the file and checks it against the SHA-256 of the upstream
 card names its terms and links to them rather than shipping a notice file, so
 the notice is the text published at <https://www.apache.org/licenses/LICENSE-2.0.txt>.
 
+## Simple Icons
+
+- Source: <https://github.com/simple-icons/simple-icons>, packaged as
+  `simple-icons` on npm
+- Revision: `16.38.1`
+- License: CC0-1.0, in [third_party/simple-icons/LICENSE](third_party/simple-icons/LICENSE)
+
+Files that contain upstream material:
+
+- `web/src/vendor-logos.ts`: the SVG path data of the Anthropic, DeepSeek, Google, Meta, Mistral AI, Moonshot AI, NVIDIA, Perplexity and Qwen icons, which the model registration picker shows beside vendors (copy)
+
+The path strings are copied unchanged from `icons/<slug>.svg` in the npm
+package; the package itself is not a dependency, and the web app never fetches
+a logo at runtime. Only icons that the package records without a `license`
+entry, and so under CC0-1.0, are copied: MiniMax carries its own terms and,
+like vendors without an icon, shows a one-letter mark. CC0 covers the drawings
+only; the logos remain their owners' trademarks. The notice is the package's
+`LICENSE.md` at the same version.
+
 ## Enterprise
 
 These materials are shipped under `enterprise/` but are not part of the

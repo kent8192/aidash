@@ -107,3 +107,9 @@ path = "crates/aidash-domain/assets/token-encodings/gemma4.json.zst"
 precedence = "override"
 SPDX-FileCopyrightText = "Google LLC"
 SPDX-License-Identifier = "Apache-2.0"
+
+[[annotations]]
+path = ["third_party/simple-icons/LICENSE", "web/src/vendor-logos.ts"]
+precedence = "override"
+SPDX-FileCopyrightText = "Simple Icons Collaborators"
+SPDX-License-Identifier = "CC0-1.0"
