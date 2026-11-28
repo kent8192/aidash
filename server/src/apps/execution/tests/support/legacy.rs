@@ -765,7 +765,7 @@ async fn bootstrap_with_policy(
 	f: &Federation,
 	app: &TestApplication,
 	endpoint: &str,
-	_semantic: bool,
+	semantic: bool,
 	files: bool,
 	read_only_tool: bool,
 	policy: Value,
@@ -794,6 +794,9 @@ async fn bootstrap_with_policy(
 	];
 	if read_only_tool {
 		agent_bindings.push(json!({"kind":"tool","target":{"registry_deployment":f.config.deployment,"id":"http-read","version":"1.0.0"},"alias":"plugin_1","narrow":{}}));
+	}
+	if semantic {
+		agent_bindings.push(json!({"kind":"source","target":{"registry_deployment":f.config.deployment,"id":"fixture-thread-retrieval","version":"1.0.0"},"narrow":{}}));
 	}
 	let tenant = aidash_domain::tenancy::TenantName::new("acme").unwrap();
 	let authorization = Authorization {
@@ -842,6 +845,16 @@ async fn bootstrap_with_policy(
 				"tool",
 				"http-read",
 				json!({"registry_deployment":f.config.deployment,"provider":"integration.http@1","operation":"invoke","default_alias":"plugin_1","tier":"integration","transport":{"transport":"http","endpoint":format!("{endpoint}/read"),"replay":"read_only"}}),
+			),
+		);
+	}
+	if semantic {
+		definitions.insert(
+			1,
+			(
+				"source",
+				"fixture-thread-retrieval",
+				json!({"schema_version":1,"source":{"adapter":"workspace_retrieval"}}),
 			),
 		);
 	}
