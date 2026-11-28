@@ -129,7 +129,8 @@ export function OpenRouterModelPicker({
   const [selectedId, setSelectedId] = useState("");
   const [effort, setEffort] = useState("");
   const [open, setOpen] = useState(false);
-  const [tab, setTab] = useState(FAVORITES_TAB);
+  // A tab the person chose; null until then, or while the catalog loads.
+  const [chosenTab, setChosenTab] = useState<string | null>(null);
   const [active, setActive] = useState(0);
   const [favorites, toggleFavoriteSlug] = useFavorites(tenant, subject);
   const catalog = useQuery({
@@ -151,6 +152,11 @@ export function OpenRouterModelPicker({
   const models = useMemo(() => catalog.data?.models ?? [], [catalog.data]);
   const rail = useMemo(() => vendorRail(models), [models]);
   const tabs = railTabs(rail);
+  // Unchosen, or gone from the rail after a refetch: open where decision 2 says.
+  const tab =
+    chosenTab !== null && tabs.includes(chosenTab)
+      ? chosenTab
+      : initialTab(models, rail, favorites);
   const selected = models.find((m) => m.id === selectedId);
   const efforts = effortOptions(selected?.reasoning);
   const query = search.trim();
@@ -186,7 +192,8 @@ export function OpenRouterModelPicker({
     setOpen(next);
     if (!next) return;
     const start = initialTab(models, rail, favorites);
-    setTab(start);
+    // Before the catalog arrives the start tab is unknown, so leave it open.
+    setChosenTab(models.length ? start : null);
     setSearch("");
     setActive(
       Math.max(
@@ -198,7 +205,7 @@ export function OpenRouterModelPicker({
     );
   };
   const switchTab = (next: string) => {
-    setTab(next);
+    setChosenTab(next);
     setActive(0);
   };
   const tabName = (id: string) =>
@@ -412,7 +419,11 @@ export function OpenRouterModelPicker({
                         favorite ? "modelFavoriteRemove" : "modelFavoriteAdd",
                       )}
                       onMouseDown={(e) => e.preventDefault()}
-                      onClick={() => toggleFavoriteSlug(model.id)}
+                      onClick={() => {
+                        // Keep the view put when the first favorite changes the start tab.
+                        setChosenTab(tab);
+                        toggleFavoriteSlug(model.id);
+                      }}
                       className={cn(
                         "mr-1 grid size-6 shrink-0 cursor-pointer place-items-center rounded-sm text-[13px] leading-none transition-colors hover:bg-accent hover:text-foreground",
                         favorite ? "text-warning" : "text-faint",

@@ -335,6 +335,35 @@ test("retries a failed model catalog request", async ({ page }) => {
   await expect(page.getByRole("option", { name: /Other Model/ })).toBeVisible();
 });
 
+test("a picker opened while the catalog loads starts on the largest vendor", async ({
+  page,
+}) => {
+  let release = () => {};
+  const held = new Promise<void>((resolve) => (release = resolve));
+  await page.route("**/api/providers/openrouter/models", async (route) => {
+    await held;
+    await route.fallback();
+  });
+  await page.reload();
+  await page
+    .getByRole("button", { name: "エンティティを登録", exact: true })
+    .click();
+  await page
+    .getByRole("dialog")
+    .getByLabel("エンティティの種類")
+    .selectOption("model");
+  await openPicker(page);
+  await expect(
+    page.getByRole("dialog").getByText("OpenRouterのモデル一覧を取得中…"),
+  ).toBeVisible();
+  release();
+  await expect(page.getByRole("tab", { name: "other" })).toHaveAttribute(
+    "aria-selected",
+    "true",
+  );
+  await expect(page.getByRole("option", { name: /Other Model/ })).toBeVisible();
+});
+
 test("clears reasoning settings when selecting an unsupported model", async ({
   page,
 }) => {
