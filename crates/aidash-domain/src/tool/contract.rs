@@ -66,13 +66,20 @@ pub enum AgentFlag {
 impl AgentFlag {
 	pub fn permitted(self, config: &AgentConfig) -> bool {
 		match self {
-			Self::TaskCreation => config.allow_task_creation != Some(false),
-			Self::Delegation => config.allow_task_delegation != Some(false),
-			Self::MemoryWrite => config.memory.is_some() && config.allow_memory_write == Some(true),
-			Self::MemoryRead => {
-				config.memory.is_some() && config.allow_cross_conversation_memory != Some(false)
+			Self::TaskCreation => config.operations.contains("task_create"),
+			Self::Delegation => ["task_delegate", "task_assign"]
+				.iter()
+				.any(|name| config.operations.contains(*name)),
+			Self::MemoryWrite => {
+				config.memory.is_some() && config.operations.contains("memory_mutate")
 			}
-			Self::WorkspaceRetrieval => config.allow_workspace_retrieval != Some(false),
+			Self::MemoryRead => {
+				config.memory.is_some()
+					&& ["memory_recall", "memory_reflect"]
+						.iter()
+						.any(|name| config.operations.contains(*name))
+			}
+			Self::WorkspaceRetrieval => config.operations.contains("thread_read"),
 		}
 	}
 }
@@ -217,29 +224,40 @@ impl ToolBehavior {
 		input: &Value,
 		output: &Value,
 	) -> Option<crate::media::ModelMedia> {
-		use crate::media::{ModelFileSelection, ModelMedia, WorkingImageSelection};
+		use crate::media::{ModelFileSelection, ModelMedia, ScratchImageSelection};
 		if !(self.yields_model_media
 			|| self.fitting == Some(ResultFitting::ThreadRecord) && input["kind"] == "attachment")
 		{
 			return None;
 		}
-		if input["kind"] == "file"
+		if self.yields_model_media
+			&& !input["drive"].is_null()
 			&& input["representation"] == "model_input"
 			&& output["status"] == "completed"
-			&& output["metadata"]["file_id"] == input["id"]
-			&& output["metadata"]["digest"] == input["expected_digest"]
-			&& output["metadata"]["path"] == input["path"]
+			&& input["expected_digest"] == output["selection"]["expected_digest"]
 		{
-			return serde_json::from_value::<WorkingImageSelection>(serde_json::json!({
-				"file_id": input["id"], "area_id": input["area_id"], "generation": input["generation"],
-				"path": input["path"], "expected_digest": input["expected_digest"],
-			}))
+			return serde_json::from_value::<crate::media::DriveFileSelection>(
+				output["selection"].clone(),
+			)
 			.ok()
-			.map(ModelMedia::WorkingImage);
+			.map(ModelMedia::DriveFile);
 		}
-		// `workspace_read` also yields model media for Working Area images, so an
-		// attachment input (no `file_id`) must fall through to its own branch
-		// instead of matching null against null here.
+		if self.yields_model_media
+			&& input["representation"] == "model_input"
+			&& output["status"] == "completed"
+			&& !input["path"].is_null()
+			&& output["metadata"]["scratch_path"] == input["path"]
+		{
+			return serde_json::from_value::<ScratchImageSelection>(output["selection"].clone())
+				.ok()
+				.filter(|selection| {
+					input["path"] == selection.scratch_path
+						&& output["metadata"]["digest"] == selection.expected_digest
+						&& (input["expected_digest"].is_null()
+							|| input["expected_digest"] == selection.expected_digest)
+				})
+				.map(ModelMedia::ScratchImage);
+		}
 		if self.yields_model_media
 			&& input["representation"] == "model_input"
 			&& output["status"] == "completed"
@@ -493,7 +511,7 @@ pub fn builtin_reach(name: &str) -> Option<ToolReach> {
 		| "capability_load"
 		| "capability_unload"
 		| "task_wait" => ToolReach::Run,
-		"task_create" | "task_assign" | "artifact_publish" | "thread_message" | "thread_read"
+		"task_create" | "task_assign" | "deliverable_note" | "thread_message" | "thread_read"
 		| "thread_observe" | "thread_search" | "memory_recall" | "memory_reflect"
 		| "memory_mutate" | "file_share" | "attachment_copy" => ToolReach::HomeWorkspace,
 		// A remote Run discovers through its Home and hands a Task on through
@@ -518,8 +536,17 @@ pub fn builtin_reach(name: &str) -> Option<ToolReach> {
 		// An Agent Plugin's stdio MCP server is never remote (ADR 0100), a Duty acts as one
 		// person of its own Tenant (ADR 0134), which a remote Run cannot be, and Node tools
 		// and node events act as that person too (#1012, #1013).
-		"mcp_stdio" | "duty_create" | "duty_update" | "duty_delete" | "duty_list"
-		| "duty_notify" | "node_create" | "node_delete" => ToolReach::Never,
+		"mcp_stdio"
+		| "duty_create"
+		| "duty_update"
+		| "duty_delete"
+		| "duty_list"
+		| "duty_notify"
+		| "node_create"
+		| "node_delete"
+		| "drive_publish"
+		| "drive_search"
+		| "drive_publish_status" => ToolReach::Never,
 		_ => return None,
 	})
 }
@@ -601,9 +628,9 @@ pub fn builtin_contract(name: &str) -> Option<ToolContract> {
 				resource("task.delegate", "task", ArgumentUuid("task_id")),
 			];
 		}
-		"artifact_publish" => {
+		"deliverable_note" => {
 			auth.requirements
-				.push(resource("artifact.create", "artifact", Task));
+				.push(resource("task.complete", "task", Task));
 		}
 		"thread_message" => {
 			auth.requirements
@@ -693,6 +720,15 @@ pub fn builtin_contract(name: &str) -> Option<ToolContract> {
 			behavior.effect = ToolEffect::ReadOnly;
 			behavior.media_pending = name == "skill_list";
 			behavior.concurrency = Concurrency::SharedRead;
+			contract.disclosure = DisclosureBoundary::Local;
+		}
+		"drive_search" | "drive_publish_status" => {
+			auth.core = Some(CorePermission::Files);
+			behavior.effect = ToolEffect::ReadOnly;
+			contract.disclosure = DisclosureBoundary::Local;
+		}
+		"drive_publish" => {
+			auth.core = Some(CorePermission::Files);
 			contract.disclosure = DisclosureBoundary::Local;
 		}
 		"file_read" | "file_search" => {
@@ -805,7 +841,7 @@ pub const ALL_BUILTINS: &[&str] = &[
 	"task_wait",
 	"task_create",
 	"task_assign",
-	"artifact_publish",
+	"deliverable_note",
 	"thread_message",
 	"thread_read",
 	"thread_observe",
@@ -819,6 +855,9 @@ pub const ALL_BUILTINS: &[&str] = &[
 	"skill_asset_read",
 	"file_read",
 	"file_search",
+	"drive_search",
+	"drive_publish",
+	"drive_publish_status",
 	"subnode_create",
 	"subnode_task",
 	"subnode_add_member",
@@ -875,7 +914,7 @@ mod tests {
 	#[test]
 	fn native_memory_contracts_require_explicit_policy_and_stay_at_home() {
 		let mut config: AgentConfig = serde_json::from_value(serde_json::json!({
-			"schema_version":1, "instructions":"Use native memory", "remove_default":["memory_mutate"], "model": {"id":"model", "version":"1.0.0"}
+			"instructions":"Use native memory", "remove_default":["memory_mutate"], "model": {"id":"model", "version":"1.0.0"}
 		}))
 		.unwrap();
 		assert!(!AgentFlag::MemoryWrite.permitted(&config));
@@ -886,9 +925,10 @@ mod tests {
 		});
 		assert!(AgentFlag::MemoryRead.permitted(&config));
 		assert!(!AgentFlag::MemoryWrite.permitted(&config));
-		config.allow_memory_write = Some(true);
+		config.operations.insert("memory_mutate".into());
 		assert!(AgentFlag::MemoryWrite.permitted(&config));
-		config.allow_cross_conversation_memory = Some(false);
+		config.operations.remove("memory_recall");
+		config.operations.remove("memory_reflect");
 		assert!(!AgentFlag::MemoryRead.permitted(&config));
 		for (name, action, effect) in [
 			("memory_mutate", "memory.write", ToolEffect::Idempotent),
@@ -1000,7 +1040,7 @@ mod tests {
 			sorted(vec![
 				"task_create",
 				"task_assign",
-				"artifact_publish",
+				"deliverable_note",
 				"thread_message",
 				"thread_read",
 				"thread_observe",
@@ -1075,7 +1115,10 @@ mod tests {
 				"duty_list",
 				"duty_notify",
 				"node_create",
-				"node_delete"
+				"node_delete",
+				"drive_publish",
+				"drive_search",
+				"drive_publish_status"
 			])
 		);
 		// A pinned Workspace tool reaches what its Thread tool does (#1008).
@@ -1099,7 +1142,7 @@ mod tests {
 			"task_create",
 			"task_assign",
 			"task_delegate",
-			"artifact_publish",
+			"deliverable_note",
 			"workspace_message",
 			"memory_mutate",
 			"memory_recall",
@@ -1222,7 +1265,7 @@ mod tests {
 			"task_create",
 			"task_assign",
 			"task_delegate",
-			"artifact_publish",
+			"deliverable_note",
 			"workspace_message",
 			"memory_mutate",
 			"memory_recall",
@@ -1343,18 +1386,19 @@ mod tests {
 		assert_eq!(current.pinned(&old.digest().unwrap()).unwrap(), Some(old));
 	}
 	#[test]
-	fn thread_image_selection_requires_the_exact_returned_file_version() {
-		let behavior = builtin_contract("workspace_read").unwrap().behavior;
-		let id = uuid::Uuid::from_u128(1);
-		let area = uuid::Uuid::from_u128(2);
-		let input = serde_json::json!({"kind":"file", "representation":"model_input", "id":id, "area_id":area, "generation":3, "path":"chart.png", "expected_digest":"abc"});
-		let mut output = serde_json::json!({"status":"completed", "metadata":{"file_id":id, "path":"chart.png", "digest":"abc"}});
+	fn scratch_image_selection_preserves_the_read_path_and_digest() {
+		let behavior = builtin_contract("file_read").unwrap().behavior;
+		let input = serde_json::json!({"representation":"model_input", "path":"shared/chart.png", "expected_digest":"abc"});
+		let mut output = serde_json::json!({
+			"status":"completed",
+			"metadata":{"scratch_path":"shared/chart.png", "digest":"abc"},
+			"selection":{"scratch_path":"shared/chart.png", "expected_digest":"abc"},
+		});
 		assert!(matches!(
 			behavior.model_media_selection(&input, &output),
-			Some(crate::media::ModelMedia::WorkingImage(_))
+			Some(crate::media::ModelMedia::ScratchImage(_))
 		));
-		assert!(behavior.fitting_for(&input).is_none());
-		output["metadata"]["path"] = serde_json::json!("other.png");
+		output["selection"]["scratch_path"] = serde_json::json!("other.png");
 		assert!(behavior.model_media_selection(&input, &output).is_none());
 	}
 	#[test]

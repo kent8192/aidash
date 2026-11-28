@@ -271,7 +271,7 @@ test("the Answer Deadline is edited as a duration and saved with the preferences
 
   const panel = deadlinePanel(page);
   await expect(panel).toContainText(
-    "When the Agent asks you a question and you have not answered by then, the Run continues on its own judgment. It never applies to Completion Reviews or other requests.",
+    "When the Agent asks a question and the deadline passes, the Run continues on the Agent's judgment. A Run paused by Goal judgment waits for a reply.",
   );
   await expect(panel.getByRole("radio", { name: "After" })).toBeChecked();
   const amount = panel.getByRole("spinbutton", { name: "Duration" });
@@ -393,7 +393,7 @@ test("the Answer Deadline settings read in Japanese", async ({ page }) => {
     has: page.getByRole("heading", { name: "Answer Deadline" }),
   });
   await expect(panel).toContainText(
-    "Run は自身の判断で続行します。Completion Review やその他のリクエストには適用されません。",
+    "Agent 自身の質問に期限までに回答がなければ、Run は Agent の判断で続行します。ゴールの判定で一時停止した Run は、回答があるまで待機します。",
   );
   await expect(panel.getByRole("radio", { name: "経過後" })).toBeChecked();
   await expect(panel.getByRole("spinbutton", { name: "期間" })).toHaveValue(
@@ -846,12 +846,12 @@ async function runApprovals(page: Page, items: unknown[], ja = false) {
     revision: 7,
     manifest: [],
   };
-  await page.route("**/api/working-areas**", (route) =>
-    new URL(route.request().url()).pathname === "/api/working-areas"
+  await page.route("**/api/execution-scopes**", (route) =>
+    new URL(route.request().url()).pathname === "/api/execution-scopes"
       ? route.fulfill({ json: { items: [area], next_cursor: null } })
       : route.fallback(),
   );
-  await page.route("**/api/working-areas/*/session", (route) =>
+  await page.route("**/api/execution-scopes/*/session", (route) =>
     route.fulfill({
       json: {
         active_run_id: "run-0",

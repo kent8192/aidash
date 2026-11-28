@@ -34,7 +34,7 @@ fn provider(config: &VectorConfig) -> Result<()> {
 	}
 	Ok(())
 }
-fn vector(values: &[f32]) -> Result<SimpleExpr> {
+pub(super) fn vector(values: &[f32]) -> Result<SimpleExpr> {
 	if values.is_empty()
 		|| values.len() > 8192
 		|| values.iter().any(|value| !value.is_finite())

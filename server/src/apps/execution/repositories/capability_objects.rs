@@ -1,8 +1,5 @@
 //! Immutable node-managed objects. User paths never become host filesystem paths.
-use crate::apps::execution::capabilities::services::core::{
-	Runtime,
-	contracts::{FileEntry, FileScope},
-};
+use crate::apps::execution::capabilities::services::core::{Runtime, contracts::FileEntry};
 use crate::{Error, Result, authorization::access::Access};
 use aidash_application::tenancy::{DeploymentScopeReason, TenancyScope};
 use reinhardt::query::{Alias, Expr, IntoValue as _, OnConflict, PostgresQueryBuilder, Query};
@@ -257,6 +254,10 @@ pub(crate) struct SealedObject {
 }
 
 impl SealedObject {
+	pub(crate) fn digest(&self) -> &str {
+		&self.hash
+	}
+
 	pub(crate) async fn publish(self, access: &mut Access) -> Result<(Uuid, String)> {
 		self.publish_in(access.tx.as_mut(), &access.identity.tenant)
 			.await
@@ -1175,30 +1176,6 @@ impl Runtime {
 		}
 		Ok(bytes)
 	}
-	pub(crate) async fn text_file(
-		&self,
-		access: &mut Access,
-		area: Uuid,
-		path: String,
-		text: &str,
-		scope: FileScope,
-		provenance: serde_json::Value,
-	) -> Result<FileEntry> {
-		validate_path(&path)?;
-		let (id, digest) = self
-			.put(access, Some(area), "working", text.as_bytes())
-			.await?;
-		Ok(FileEntry {
-			file_id: id,
-			path,
-			digest,
-			size: text.len() as u64,
-			media_type: "text/plain; charset=utf-8".into(),
-			scope,
-			provenance,
-		})
-	}
-
 	/// Transfer chunks are provisional until the receiving side verifies the
 	/// complete size and digest; they must never be disclosed as verified text.
 	pub(crate) async fn read_chunk(
@@ -1244,110 +1221,6 @@ impl Runtime {
 		self.open_object(access, entry).await
 	}
 
-	/// Reuse a verified Tenant blob without reading or transferring its bytes.
-	pub(crate) async fn reference_blob(
-		&self,
-		access: &mut Access,
-		area: Uuid,
-		kind: &str,
-		hash: &str,
-		size: u64,
-	) -> Result<Option<Uuid>> {
-		let digest = hash
-			.parse()
-			.map_err(|_| Error::Invalid("invalid object digest".into()))?;
-		let size = i64::try_from(size).map_err(|_| Error::Invalid("OBJECT_LIMIT".into()))?;
-		let tenant = access.identity.tenant.clone();
-		let existing: Option<i64> = crate::database::native::query_scalar(
-			&Query::select()
-				.column(Alias::new("size"))
-				.from(Alias::new("core_blobs"))
-				.and_where(Expr::col(Alias::new("tenant")).eq(Expr::value(&tenant)))
-				.and_where(Expr::col(Alias::new("digest")).eq(Expr::value(hash)))
-				.to_string(PostgresQueryBuilder),
-		)
-		.scalar_optional(&mut **access.tx)
-		.await?;
-		let Some(existing) = existing else {
-			return Ok(None);
-		};
-		if existing != size {
-			return Err(Error::Conflict("OBJECT_INTEGRITY".into()));
-		}
-		if !self.blob_store().await?.exists(&tenant, digest).await? {
-			return Ok(None);
-		}
-		let id = Uuid::new_v4();
-		crate::database::native::query(
-			&Query::insert()
-				.into_table(Alias::new("core_objects"))
-				.columns(["id", "tenant", "area_id", "kind", "digest", "size"].map(Alias::new))
-				.values(vec![
-					id.into(),
-					tenant.into(),
-					area.into(),
-					kind.into(),
-					hash.into(),
-					size.into(),
-				])
-				.map_err(Error::Invalid)?
-				.to_string(PostgresQueryBuilder),
-		)
-		.execute(&mut **access.tx)
-		.await?;
-		Ok(Some(id))
-	}
-
-	pub(crate) async fn copy_owned(
-		&self,
-		access: &mut Access,
-		area: Uuid,
-		kind: &str,
-		entry: &FileEntry,
-	) -> Result<FileEntry> {
-		self.copy_object(access, Some(area), kind, entry).await
-	}
-	pub(crate) async fn copy_object(
-		&self,
-		access: &mut Access,
-		area: Option<Uuid>,
-		kind: &str,
-		entry: &FileEntry,
-	) -> Result<FileEntry> {
-		// Each logical object has its own authority and lifecycle while its
-		// immutable bytes are shared within the Tenant.
-		let tenant = access.identity.tenant.clone();
-		self.validate_object(access, entry).await?;
-		let digest = entry
-			.digest
-			.parse()
-			.map_err(|_| Error::Conflict("OBJECT_INTEGRITY".into()))?;
-		if !self.blob_store().await?.exists(&tenant, digest).await? {
-			return Err(Error::NotFound("file unavailable".into()));
-		}
-		let file_id = Uuid::new_v4();
-		crate::database::native::query(
-			&Query::insert()
-				.into_table(Alias::new("core_objects"))
-				.columns(["id", "tenant", "area_id", "kind", "digest", "size"].map(Alias::new))
-				.values(vec![
-					file_id.into(),
-					tenant.into(),
-					area.into_value(),
-					kind.into(),
-					entry.digest.clone().into(),
-					(entry.size as i64).into(),
-				])
-				.map_err(Error::Invalid)?
-				.to_string(PostgresQueryBuilder),
-		)
-		.execute(&mut **access.tx)
-		.await?;
-		Ok(FileEntry {
-			file_id,
-			..entry.clone()
-		})
-	}
 	pub(crate) async fn reserve(&self, access: &mut Access, bytes: i64) -> Result<()> {
 		let tenant = access.identity.tenant.clone();
 		if bytes > 0 {
@@ -1515,7 +1388,6 @@ impl Runtime {
 					.column(Alias::new("id"))
 					.from(Alias::new("core_objects"))
 					.and_where(Expr::col(Alias::new("id")).eq(Expr::value(id)))
-					.and_where(super::reclamation::no_active_hold())
 					.to_string(PostgresQueryBuilder),
 			)
 			.scalar_optional(&mut **tx)

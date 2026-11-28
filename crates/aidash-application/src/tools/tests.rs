@@ -2,8 +2,8 @@
 use super::*;
 use crate::tenant_secrets::{CallSecret, SecretRecord};
 use aidash_domain::{
-	Artifact, ArtifactInput, HumanRequest, NewTask, ReadyState, RecoveryState, Run, RunControl,
-	RunState, StateVersion, Task, TaskStatus, context::Context, registry::SkillFile,
+	HumanRequest, NewTask, ReadyState, RecoveryState, Run, RunControl, RunState, StateVersion,
+	Task, TaskStatus, context::Context, registry::SkillFile,
 };
 use async_trait::async_trait;
 use rstest::{fixture, rstest};
@@ -127,6 +127,15 @@ impl ToolOperations for Operations {
 	) -> Result<Value> {
 		panic!("unexpected tool effect: assign")
 	}
+	async fn set_child_goal(&self, key: &str, id: Uuid, goal: &str) -> Result<()> {
+		self.record("task.goal");
+		assert_eq!(id, self.task.id);
+		self.inputs
+			.lock()
+			.unwrap()
+			.push((key.to_owned(), json!(goal)));
+		Ok(())
+	}
 	async fn delegate_with_key(
 		&self,
 		key: &str,
@@ -141,9 +150,6 @@ impl ToolOperations for Operations {
 			.unwrap()
 			.push((key.to_owned(), json!({"node":node,"agent":agent})));
 		Ok(json!({"node_id":node}))
-	}
-	async fn artifact(&self, _key: &str, _input: &ArtifactInput) -> Result<Artifact> {
-		panic!("unexpected tool effect: artifact")
 	}
 	async fn message(&self, _key: &str, _content: &str) -> Result<()> {
 		panic!("unexpected tool effect: message")
@@ -175,16 +181,7 @@ impl ToolOperations for Operations {
 	) -> Result<Value> {
 		panic!("unexpected tool effect: read_record_chunk")
 	}
-	async fn thread_image(
-		&self,
-		selection: &aidash_domain::media::WorkingImageSelection,
-		representation: &str,
-	) -> Result<Value> {
-		self.record("thread.image");
-		Ok(
-			json!({"status":"completed","metadata":{"file_id":selection.file_id,"path":selection.path,"digest":selection.expected_digest,"media_type":"image/png","size":12},"representation":representation}),
-		)
-	}
+
 	async fn thread_search(&self, input: Value) -> Result<Value> {
 		self.record("thread.search");
 		self.inputs.lock().unwrap().push(("search".into(), input));
@@ -316,9 +313,7 @@ async fn builtin_retention_records_a_fact_without_an_unreviewed_marker(mut fixtu
 
 #[rstest]
 #[tokio::test]
-async fn builtin_memory_failures_are_tool_data_but_explicit_provider_errors_propagate(
-	mut fixture: Fixture,
-) {
+async fn builtin_memory_failures_are_tool_data(mut fixture: Fixture) {
 	let node = "aidash://fixture";
 	let root = crate::test_support::agent("agent");
 	let builtin = crate::test_support::resolve(
@@ -336,35 +331,12 @@ async fn builtin_memory_failures_are_tool_data_but_explicit_provider_errors_prop
 				operations: &fixture.operations,
 				run: &fixture.run,
 			},
-			query.clone(),
+			query,
 			"recall",
 		)
 		.await
 		.unwrap();
 	assert_eq!(result["error"]["kind"], "memory_unavailable");
-	let mut explicit_root = root;
-	explicit_root.config["bindings"] =
-		json!([crate::test_support::binding("memory", node, "native")]);
-	let mut entries = crate::test_support::builtin_entries(node);
-	entries.extend(crate::test_support::native_memory_entries());
-	fixture.run.context.binding_snapshot = Some(Box::new(crate::test_support::resolve(
-		node,
-		&explicit_root,
-		false,
-		entries,
-	)));
-	assert!(matches!(
-		tool.invoke(
-			&ToolContext {
-				operations: &fixture.operations,
-				run: &fixture.run
-			},
-			query,
-			"recall"
-		)
-		.await,
-		Err(Error::SemanticUnavailable)
-	));
 }
 
 #[rstest]
@@ -586,6 +558,7 @@ fn fixture() -> Fixture {
 		title: "Child".into(),
 		description: "Child task".into(),
 		status: TaskStatus::Open,
+		goal: None,
 		requirements: json!({}),
 		owner: None,
 		created_by: "fixture".into(),
@@ -620,62 +593,23 @@ fn plugin(config: ToolConfig, schema: Value) -> Plugin {
 
 #[rstest]
 #[tokio::test]
-async fn thread_read_selects_an_image_by_its_exact_file_version(fixture: Fixture) {
-	let tool = builtins().remove("workspace_read").unwrap();
-	let input = json!({"kind":"file","id":Uuid::from_u128(10),"area_id":Uuid::from_u128(9),"generation":3,"path":"chart.png","expected_digest":"file-digest","representation":"model_input"});
-	let result = tool
-		.invoke(
-			&ToolContext {
-				operations: &fixture.operations,
-				run: &fixture.run,
-			},
-			input.clone(),
-			"key",
-		)
-		.await
-		.unwrap();
-	assert_eq!(result["metadata"]["file_id"], input["id"]);
-	assert!(matches!(
-		tool.contract()
-			.behavior
-			.model_media_selection(&input, &result),
-		Some(aidash_domain::media::ModelMedia::WorkingImage(_))
-	));
-	assert_eq!(*fixture.operations.calls.lock().unwrap(), ["thread.image"]);
-}
-
-#[rstest]
-#[tokio::test]
-async fn thread_search_accepts_only_one_current_image_or_text_query(fixture: Fixture) {
+async fn thread_search_refuses_retired_working_area_selectors(fixture: Fixture) {
 	let tool = builtins().remove("workspace_search").unwrap();
 	let image = json!({"area_id":Uuid::from_u128(9),"generation":3,"file_id":Uuid::from_u128(10),"path":"chart.png","expected_digest":"file-digest"});
 	let ctx = ToolContext {
 		operations: &fixture.operations,
 		run: &fixture.run,
 	};
-	tool.invoke(&ctx, json!({"image":image}), "key")
-		.await
-		.unwrap();
-	assert_eq!(*fixture.operations.calls.lock().unwrap(), ["thread.search"]);
-	let denied = tool
-		.invoke(&ctx, json!({"query":"text", "image":image}), "key")
-		.await;
-	assert!(matches!(denied, Err(Error::Invalid(_))));
-	assert_eq!(*fixture.operations.calls.lock().unwrap(), ["thread.search"]);
-	let mut foreign = image;
-	foreign["run_id"] = json!(Uuid::from_u128(999));
-	assert!(
-		tool.invoke(&ctx, json!({"image":foreign}), "key")
-			.await
-			.is_err()
-	);
+	assert!(matches!(
+		tool.invoke(&ctx, json!({"image":image}), "key").await,
+		Err(Error::Invalid(_))
+	));
+	assert!(fixture.operations.calls.lock().unwrap().is_empty());
+
 	tool.invoke(&ctx, json!({"query":"diagram"}), "key")
 		.await
 		.unwrap();
-	assert_eq!(
-		*fixture.operations.calls.lock().unwrap(),
-		["thread.search", "thread.search"]
-	);
+	assert_eq!(*fixture.operations.calls.lock().unwrap(), ["thread.search"]);
 }
 
 #[rstest]
@@ -697,6 +631,11 @@ async fn thread_search_accepts_the_selection_of_a_thread_attachment(fixture: Fix
 	// Assert
 	assert!(accepted.is_ok());
 	assert!(matches!(refused, Err(Error::Invalid(_))));
+	assert!(matches!(
+		tool.invoke(&ctx, json!({"query":"text", "image":selection}), "key")
+			.await,
+		Err(Error::Invalid(_))
+	));
 	assert_eq!(*fixture.operations.calls.lock().unwrap(), ["thread.search"]);
 }
 
@@ -906,6 +845,31 @@ async fn agent_delegation_retains_parent_and_durable_operation_keys(fixture: Fix
 		json!({"task":fixture.operations.task,"delegation":{"node_id":"aidash://remote"}})
 	);
 }
+#[rstest]
+#[tokio::test]
+async fn the_child_writer_can_change_a_goal_without_delegating_again(fixture: Fixture) {
+	let task_id = fixture.operations.task.id;
+	let goal = "Check that the three receipts match.";
+	let tool = builtins().remove("task_delegate").unwrap();
+	let output = tool
+		.invoke(
+			&ToolContext {
+				operations: &fixture.operations,
+				run: &fixture.run,
+			},
+			json!({"task_id": task_id, "goal": goal}),
+			"child-goal",
+		)
+		.await
+		.unwrap();
+	assert_eq!(output, json!({"task_id": task_id, "goal": goal}));
+	assert_eq!(*fixture.operations.calls.lock().unwrap(), ["task.goal"]);
+	assert_eq!(
+		*fixture.operations.inputs.lock().unwrap(),
+		[("child-goal".into(), json!(goal))]
+	);
+}
+
 #[rstest]
 #[tokio::test]
 async fn unregistered_skill_is_rejected_before_its_contents_are_read(fixture: Fixture) {

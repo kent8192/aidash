@@ -130,8 +130,7 @@ need their exact origin in the Deployment's
 The Tenant gives the exact version a Catalog Approval and makes the service
 available to a Scratch Space through the Space's `external_services` setting.
 An Agent does not bind it (#738). This authorizes requests without asking for
-each one: sandboxed code may send anything it can read, including Working Area
-data.
+each one. Sandboxed code may send any data it can read in the Scratch Space.
 
 Code in an Execution Pod of that Space calls the service as plain HTTP through
 the proxy the Pod already has:
@@ -230,8 +229,7 @@ Archive downloads do not work. GitHub redirects them to the cross-origin
 `info/refs` and `git-upload-pack` requests to a private repository were
 verified through the gateway. A complete clone of a large repository is still
 limited by [#683](https://github.com/kent8192/aidash/issues/683) (throughput)
-and by the Working Area's file rules
-([#682](https://github.com/kent8192/aidash/issues/682)).
+and by the space available in the Scratch Space.
 
 ## Self-hosted deployment
 

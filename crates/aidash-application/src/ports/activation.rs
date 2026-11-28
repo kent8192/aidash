@@ -41,7 +41,6 @@ pub trait SchedulingScope: Send {
 		target: Option<Uuid>,
 		cursor: RecoveryCursor,
 	) -> Result<Vec<RawRun>>;
-	async fn unblocked(&mut self, run: Uuid) -> Result<bool>;
 	async fn human_answered(&mut self, id: Uuid) -> Result<bool>;
 	/// Whether the Run accepted an input after sequence `seq`.
 	async fn input_after(&mut self, run: Uuid, seq: i64) -> Result<bool>;
@@ -52,15 +51,6 @@ pub trait SchedulingScope: Send {
 	-> Result<Option<DateTime<Utc>>>;
 	async fn approval(&mut self, id: Uuid) -> Result<Option<Approval>>;
 	async fn dependencies_ready(&mut self, task: Uuid) -> Result<bool>;
-	/// Puts a waking execution back into its Working Area's queue (#1008,
-	/// ADR 0140). An execution holds its place only while it is awake: one
-	/// that slept, or was paused, re-enters at the tail before it is leased,
-	/// and may be leased only if no awake execution precedes it there. False
-	/// when it must wait (it then waits at the tail) or its Area is busy.
-	/// An adapter without Working Areas has no queue to re-enter.
-	async fn rejoin(&mut self, _run: Uuid) -> Result<bool> {
-		Ok(true)
-	}
 	/// Compare revision, install the lease, advance revision and persist recovery state.
 	async fn lease(
 		&mut self,

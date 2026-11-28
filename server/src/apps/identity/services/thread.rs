@@ -435,7 +435,6 @@ impl Threads {
 			registry: state.registry,
 			threads: state.threads,
 			tasks: state.tasks,
-			artifacts: state.artifacts,
 			runs: state.runs,
 			human_requests: state.human_requests,
 			conversations: state.conversations,

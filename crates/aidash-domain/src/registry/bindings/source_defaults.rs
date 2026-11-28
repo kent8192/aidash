@@ -52,7 +52,6 @@ pub fn workspace_observation() -> Result<Entry> {
 		capabilities: vec![],
 		tags: vec!["system".into()],
 		languages: vec![],
-		skills: vec![],
 		schema: serde_json::json!({}),
 		config: serde_json::to_value(sources::NativeContext {
 			schema_version: BINDING_SCHEMA,

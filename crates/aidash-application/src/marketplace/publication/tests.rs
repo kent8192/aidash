@@ -629,20 +629,30 @@ async fn audience_owner_insertion_cannot_exceed_the_recipient_limit() {
 }
 
 #[rstest]
-#[case::memory("memory", json!({"adapter":"conversation_memory"}))]
-#[case::source("source", json!({"adapter":"private_references","digest":"a".repeat(64)}))]
+#[case::retired_memory("memory", json!({"adapter":"conversation_memory"}), false)]
+#[case::source("source", json!({"adapter":"private_references","digest":"a".repeat(64)}), true)]
 #[tokio::test]
 async fn native_context_descriptors_publish_without_private_content(
 	#[case] kind: &str,
 	#[case] adapter: Value,
+	#[case] supported: bool,
 ) {
 	let mut scope = Fixture::new();
 	let definition = scope.entries.get_mut("source").unwrap();
 	definition.kind = kind.into();
 	definition.config = json!({"schema_version":1,"source":adapter});
-	let result = publish(&mut scope, &validation(), &command(), "aidash://publisher")
-		.await
-		.unwrap();
+	let result = publish(&mut scope, &validation(), &command(), "aidash://publisher").await;
+	if !supported {
+		assert!(
+			result
+				.unwrap_err()
+				.to_string()
+				.contains("unsupported Registry kind memory")
+		);
+		assert!(scope.writes().is_empty());
+		return;
+	}
+	let result = result.unwrap();
 	let frozen = &scope.versions[result["key"].as_str().unwrap()];
 	assert_eq!(frozen.kind, kind);
 	assert_eq!(
@@ -672,6 +682,7 @@ mod duty_templates {
 			title: "GitHub CI duty".into(),
 			mission: "Fix failing CI runs.".into(),
 			procedure: "1. Read the failed job.".into(),
+			goal: None,
 			agent: EntityRef {
 				id: "ci-fixer".into(),
 				version: "1.0.0".into(),

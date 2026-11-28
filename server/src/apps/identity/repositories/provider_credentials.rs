@@ -202,7 +202,7 @@ pub async fn admit(
 	let selected = selected_providers(snapshot)?;
 	refuse_plans(&selected)?;
 	permit_selected(tx, tenant, floor, keyless, &selected).await?;
-	admit_providers(tx, run, tenant, selected.credentials, configured).await
+	admit_providers(tx, run, tenant, selected.credentials, None, configured).await
 }
 
 /// How a path that admits a Run treats Plan Connection models.
@@ -360,6 +360,7 @@ async fn admit_providers(
 	run: Uuid,
 	tenant: &str,
 	providers: std::collections::BTreeSet<String>,
+	optional_embedding_provider: Option<String>,
 	configured: bool,
 ) -> crate::Result<()> {
 	use reinhardt::query::{Alias, IntoValue, OnConflict};
@@ -373,7 +374,16 @@ async fn admit_providers(
 			"Provider Credential admission requires a local Tenant".into(),
 		));
 	}
-	for provider in providers {
+	let optional_embedding_provider = optional_embedding_provider
+		.filter(|provider| configured && !tenant.is_empty() && !providers.contains(provider));
+	for (provider, required) in providers
+		.into_iter()
+		.map(|provider| (provider, true))
+		.chain(
+			optional_embedding_provider
+				.into_iter()
+				.map(|provider| (provider, false)),
+		) {
 		let (lock, values) = Query::select()
 			.expr(SimpleExpr::FunctionCall(
 				"pg_advisory_xact_lock".into_iden(),
@@ -403,13 +413,19 @@ async fn admit_providers(
 				.all_with_executor(tx)
 				.await
 				.map_err(reinhardt::core::exception::Error::from)?;
-			bindings
+			let binding = bindings
 				.into_iter()
 				.next()
-				.and_then(|b| b.provider_credential_id)
-				.ok_or_else(|| {
-					crate::Error::Invalid("Provider Credential binding is missing".into())
-				})?
+				.and_then(|b| b.provider_credential_id);
+			match binding {
+				Some(credential) => credential,
+				None if !required => continue,
+				None => {
+					return Err(crate::Error::Invalid(
+						"Provider Credential binding is missing".into(),
+					));
+				}
+			}
 		};
 		let rows = Record::objects()
 			.filter(Record::field_tenant().eq(tenant))
@@ -462,7 +478,9 @@ impl aidash_application::provider_access::ProviderAccess for AdmittedAccess {
 		context: &aidash_application::provider_access::Context,
 		network_policy: &serde_json::Value,
 	) -> Result<String> {
-		crate::apps::execution::observation::provider_scope(&self.store, context, true).await?;
+		if context.observation.is_some() {
+			return Err(Error::Forbidden);
+		}
 		super::data_protection::current(&self.store, context)
 			.await?
 			.permits(aidash_domain::data_protection::Destination::ProviderTool)?;
@@ -490,7 +508,9 @@ impl aidash_application::provider_access::ProviderAccess for AdmittedAccess {
 		endpoint: &str,
 		source: &aidash_application::provider_access::Source,
 	) -> Result<aidash_application::provider_access::Access> {
-		crate::apps::execution::observation::provider_scope(&self.store, context, true).await?;
+		if context.observation.is_some() {
+			return Err(Error::Forbidden);
+		}
 		use aidash_application::provider_access::Source;
 		let policy = super::data_protection::current(&self.store, context).await?;
 		let destination = match source {
@@ -542,7 +562,9 @@ impl aidash_application::provider_access::ProviderAccess for AdmittedAccess {
 		endpoint: &str,
 		source: &aidash_application::provider_access::Source,
 	) -> Result<()> {
-		crate::apps::execution::observation::provider_scope(&self.store, context, false).await?;
+		if context.observation.is_some() {
+			return Err(Error::Forbidden);
+		}
 		use aidash_application::provider_access::Source;
 		let policy = super::data_protection::current(&self.store, context).await?;
 		let destination = match source {
@@ -728,6 +750,7 @@ pub(crate) async fn admit_thread(
 		refuse_plans(&selected)?;
 	}
 	let mut providers = selected.credentials;
+	let mut optional_embedding_provider = None;
 	// Thread retrieval is another admitted provider consumer, even when the
 	// Agent's own Model uses an environment source. Lock the index generation
 	// with the Run admission so configuration cannot change while pins are made.
@@ -735,6 +758,7 @@ pub(crate) async fn admit_thread(
 		crate::apps::knowledge::models::SemanticIndexe::locked(tx, thread, false).await?
 	{
 		let spec = index.configuration()?;
+		let built_in = spec.embedding == aidash_application::embedding::default_embedding_config();
 		if spec.enabled
 			&& let Some(provider) = spec.embedding.provider_credential
 		{
@@ -746,10 +770,24 @@ pub(crate) async fn admit_thread(
 				&spec.embedding.provider,
 				Some(&provider),
 			)?;
-			providers.insert(provider);
+			if built_in {
+				// New Tenants can admit Runs before connecting the default
+				// embedding provider. Searches still require an admitted pin.
+				optional_embedding_provider = Some(provider);
+			} else {
+				providers.insert(provider);
+			}
 		}
 	}
-	admit_providers(tx, run, &tenant, providers, configured).await
+	admit_providers(
+		tx,
+		run,
+		&tenant,
+		providers,
+		optional_embedding_provider,
+		configured,
+	)
+	.await
 }
 
 async fn permit_selected(

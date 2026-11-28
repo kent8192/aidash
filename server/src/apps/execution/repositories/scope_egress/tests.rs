@@ -1,6 +1,6 @@
 use super::*;
 use crate::apps::execution::test_database::{DatabaseFixture, database};
-use crate::egress_tests::{settings, tenant_roots};
+use crate::{egress_tests::settings, tenant_roots};
 use aidash_application::egress::Admission;
 use aidash_domain::egress::{AllowedHosts, AnomalyRule, DailyBudget};
 
@@ -338,6 +338,7 @@ impl BudgetRig {
 						title: title.into(),
 						description: "Traffic budget".into(),
 						requirements: serde_json::json!({}),
+						goal: None,
 						dependencies: vec![],
 						parent_id: None,
 					},
@@ -1136,6 +1137,7 @@ async fn insert_space(
 ) -> Uuid {
 	let now = Utc::now();
 	let space = aidash_domain::scratch::ScratchSpace {
+		is_default: false,
 		id: Uuid::new_v4(),
 		node: tenant_roots::fixture_node_name(tenant),
 		name: "scope".to_owned(),
@@ -1143,6 +1145,7 @@ async fn insert_space(
 		state: aidash_domain::scratch::ScratchState::Active,
 		revision: 0,
 		wipe_generation: 0,
+		wipe_completed_generation: 0,
 		settings,
 		members: Default::default(),
 		created_at: now,

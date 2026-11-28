@@ -66,6 +66,8 @@ reinhardt = { workspace = true, features = [
 clap = { version = "4", features = ["derive"] }
 http = "1"
 mime_guess = "2"
+quick-xml = "0.42"
+zip = { version = "3", default-features = false, features = ["deflate"] }
 bytes = "1"
 ctor = "0.6"
 linkme = "0.3"

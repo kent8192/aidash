@@ -206,7 +206,7 @@ fn a_definition_without_plugins_keeps_its_bytes_and_its_digest() {
 	assert!(stored.get("agent_plugins").is_none());
 	assert_eq!(
 		crate::registry::rules::digest(&stored),
-		"sha256:380ce0a4cfe57fb73733edda426d1a929f9f991e697b81aadd0510bb91ad9538"
+		"sha256:8e44d01307a3a511115c10a83aa3e77b74e111485145aad449517dd06791471c"
 	);
 	let config = AgentConfig::from_definition(serde_json::from_value(stored.clone()).unwrap());
 	assert_eq!(serde_json::to_value(&config).unwrap(), stored);
@@ -245,7 +245,7 @@ fn implicit_thread_source_uses_the_reader_version_in_the_snapshot() {
 		};
 	// Today's Agent reads through the Thread tool (#1008).
 	let declaration = native.declaration_for_snapshot(&source, &snapshot);
-	assert!(reads(&declaration, "aidash.thread_read", "1.0.0"));
+	assert!(reads(&declaration, "aidash.thread_read", "1.2.0"));
 	// An Agent normalized before #1008 reads through the Workspace tool it pins.
 	let binding = snapshot
 		.bindings
@@ -256,7 +256,7 @@ fn implicit_thread_source_uses_the_reader_version_in_the_snapshot() {
 	binding.identity.version = "1.1.0".into();
 	let declaration = native.declaration_for_snapshot(&source, &snapshot);
 	assert!(reads(&declaration, "aidash.workspace_read", "1.1.0"));
-	assert!(!reads(&declaration, "aidash.thread_read", "1.0.0"));
+	assert!(!reads(&declaration, "aidash.thread_read", "1.1.0"));
 	// An explicit source policy stays exact.
 	let mut declared = native.declaration(&source);
 	for tool in &mut declared.tools.read {

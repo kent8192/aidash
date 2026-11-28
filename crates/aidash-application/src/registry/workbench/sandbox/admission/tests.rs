@@ -155,7 +155,7 @@ fn agent() -> Entry {
 	entry(
 		"agent",
 		"agent",
-		json!({"schema_version":1,"model":reference("model"),"instructions":"private instructions","bindings":(0..3).map(|i| crate::test_support::binding("tool","aidash://fixture",&format!("tool_{i}"))).collect::<Vec<_>>(),"remove_default":aidash_domain::registry::bindings::DEFAULT_TOOLS,"max_steps":5}),
+		json!({"model":reference("model"),"instructions":"private instructions","bindings":(0..3).map(|i| crate::test_support::binding("tool","aidash://fixture",&format!("tool_{i}"))).collect::<Vec<_>>(),"remove_default":aidash_domain::registry::bindings::DEFAULT_TOOLS}),
 	)
 }
 fn draft() -> Draft {
@@ -667,7 +667,6 @@ async fn admission_preserves_current_authority_locks_and_exact_plugin_indices() 
 	}
 	assert_eq!(admitted.job.request.max_output_tokens, 96);
 	// Agents have no step limit (#1009); the test keeps its own.
-	assert_eq!(admitted.job.agent_max_steps, i32::MAX);
 	assert_eq!(admitted.job.limits.max_steps, 3);
 	assert_eq!(admitted.job.pinned_draft.revision, 7);
 	assert_eq!(

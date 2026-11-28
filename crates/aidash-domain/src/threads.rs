@@ -1,24 +1,42 @@
 //! Collaboration contracts and target invariants independent of persistence.
-use crate::{
-	Conversation, Error, Result, Task, Thread,
-	federation::Delegation,
-	registry::{EntityRef, Entry},
-};
+use crate::{Conversation, Task, Thread, federation::Delegation};
 use schemars::JsonSchema;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ThreadTargetKind {
+	Agent,
+	Node,
+}
+
+impl ThreadTargetKind {
+	pub fn as_str(self) -> &'static str {
+		match self {
+			Self::Agent => "agent",
+			Self::Node => "node",
+		}
+	}
+
+	pub(crate) fn deserialize_name<'de, D: serde::Deserializer<'de>>(
+		deserializer: D,
+	) -> std::result::Result<String, D::Error> {
+		Ok(Self::deserialize(deserializer)?.as_str().into())
+	}
+}
 
 #[derive(Serialize, JsonSchema)]
 pub struct ConversationResponse {
 	pub conversation: Conversation,
 	pub thread: Thread,
 	pub task: Task,
-	pub delegation: Delegation,
+	pub delegation: Option<Delegation>,
 }
 
 /// What opening a Thread returns (#1008, ADR 0140): the Thread's own fields
-/// and, when a person asked an Agent or cluster for something, the
+/// and, when a person asked an Agent or Node for something, the
 /// conversation record, the Root Task whose description is the request, and
-/// its delegation (all `null` for a Thread opened without a request).
+/// its delegation when an Agent was selected.
 #[derive(Serialize, JsonSchema)]
 pub struct ThreadOpened {
 	#[serde(flatten)]
@@ -33,26 +51,8 @@ impl From<ConversationResponse> for ThreadOpened {
 			thread: value.thread,
 			conversation: Some(value.conversation),
 			task: Some(value.task),
-			delegation: Some(value.delegation),
+			delegation: value.delegation,
 		}
-	}
-}
-
-pub fn validate_conversation_target(entry: &Entry, expected_kind: &str) -> Result<()> {
-	if entry.kind != expected_kind || !matches!(expected_kind, "agent" | "cluster") {
-		return Err(Error::Invalid(
-			"conversation target must be an agent or cluster".into(),
-		));
-	}
-	Ok(())
-}
-pub fn conversation_agent(entry: &Entry, target: &EntityRef) -> Result<EntityRef> {
-	if entry.kind == "cluster" {
-		serde_json::from_value(entry.config["coordinator"].clone()).map_err(|_| {
-			Error::Invalid("cluster requires an explicit coordinator agent reference".into())
-		})
-	} else {
-		Ok(target.clone())
 	}
 }
 

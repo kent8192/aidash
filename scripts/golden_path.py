@@ -142,7 +142,7 @@ def register_node(base, tenant, source_address, endpoint, administrator, reachab
                                     "atomic_transactions": True, "enabled": True, "expected_revision": existing[0]["revision"] if existing else 0})
 
 
-DEFAULT_FEDERATION_TOOLS = ["task_create", "artifact_publish", "thread_message", "thread_read", "thread_observe",
+DEFAULT_FEDERATION_TOOLS = ["task_create", "deliverable_note", "thread_message", "thread_read", "thread_observe",
                             "memory_recall", "memory_reflect", "memory_mutate", "human_request", "skill_read", "skill_asset_read"]
 
 
@@ -320,7 +320,7 @@ def entity(kind, identifier, config, capability="web.search"):
     }
 
 
-def artifact_read_state(history, artifact_id):
+def message_read_state(history, message_id):
     chunks = [
         (
             event["call"].get("arguments", {}),
@@ -329,8 +329,8 @@ def artifact_read_state(history, artifact_id):
         for event in history
         if event.get("kind") == "tool"
         and event.get("call", {}).get("name") == "thread_read"
-        and event.get("call", {}).get("arguments", {}).get("kind") == "artifact"
-        and event.get("call", {}).get("arguments", {}).get("id") == artifact_id
+        and event.get("call", {}).get("arguments", {}).get("kind") == "message"
+        and event.get("call", {}).get("arguments", {}).get("id") == message_id
         and isinstance(event.get("result", {}).get("content"), str)
     ]
     chunks.sort(key=lambda item: item[0].get("offset", 0))
@@ -343,8 +343,12 @@ def artifact_read_state(history, artifact_id):
         content.append(piece)
         offset += len(piece)
         if result.get("next_offset") is None:
-            return json.loads("".join(content))["content"], None
+            return json.loads("".join(content)), None
     return None, offset
+
+
+def completion_messages(snapshot):
+    return [message for message in snapshot["messages"] if message.get("completion") is not None]
 
 
 def tool_descriptor(node, transport, alias="research_lookup"):
@@ -360,7 +364,7 @@ def tool_binding(node, name, alias="research_lookup"):
 
 def native_run_context(body):
     """Read the Task, Thread evidence and executed calls from Native messages."""
-    snapshot = {"thread": {"tasks": [], "artifacts": []}}
+    snapshot = {"thread": {"tasks": [], "messages": []}}
     calls = {}
     results = []
     for message in body["messages"]:
@@ -386,14 +390,15 @@ def native_run_context(body):
                 snapshot[source] = envelope["content"]
             elif source == "evidence":
                 thread = envelope["content"].get("thread", {})
-                for field in ("tasks", "artifacts"):
+                for field in ("tasks", "messages"):
                     snapshot["thread"][field].extend(thread.get(field, []))
             elif source == "tool":
                 invocation = envelope["provenance"]["invocation"]
                 if invocation in calls:
                     results.append({"kind": "tool", "call": calls[invocation], "result": envelope["content"]})
-    tasks = snapshot["thread"]["tasks"]
-    snapshot["thread"]["tasks"] = list({task["id"]: task for task in tasks}.values())
+    for field in ("tasks", "messages"):
+        records = snapshot["thread"][field]
+        snapshot["thread"][field] = list({record["id"]: record for record in records}.values())
     return snapshot, results
 
 
@@ -439,17 +444,19 @@ class Fixture:
             elif any(child["status"] != "COMPLETED" for child in thread["tasks"] if child["parent_id"] == task["id"]):
                 call("task_wait", {"seconds": 2})
             else:
-                contents = []
-                waiting_for_reads = False
-                for artifact in thread["artifacts"]:
-                    content, offset = artifact_read_state(history, artifact["id"])
+                children = {child["id"] for child in thread["tasks"] if child["parent_id"] == task["id"]}
+                results = {}
+                for reference in thread["messages"]:
+                    message, offset = message_read_state(history, reference["id"])
                     if offset is not None:
-                        waiting_for_reads = True
-                        call("thread_read", {"kind": "artifact", "id": artifact["id"], "offset": offset, "max_chars": 8000})
-                    else:
-                        contents.append(str(content))
-                if not waiting_for_reads:
-                    text = "Axum・Actix・Rocketの調査が完了しました。各エージェントの成果物を統合しました。\n\n" + "\n".join(contents)
+                        call("thread_read", {"kind": "message", "id": reference["id"], "offset": offset, "max_chars": 8000})
+                        continue
+                    completion = message.get("completion")
+                    if completion and completion["task_id"] in children:
+                        results[completion["task_id"]] = message["content"]
+                if not calls:
+                    assert results.keys() == children, "Every child Task must have a readable Completion Message"
+                    text = "Axum・Actix・Rocketの調査が完了しました。各エージェントの成果物を統合しました。\n\n" + "\n".join(results.values())
         elif not any(name == "research_lookup" for name, _ in tools):
             call("research_lookup", {"topic": task["title"]})
         else:
@@ -1046,11 +1053,11 @@ def main():
         # The rest of the research, Actix's recovery, Rocket's whole Run and the
         # coordinator's synthesis, is twenty-odd authorized steps; on a CI runner
         # each takes 10-20 s (#404).
-        snapshot = wait_for(complete, timeout=600, label="all four tasks and artifacts")
+        snapshot = wait_for(complete, timeout=600, label="all four tasks and Completion Messages")
         recovered = wait_for(lambda: completed_run(base_a, before["id"], tokens[base_a]), label="same durable research run")
         assert recovered["id"] == before["id"]
         assert any(e["kind"] == "execution.recovered" and e["data"].get("run_id") == recovered["id"] for e in api_request(base_a, "/api/events", token=tokens[base_a])["events"])
-        assert len(snapshot["artifacts"]) == 4
+        assert len(completion_messages(snapshot)) == 4
         assert len(fixture.effects) == 3
         assert fixture.requests[reconciled_key] == 1, "An uncertain Unsafe HTTP invocation must not be replayed automatically"
         assert fixture.provider_calls["openrouter"] > 0
@@ -1095,7 +1102,7 @@ def main():
                         lambda: {"admissions": int(psql(db_b, queries["remote_admissions"])),
                                  "bindings": int(psql(db_a, queries["remote_bindings"]))},
                         scoped_proxy_sockets, issue_a, issue_b, administrator)
-        report = {"node_a": base_a, "node_b": base_b, "node_ids": [node_a, node_b], "thread_id": thread, "tasks": len(snapshot["tasks"]), "artifacts": len(snapshot["artifacts"]), "external_effects": len(fixture.effects), "tool_requests": dict(fixture.requests), "provider_calls": dict(fixture.provider_calls), "recovered_run_id": recovered["id"], "sse_events": len(stream_events), "database_a": db_a, "database_b": db_b, "goal_entry": "dashboard" if args.dashboard else "api", "nats_outage_startup_and_recovery": "passed", "events_queued_during_outage": pending_events, "additional_plugins": plugin_runs}
+        report = {"node_a": base_a, "node_b": base_b, "node_ids": [node_a, node_b], "thread_id": thread, "tasks": len(snapshot["tasks"]), "completion_messages": len(completion_messages(snapshot)), "external_effects": len(fixture.effects), "tool_requests": dict(fixture.requests), "provider_calls": dict(fixture.provider_calls), "recovered_run_id": recovered["id"], "sse_events": len(stream_events), "database_a": db_a, "database_b": db_b, "goal_entry": "dashboard" if args.dashboard else "api", "nats_outage_startup_and_recovery": "passed", "events_queued_during_outage": pending_events, "additional_plugins": plugin_runs}
         report.update(source=source, binary_sha256=binary_sha256, scoped_remote_execution=scoped)
         local_approvals.set()
         if args.dashboard:

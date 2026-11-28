@@ -498,6 +498,11 @@ impl EventVisibilityScope for Reads<'_> {
 					&Query::select()
 						.column(Asterisk)
 						.from(Alias::new("conversations"))
+						.and_where(
+							crate::apps::workspaces::models::Conversation::current_target(
+								Expr::col("target_kind"),
+							),
+						)
 						.cond_where(
 							Condition::all()
 								.add(

@@ -43,7 +43,7 @@ fn definition() -> Definition {
         .id("policy-test")
         .version("1.0.0")
         .kind(DefinitionKind::Skill)
-        .metadata(json!({"id":"policy-test","version":"1.0.0","kind":"skill","name":{"en":"Test"},"description":{"en":"Test"},"capabilities":[],"tags":[],"languages":["en"],"skills":[],"schema":{},"config":{"instructions":"Test"}}).into())
+        .metadata(json!({"id":"policy-test","version":"1.0.0","kind":"skill","name":{"en":"Test"},"description":{"en":"Test"},"capabilities":[],"tags":[],"languages":["en"],"schema":{},"config":{"instructions":"Test"}}).into())
         .finish()
 }
 

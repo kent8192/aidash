@@ -2,7 +2,7 @@
 use super::{RecoveryRepository, store::run_state::FailureDelivery};
 use crate::{
 	Error as NativeError,
-	authorization::execution::{self, DeliveryGuard, Guard, GuardEntry},
+	authorization::execution::{self, DeliveryGuard, Guard},
 	federation::{Federation, Home},
 	store::Store,
 	transactions::gate::ReadLease,
@@ -14,7 +14,7 @@ use aidash_application::{
 		ExecutionRecoveryStore,
 		execution::{
 			terminal::{FailureScope, TerminalRepository},
-			worker::{Admission, WorkerLeases, WorkerStep},
+			worker::{WorkerLeases, WorkerStep},
 		},
 	},
 	recovery::{AuthorityFailure, ExecutionFailure},
@@ -188,7 +188,7 @@ impl WorkerStep for Step {
 			.await
 			.map_err(Into::into)
 	}
-	async fn admit(&mut self) -> Result<Admission> {
+	async fn admit(&mut self) -> Result<()> {
 		// A new step is new work: it waits behind an Authority Change, giving up
 		// its visibility lease while it does (ADR 0121). A Run whose Tenant cannot
 		// be read goes on to `Guard::begin`, which meets the same failure itself.
@@ -201,29 +201,8 @@ impl WorkerStep for Step {
 			.await?;
 			self.tenant = Some(tenant.as_str().to_owned());
 		}
-		match Guard::begin(&self.federation, &self.run).await? {
-			GuardEntry::Ready(guard) => {
-				self.guard = Some(*guard);
-				Ok(Admission::Ready)
-			}
-			GuardEntry::Queued(notice) => {
-				if let Some(notice) = notice {
-					let home = Home::for_delivery(self.federation.clone(), self.run.metadata());
-					// The queue row has committed. Delivery is one best-effort
-					// attempt and cannot delay releasing this worker lease.
-					drop(tokio::spawn(async move {
-						let run = notice.run_id;
-						if let Err(error) = home
-							.command::<serde_json::Value>("run_queued", serde_json::json!(notice))
-							.await
-						{
-							tracing::warn!(%error, %run, "remote queue notice could not be delivered");
-						}
-					}));
-				}
-				Ok(Admission::Queued)
-			}
-		}
+		self.guard = Some(Guard::begin(&self.federation, &self.run).await?);
+		Ok(())
 	}
 	async fn invoke(&mut self, token: Uuid) -> Result<()> {
 		self.open_stint(token).await?;

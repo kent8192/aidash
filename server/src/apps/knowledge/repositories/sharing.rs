@@ -189,6 +189,7 @@ mod tests {
 					&aidash_domain::NewTask {
 						title: "source".into(),
 						description: "source".into(),
+						goal: None,
 						requirements: serde_json::json!({}),
 						dependencies: vec![],
 						parent_id: None,

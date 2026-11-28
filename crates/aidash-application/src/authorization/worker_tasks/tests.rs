@@ -41,6 +41,7 @@ fn input() -> NewTask {
 	NewTask {
 		title: "child".into(),
 		description: "delegated work".into(),
+		goal: None,
 		requirements: json!({"preserved":true}),
 		dependencies: vec![id(2)],
 		parent_id: Some(id(2)),
@@ -129,6 +130,7 @@ fn scope() -> Scope {
 			title: "saved child".into(),
 			description: "saved description".into(),
 			status: TaskStatus::Open,
+			goal: None,
 			requirements: json!({}),
 			owner: None,
 			created_by: "producer".into(),

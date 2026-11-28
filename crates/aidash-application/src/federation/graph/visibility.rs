@@ -7,7 +7,6 @@ pub async fn visible(scope: &mut dyn GraphVisibility, candidate: &Candidate) -> 
 		Candidate::Thread(row) => Some(row.id),
 		Candidate::Task(row) => Some(row.thread_id),
 		Candidate::Run(row) => Some(row.thread_id),
-		Candidate::Artifact(row) => Some(row.thread_id),
 		Candidate::Conversation(row) => Some(row.thread_id),
 		Candidate::Registry(_) => None,
 	};

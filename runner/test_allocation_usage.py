@@ -7,7 +7,6 @@ import copy
 import base64
 import contextlib
 import io
-import hashlib
 import json
 import shutil
 import http.client
@@ -276,9 +275,6 @@ class AllocationUsageTest(unittest.TestCase):
         self.assertEqual(json.loads(path.read_bytes())['resource_version'], '102')
 
     def test_housekeeping_waits_for_durable_shell_output_before_cleanup(self):
-        content = b'output still being harvested'
-        file = dict(path='saved.txt', object_id=hashlib.sha256(content).hexdigest(),
-                    digest=hashlib.sha256(content).hexdigest(), size=len(content))
         self.record.update(status='running', digest='command', container_id='a'*64,
                            cancel_requested=False, executed=True, started_at=1790000000,
                            request={'usage_tenant':'acme', 'kind':'shell', 'files':[]})
@@ -300,22 +296,18 @@ class AllocationUsageTest(unittest.TestCase):
             return Mock(stdout=b'')
         def collector(operation, action, *_args, **_kwargs):
             if action[0] == 'logs':
-                return Mock(stdout=json.dumps({'stdout':'saved logs', 'truncated':False}).encode())
-            if action[0] == 'export':
-                return Mock(stdout=json.dumps({'files':[file]}).encode())
-            if action[0] == 'read':
                 entered.set()
                 if not release.wait(5):
                     raise RuntimeError('test harvest was not released')
                 if deleted:
                     raise RuntimeError('collector was deleted during output harvest')
-                return Mock(stdout=content)
+                return Mock(stdout=json.dumps({'stdout':'saved logs', 'truncated':False}).encode())
             raise AssertionError(action)
         self.runner.kube, self.runner.exec_collector = kube, collector
         worker = threading.Thread(target=self.runner.reconcile, args=(self.operation,), daemon=True)
         worker.start()
         try:
-            self.assertTrue(entered.wait(5), 'actual reconcile owner reached file harvesting')
+            self.assertTrue(entered.wait(5), 'actual reconcile owner reached log harvesting')
             self.runner.allocation_housekeeping()
             self.assertEqual(deleted, [], 'execution stop alone cannot authorize collector deletion')
         finally:
@@ -325,7 +317,7 @@ class AllocationUsageTest(unittest.TestCase):
         self.assertEqual(self.runner.get(self.operation)['status'], 'completed')
         self.assertEqual(self.runner.get(self.operation)['stdout'], 'saved logs')
         self.assertTrue(self.runner.get(self.operation)['output_harvested'])
-        self.assertEqual((self.root / (self.operation+'.files') / file['object_id']).read_bytes(), content)
+        self.assertEqual(self.runner.get(self.operation)['files'], [])
         self.assertEqual(deleted, [True])
         self.runner.acknowledge(self.operation, 'command')
         runner = self.restart()
@@ -367,9 +359,6 @@ class AllocationUsageTest(unittest.TestCase):
             self.assertEqual(runner.allocation_receipts(), before)
 
     def test_actual_stopped_uncertain_harvest_retries_before_adopted_ack(self):
-        content = b'recovered file'
-        file = dict(path='saved.txt', object_id=hashlib.sha256(content).hexdigest(),
-                    digest=hashlib.sha256(content).hexdigest(), size=len(content))
         self.record.update(status='running', digest='command', container_id='a'*64,
                            cancel_requested=False, executed=True, started_at=1790000000,
                            stdout='', displays=[], files=[], truncated=False,
@@ -404,15 +393,11 @@ class AllocationUsageTest(unittest.TestCase):
         def guard(record, action, **_):
             if action == 'status':
                 return {'termination_confirmed':True}
-            if action == 'export':
-                return {'files':[file]}
             if action == 'logs':
-                return {'stdout':base64.b64encode(b'recovered stdout').decode()}
-            if action == 'read':
                 entered.set()
                 if not release.wait(5):
                     raise RuntimeError('test harvest not released')
-                return {'data':base64.b64encode(content).decode()}
+                return {'stdout':base64.b64encode(b'recovered stdout').decode()}
             raise AssertionError(action)
         self.runner.guard = guard
         failures = []
@@ -438,7 +423,7 @@ class AllocationUsageTest(unittest.TestCase):
         self.assertEqual(harvested['status'], 'uncertain')
         self.assertEqual(harvested['error'], error)
         self.assertIs(harvested['output_harvested'], True)
-        self.assertEqual((self.root / (self.operation+'.files') / file['object_id']).read_bytes(), content)
+        self.assertEqual(self.runner.get(self.operation)['files'], [])
         # Crash before server adoption: the runner still retains every payload.
         runner = self.restart()
         public = runner.public(runner.get(self.operation))
@@ -446,10 +431,13 @@ class AllocationUsageTest(unittest.TestCase):
         for proof in (None, 'wrong-output-digest'):
             with self.assertRaises(Rejected):
                 runner.acknowledge(self.operation, 'command', proof)
-        self.assertEqual(base64.b64decode(runner.output_chunk(self.operation, file['object_id'], 0)['data']), content)
         self.finish()
         before = runner.allocation_receipts()
         self.assertEqual(len(before['receipts']), 1)
+        # A pending historical payload must also drain after an interrupted ACK.
+        payload = self.root / (self.operation+'.files')
+        payload.mkdir()
+        (payload / 'legacy').write_bytes(b'previously saved bytes')
         # A crash after the saved ACK but before payload unlink retries drain.
         with patch('pathlib.Path.unlink', side_effect=OSError('interrupted unlink')):
             with self.assertRaises(OSError):
@@ -473,8 +461,6 @@ class AllocationUsageTest(unittest.TestCase):
         def guard(record, action, **_):
             if action == 'status':
                 return {'termination_confirmed':True}
-            if action == 'export':
-                return {'files':[]}
             raise AssertionError('Python must not read shell logs: '+action)
         self.runner.guard = guard
         self.runner.observe_allocation(self.record, self.pod)

@@ -14,6 +14,7 @@ import { useRef, useState } from "react";
 import { Field, useI18n } from "../ui";
 import { apiFetch } from "../transport";
 import { post, saveFile } from "./client";
+import { hashUpload, uploadChunks } from "./multipart";
 import { pagesWithoutTextNotice } from "./reference-folder-model";
 export type ReferenceBinding = {
   reference_id: string;
@@ -25,12 +26,6 @@ export const emptyCore: CoreConfiguration = {
   bindings: [],
   remove_default: [],
 };
-async function hash(bytes: ArrayBuffer) {
-  return Array.from(
-    new Uint8Array(await crypto.subtle.digest("SHA-256", bytes)),
-    (n) => n.toString(16).padStart(2, "0"),
-  ).join("");
-}
 export function CapabilityConfiguration({
   value,
   change,
@@ -69,6 +64,7 @@ type Reference = Omit<ReferenceBinding, "path"> & {
   name: string;
   state: string;
   revision: number;
+  uploaded_bytes: number;
   extraction_state?: string;
   pages_without_text?: number[];
   page_count?: number | null;
@@ -111,8 +107,8 @@ export function OriginalReferences({
       <h2>{ja ? "参照資料の原本" : "Original references"}</h2>
       <p>
         {ja
-          ? "原本は非公開で保存されます。テキストはそのまま Agent が読み、PDF と Excel は文字を抽出します。抽出に失敗した資料もダウンロードできます。コピーを編集しても原本は変わりません。"
-          : "Originals are private and remain downloadable when extraction fails. Editing a working copy preserves the original."}
+          ? "原本は非公開で保存されます。テキストはそのまま Agent が読み、PDF と Excel は文字を抽出します。抽出に失敗した資料もダウンロードできます。"
+          : "Originals are private and remain downloadable when extraction fails."}
       </p>
       <Field
         label={
@@ -139,8 +135,7 @@ export function OriginalReferences({
                     ? "ファイルは 1 byte～10 MiB にしてください。"
                     : "Files must contain 1 byte to 10 MiB.",
                 );
-              const bytes = await file.arrayBuffer();
-              const digest = await hash(bytes);
+              const digest = await hashUpload(file);
               const media_type = file.name.endsWith(".pdf")
                 ? "application/pdf"
                 : file.name.endsWith(".xlsx")
@@ -157,23 +152,9 @@ export function OriginalReferences({
                 digest,
               });
               if (reference.state === "uploading") {
-                for (
-                  let offset =
-                    (reference as Reference & { uploaded_bytes: number })
-                      .uploaded_bytes ?? 0;
-                  offset < bytes.byteLength;
-                  offset += 4194304
-                ) {
-                  let text = "";
-                  for (const byte of new Uint8Array(
-                    bytes.slice(offset, offset + 4194304),
-                  ))
-                    text += String.fromCharCode(byte);
-                  await post(`/references/${reference.reference_id}/chunks`, {
-                    offset,
-                    data: btoa(text),
-                  });
-                }
+                await uploadChunks(file, reference.uploaded_bytes, (chunk) =>
+                  post(`/references/${reference.reference_id}/chunks`, chunk),
+                );
                 await post<Reference>(
                   `/references/${reference.reference_id}/commit`,
                 );

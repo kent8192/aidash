@@ -7,7 +7,7 @@ use reinhardt::query::{
 use serde_json::Value;
 
 fn query(tenant: &str, options: &GraphOptions, offset: u64) -> Option<(String, Vec<String>)> {
-	let kinds: Vec<String> = ["agent", "cluster", "tool", "model", "skill"]
+	let kinds: Vec<String> = ["agent", "tool", "model", "skill"]
 		.into_iter()
 		.filter(|kind| kind_allowed(kind, options))
 		.map(str::to_owned)

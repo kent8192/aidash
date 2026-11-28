@@ -7,8 +7,8 @@ use crate::{
 	},
 };
 use aidash_domain::{
-	Artifact, Conversation, Message, RunMetadata, Task, generation::requests::Request,
-	registry::EntityRef, semantic::Failure,
+	Conversation, Message, RunMetadata, Task, generation::requests::Request, registry::EntityRef,
+	semantic::Failure,
 };
 use async_trait::async_trait;
 use uuid::Uuid;
@@ -62,8 +62,12 @@ pub trait ReadProvenanceScope: ResourceVisibilityScope {
 		kind: &str,
 		id: Uuid,
 	) -> Result<Option<Vec<Uuid>>>;
+	/// Check current access to an immutable Drive entry used by a Run.
+	async fn drive_source_visible(&mut self, _entry: Uuid) -> Result<bool> {
+		Ok(false)
+	}
 	async fn source_task(&mut self, id: Uuid, thread: Uuid) -> Result<Option<Task>>;
-	async fn source_artifact(&mut self, id: Uuid, thread: Uuid) -> Result<Option<Artifact>>;
+
 	async fn source_message(&mut self, id: Uuid, thread: Uuid) -> Result<Option<Message>>;
 	/// Resolve an extant attachment to its parent message for current-authority checks.
 	async fn source_attachment_message(

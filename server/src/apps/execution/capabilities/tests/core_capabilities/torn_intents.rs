@@ -1,3 +1,4 @@
+use super::reference_set_tests::{add, file};
 use super::*;
 
 #[rstest::rstest]
@@ -7,7 +8,6 @@ async fn torn_intent_does_not_block_uploads_or_unrelated_blob_reclamation(
 	#[from(worker_control)] control: WorkerControl,
 ) {
 	let c = Box::pin(capability_fixture).await;
-	let run = admit(&c).await;
 	let intents = c.root.join(".intents");
 	tokio::fs::create_dir_all(&intents).await.unwrap();
 	// A backlog makes each pre-fix sweep encounter a malformed intent before
@@ -44,7 +44,7 @@ async fn torn_intent_does_not_block_uploads_or_unrelated_blob_reclamation(
 	})
 	.await
 	.is_ok();
-	let (status, body) = request(&c.app, &c.token, "POST", &path_for_patch(run.id), json!({"idempotency_key":Uuid::new_v4(),"expected_revision":1,"preconditions":{"new.txt":null},"patch":"*** Begin Patch\n*** Add File: new.txt\n+new\n*** End Patch"})).await;
+	let (status, body) = add(&c, &c.token, vec![file("new.txt", "new\n")]).await;
 	control.stop.send(true).unwrap();
 	worker.await.unwrap().unwrap();
 	c.close().await;
@@ -53,4 +53,5 @@ async fn torn_intent_does_not_block_uploads_or_unrelated_blob_reclamation(
 		"a torn intent stalled unrelated blob reclamation"
 	);
 	assert_eq!(status, 200, "a torn intent stalled an upload: {body}");
+	assert_eq!(body["references"].as_array().unwrap().len(), 1);
 }

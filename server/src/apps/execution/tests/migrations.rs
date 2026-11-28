@@ -178,6 +178,9 @@ const TENANT_REGISTRY_MIGRATIONS: &[(&str, &str)] = &[
 	("workspaces", "0065_duty_pending_events"),
 	("workspaces", "0066_deleted_duty_flow_ancestry"),
 	("workspaces", "0067_task_duty_start"),
+	("workspaces", "0072_node_scratch_spaces"),
+	("workspaces", "0073_default_scratch_index"),
+	("workspaces", "0074_thread_scratch_wipes"),
 	("execution", "0148_threads"),
 	("execution", "0149_threads_state"),
 	("execution", "0150_task_executions"),
@@ -195,12 +198,20 @@ const TENANT_REGISTRY_MIGRATIONS: &[(&str, &str)] = &[
 	("execution", "0164_model_call_recovery"),
 	("execution", "0165_background_time_limit"),
 	("execution", "0166_scope_connection_debits"),
+	("execution", "0180_unorder_runs"),
+	("execution", "0181_unordered_run_bindings"),
+	("execution", "0182_unpin_live_previews"),
+	("execution", "0183_detach_run_area_bindings"),
+	("execution", "0184_retire_area_holds"),
 	("identity", "0110_threads"),
 	("identity", "0111_thread_member_policy"),
 	("identity", "0112_budget_lineage"),
 	("identity", "0113_budget_notice_delivery"),
 	("identity", "0114_policy_revision_backfill"),
 	("identity", "0115_suspension_resume_refusal"),
+	("identity", "0120_tenant_embedding_settings"),
+	("identity", "0121_tenant_embedding_settings_rls"),
+	("identity", "0122_tenant_embedding_settings_guard"),
 	("knowledge", "0058_threads"),
 	("knowledge", "0059_threads_state"),
 	("federation", "0030_threads"),
@@ -208,6 +219,11 @@ const TENANT_REGISTRY_MIGRATIONS: &[(&str, &str)] = &[
 	("federation", "0032_transaction_parts_state"),
 	("registry", "0081_thread_tools"),
 	("registry", "0082_thread_source_scope"),
+	("registry", "0090_prune_definition_fields"),
+	("registry", "0091_thread_target_kinds"),
+	("registry", "0092_registry_kind_check"),
+	("registry", "0093_registry_kind_state"),
+	("registry", "0094_thread_target_kind_state"),
 ];
 
 /// Exclude the content-store cutover to seed legacy data for its migration test.
@@ -257,6 +273,9 @@ const CONTENT_STORE_CUTOVER_MIGRATIONS: &[(&str, &str)] = &[
 	("workspaces", "0065_duty_pending_events"),
 	("workspaces", "0066_deleted_duty_flow_ancestry"),
 	("workspaces", "0067_task_duty_start"),
+	("workspaces", "0072_node_scratch_spaces"),
+	("workspaces", "0073_default_scratch_index"),
+	("workspaces", "0074_thread_scratch_wipes"),
 	("execution", "0148_threads"),
 	("execution", "0149_threads_state"),
 	("execution", "0150_task_executions"),
@@ -274,17 +293,63 @@ const CONTENT_STORE_CUTOVER_MIGRATIONS: &[(&str, &str)] = &[
 	("execution", "0164_model_call_recovery"),
 	("execution", "0165_background_time_limit"),
 	("execution", "0166_scope_connection_debits"),
+	("execution", "0180_unorder_runs"),
+	("execution", "0181_unordered_run_bindings"),
+	("execution", "0182_unpin_live_previews"),
+	("execution", "0183_detach_run_area_bindings"),
+	("execution", "0184_retire_area_holds"),
 	("identity", "0110_threads"),
 	("identity", "0111_thread_member_policy"),
 	("identity", "0112_budget_lineage"),
 	("identity", "0113_budget_notice_delivery"),
 	("identity", "0114_policy_revision_backfill"),
 	("identity", "0115_suspension_resume_refusal"),
+	("identity", "0120_tenant_embedding_settings"),
+	("identity", "0121_tenant_embedding_settings_rls"),
+	("identity", "0122_tenant_embedding_settings_guard"),
 	("knowledge", "0058_threads"),
 	("knowledge", "0059_threads_state"),
 	("federation", "0030_threads"),
 	("federation", "0031_transaction_parts"),
 	("federation", "0032_transaction_parts_state"),
+	("registry", "0090_prune_definition_fields"),
+	("registry", "0091_thread_target_kinds"),
+	("registry", "0092_registry_kind_check"),
+	("registry", "0093_registry_kind_state"),
+	("registry", "0094_thread_target_kind_state"),
+];
+
+/// Goal and Completion Message migrations depend on the Thread and Model Call
+/// tables and replace the Completion Gate's Registry contract.
+const GOAL_MIGRATIONS: &[(&str, &str)] = &[
+	("execution", "0170_goal_judge_calls"),
+	("execution", "0171_outside_versions"),
+	("execution", "0172_retire_completion_gate"),
+	("execution", "0173_authorization_read_model_state"),
+	("federation", "0033_retire_artifact_reads"),
+	("federation", "0034_completion_settlement_v2"),
+	("identity", "0123_goal_judge_model"),
+	("workspaces", "0070_task_goals"),
+	("workspaces", "0071_completion_messages"),
+];
+
+const REGISTRY_PRUNING_MIGRATIONS: &[(&str, &str)] = &[
+	("registry", "0090_prune_definition_fields"),
+	("registry", "0091_thread_target_kinds"),
+	("registry", "0092_registry_kind_check"),
+	("registry", "0093_registry_kind_state"),
+	("registry", "0094_thread_target_kind_state"),
+];
+
+const SCRATCH_MIGRATIONS: &[(&str, &str)] = &[
+	("execution", "0180_unorder_runs"),
+	("execution", "0181_unordered_run_bindings"),
+	("execution", "0182_unpin_live_previews"),
+	("execution", "0183_detach_run_area_bindings"),
+	("execution", "0184_retire_area_holds"),
+	("workspaces", "0072_node_scratch_spaces"),
+	("workspaces", "0073_default_scratch_index"),
+	("workspaces", "0074_thread_scratch_wipes"),
 ];
 
 /// Reversing the whole graph grows with the history; the bound only catches a
@@ -318,8 +383,31 @@ async fn reverse_task_executions(
 	] {
 		renamed.push(source.get_migration("execution", name).await.unwrap());
 	}
+	for &(app, name) in GOAL_MIGRATIONS
+		.iter()
+		.filter(|(app, name)| *app == "execution" || *name == "0034_completion_settlement_v2")
+		.chain(DRIVE_MIGRATIONS)
+	{
+		renamed.push(source.get_migration(app, name).await.unwrap());
+	}
+	for &(app, name) in SCRATCH_MIGRATIONS
+		.iter()
+		.filter(|(app, _)| *app == "execution")
+	{
+		renamed.push(source.get_migration(app, name).await.unwrap());
+	}
 	executor.rollback_migrations(&renamed).await.unwrap();
 }
+
+const DRIVE_MIGRATIONS: &[(&str, &str)] = &[
+	("execution", "0175_node_drives"),
+	("execution", "0176_drive_reads"),
+	("execution", "0177_drive_model_state"),
+	("execution", "0178_drive_departed_folders"),
+	("execution", "0179_drive_tool_contract"),
+	("knowledge", "0062_drive_index"),
+	("knowledge", "0063_drive_index_state"),
+];
 
 async fn history_size() -> usize {
 	FilesystemSource::new(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("migrations"))
@@ -327,6 +415,26 @@ async fn history_size() -> usize {
 		.await
 		.unwrap()
 		.len()
+}
+
+async fn purge_fixture_node(pool: &PgPool, tenant: &str, node: &str) {
+	let mut tx = pool.begin().await.unwrap();
+	// Production purges Drive contents and their parent before the Node.
+	// These schema fixtures only have the empty Drive created with the Node.
+	let drive = sqlx::query("DELETE FROM drives WHERE tenant = $1 AND node = $2 AND head = 0")
+		.bind(tenant)
+		.bind(node)
+		.execute(&mut *tx)
+		.await
+		.unwrap();
+	assert_eq!(drive.rows_affected(), 1);
+	sqlx::query("DELETE FROM nodes WHERE tenant = $1 AND name = $2")
+		.bind(tenant)
+		.bind(node)
+		.execute(&mut *tx)
+		.await
+		.unwrap();
+	tx.commit().await.unwrap();
 }
 
 #[rstest]
@@ -390,11 +498,12 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 			.map(|m| m.name.clone())
 			.collect::<Vec<_>>()
 	};
-	assert_eq!(head("federation"), ["0032_transaction_parts_state"]);
-	assert_eq!(head("registry"), ["0082_thread_source_scope"]);
-	assert_eq!(head("execution"), ["0166_scope_connection_debits"]);
-	assert_eq!(head("knowledge"), ["0059_threads_state"]);
-	assert_eq!(head("workspaces"), ["0067_task_duty_start"]);
+	assert_eq!(head("federation"), ["0034_completion_settlement_v2"]);
+	assert_eq!(head("registry"), ["0094_thread_target_kind_state"]);
+	assert_eq!(head("identity"), ["0123_goal_judge_model"]);
+	assert_eq!(head("execution"), ["0184_retire_area_holds"]);
+	assert_eq!(head("knowledge"), ["0063_drive_index_state"]);
+	assert_eq!(head("workspaces"), ["0074_thread_scratch_wipes"]);
 	// Assert: retain the physical graph, model snapshots, and all supported tables.
 	assert!(
 		migrations
@@ -406,7 +515,7 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 			.iter()
 			.filter(|migration| migration.state_only)
 			.count(),
-		139
+		144
 	);
 	let tables = migrations
 		.iter()
@@ -447,6 +556,8 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 						|| matches!(
 							(migration.app_label.as_str(), migration.name.as_str()),
 							("registry", "0054_remove_agent_cluster")
+								| ("registry", "0090_prune_definition_fields")
+								| ("registry", "0091_thread_target_kinds")
 								| ("execution", "0089_remove_agent_cluster")
 								// Discarded journals cannot be restored (#1107).
 								| ("federation", "0031_transaction_parts")
@@ -507,6 +618,17 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 							.as_deref()
 							.unwrap()
 							.contains("DROP CONSTRAINT registry_no_compaction_decider")
+					);
+				} else if (migration.app_label.as_str(), migration.name.as_str())
+					== ("registry", "0092_registry_kind_check")
+				{
+					assert!(sql.starts_with(
+						"ALTER TABLE public.registry ADD CONSTRAINT registry_active_kind"
+					));
+					assert!(sql.contains("NOT VALID"));
+					assert_eq!(
+						reverse_sql.as_deref().map(str::trim),
+						Some("ALTER TABLE public.registry DROP CONSTRAINT registry_active_kind;")
 					);
 				} else if sql.starts_with("ALTER TABLE") {
 					// These PostgreSQL JSONB CHECK replacements use reversible SQL
@@ -674,15 +796,12 @@ async fn generation_with_existing_sql_assets_preserves_history_and_dependency(
 	);
 	assert_eq!(std::fs::read(history).unwrap(), original);
 	let generated = FilesystemSource::new(fixture.directory.path().join("migrations"))
-		.get_migration("execution", "0167_policy_probe")
+		.get_migration("execution", "0185_policy_probe")
 		.await
 		.unwrap();
 	assert_eq!(
 		generated.dependencies,
-		vec![(
-			"execution".to_owned(),
-			"0166_scope_connection_debits".to_owned()
-		)]
+		vec![("execution".to_owned(), "0184_retire_area_holds".to_owned())]
 	);
 	assert!(generated.operations.is_empty());
 }
@@ -694,7 +813,7 @@ async fn run_created_at_backfills_last_update_and_remains_fixed_on_later_updates
 ) {
 	let fixture = fresh_database.await;
 	fixture
-		.migrate_excluding(&[
+		.migrate_before_goals(&[
 			("execution", "0090_run_created_at"),
 			("execution", "0091_bounded_read_indexes"),
 			("execution", "0092_reference_embedding_usage"),
@@ -768,6 +887,9 @@ async fn run_created_at_backfills_last_update_and_remains_fixed_on_later_updates
 			("workspaces", "0065_duty_pending_events"),
 			("workspaces", "0066_deleted_duty_flow_ancestry"),
 			("workspaces", "0067_task_duty_start"),
+			("workspaces", "0072_node_scratch_spaces"),
+			("workspaces", "0073_default_scratch_index"),
+			("workspaces", "0074_thread_scratch_wipes"),
 			("execution", "0148_threads"),
 			("execution", "0149_threads_state"),
 			("execution", "0150_task_executions"),
@@ -785,6 +907,11 @@ async fn run_created_at_backfills_last_update_and_remains_fixed_on_later_updates
 			("execution", "0164_model_call_recovery"),
 			("execution", "0165_background_time_limit"),
 			("execution", "0166_scope_connection_debits"),
+			("execution", "0180_unorder_runs"),
+			("execution", "0181_unordered_run_bindings"),
+			("execution", "0182_unpin_live_previews"),
+			("execution", "0183_detach_run_area_bindings"),
+			("execution", "0184_retire_area_holds"),
 			("identity", "0110_threads"),
 			("identity", "0111_thread_member_policy"),
 			("identity", "0112_budget_lineage"),
@@ -906,17 +1033,20 @@ async fn nonempty_generation_reads_sql_assets_and_replays_only_logical_state(
 	let root = fixture.directory.path().join("migrations");
 	let history = root.join("workspaces/0007_model_state.rs");
 	let original = std::fs::read_to_string(&history).unwrap();
+	let model = "name: \"tasks\".to_string(),";
+	let (prefix, task_state) = original.split_once(model).unwrap();
 	let field = concat!(
-		"name: \"artifacts\".to_string(),\n",
-		"\t\t\tcolumns: vec![\n",
-		"\t\t\t\tColumnDefinition::new(\"content\", FieldType::Jsonb)\n",
+		"ColumnDefinition::new(\"description\", FieldType::Text)\n",
 		"\t\t\t\t\t.with_not_null(true)",
 	);
-	assert_eq!(original.matches(field).count(), 1);
-	let edited = original.replacen(
-		field,
-		&field.replace(".with_not_null(true)", ".with_not_null(false)"),
-		1,
+	assert_eq!(task_state.matches(field).count(), 1);
+	let edited = format!(
+		"{prefix}{model}{}",
+		task_state.replacen(
+			field,
+			&field.replace(".with_not_null(true)", ".with_not_null(false)"),
+			1,
+		)
 	);
 	std::fs::write(&history, &edited).unwrap();
 	let before = FilesystemSource::new(&root).all_migrations().await.unwrap();
@@ -924,7 +1054,7 @@ async fn nonempty_generation_reads_sql_assets_and_replays_only_logical_state(
 	let predecessor = build_state_from_files(&FilesystemSource::new(&root))
 		.await
 		.unwrap();
-	assert!(predecessor.find_model_by_table("artifacts").unwrap().fields["content"].nullable);
+	assert!(predecessor.find_model_by_table("tasks").unwrap().fields["description"].nullable);
 	let mut input_files = Vec::new();
 	let mut directories = vec![root.clone()];
 	while let Some(directory) = directories.pop() {
@@ -951,7 +1081,7 @@ async fn nonempty_generation_reads_sql_assets_and_replays_only_logical_state(
 			"--state-source",
 			"files",
 			"--name",
-			"content_probe",
+			"task_description_probe",
 		])
 		.stdin(Stdio::null());
 
@@ -984,12 +1114,15 @@ async fn nonempty_generation_reads_sql_assets_and_replays_only_logical_state(
 	let generated = after
 		.iter()
 		.find(|migration| {
-			migration.app_label == "workspaces" && migration.name == "0068_content_probe"
+			migration.app_label == "workspaces" && migration.name == "0075_task_description_probe"
 		})
 		.unwrap();
 	assert_eq!(
 		generated.dependencies,
-		vec![("workspaces".to_owned(), "0067_task_duty_start".to_owned())]
+		vec![(
+			"workspaces".to_owned(),
+			"0074_thread_scratch_wipes".to_owned()
+		)]
 	);
 	assert_eq!(generated.operations.len(), 1);
 	let reinhardt::db::migrations::Operation::AlterColumn {
@@ -1001,12 +1134,12 @@ async fn nonempty_generation_reads_sql_assets_and_replays_only_logical_state(
 	else {
 		panic!("the generated migration must repair one column");
 	};
-	assert_eq!(table, "artifacts");
-	assert_eq!(column, "content");
+	assert_eq!(table, "tasks");
+	assert_eq!(column, "description");
 	assert!(new_definition.not_null);
 	assert_eq!(
 		new_definition.type_definition,
-		reinhardt::db::migrations::FieldType::Jsonb
+		reinhardt::db::migrations::FieldType::Text
 	);
 
 	// Replay the same edited history plus the saved repair through the real CLI.
@@ -1167,10 +1300,54 @@ impl MigrationFixture {
 
 	/// Applies the history as it was before Issue #243's migrations.
 	async fn migrate_before_tenant_registry(&self) {
-		self.migrate_excluding(TENANT_REGISTRY_MIGRATIONS).await;
+		self.migrate_before_goals(TENANT_REGISTRY_MIGRATIONS).await;
+	}
+
+	async fn migrate_before_goals(&self, excluded: &[(&str, &str)]) {
+		let excluded = excluded
+			.iter()
+			.chain(GOAL_MIGRATIONS)
+			.copied()
+			.collect::<Vec<_>>();
+		self.migrate_excluding(&excluded).await;
 	}
 
 	async fn migrate_excluding(&self, excluded: &[(&str, &str)]) {
+		let omitted = if excluded.is_empty() {
+			Vec::new()
+		} else {
+			// A historical fixture may omit named migrations across apps.
+			// Keep every descendant out of the staged history until its parents return.
+			let migrations =
+				FilesystemSource::new(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("migrations"))
+					.all_migrations()
+					.await
+					.unwrap();
+			let mut omitted = excluded
+				.iter()
+				.map(|&(app, name)| (app.to_owned(), name.to_owned()))
+				.collect::<BTreeSet<_>>();
+			loop {
+				let before = omitted.len();
+				for migration in &migrations {
+					if migration
+						.dependencies
+						.iter()
+						.any(|key| omitted.contains(key))
+					{
+						omitted.insert((migration.app_label.clone(), migration.name.clone()));
+					}
+				}
+				if omitted.len() == before {
+					break;
+				}
+			}
+			omitted.into_iter().collect()
+		};
+		let excluded = omitted
+			.iter()
+			.map(|(app, name)| (app.as_str(), name.as_str()))
+			.collect::<Vec<_>>();
 		let recorder = DatabaseMigrationRecorder::new(self.connection.clone());
 		let before = recorder
 			.get_applied_migrations_if_present()
@@ -1179,7 +1356,7 @@ impl MigrationFixture {
 			.len();
 		let log_path = self.directory.path().join("migrate.log");
 		let log = File::create(&log_path).unwrap();
-		let mut command = deployment_command_excluding(&self.url, self.directory.path(), excluded);
+		let mut command = deployment_command_excluding(&self.url, self.directory.path(), &excluded);
 		command
 			.arg("migrate")
 			.stdin(Stdio::null())
@@ -1279,7 +1456,7 @@ async fn preserved_baseline_does_not_generate_table_recreation(
 			.iter()
 			.filter(|migration| migration.state_only)
 			.count(),
-		139
+		144
 	);
 }
 
@@ -1474,6 +1651,7 @@ async fn native_migrations_build_a_fresh_schema_and_preserve_records_on_replay(
 		.title("After native migration")
 		.revision(0)
 		.deleted_at(None)
+		.scratch_wipe_requested(false)
 		.finish();
 	Thread::objects()
 		.create_with_conn(&mut connection, &workspace)
@@ -1541,7 +1719,7 @@ async fn budget_notice_delivery_preserves_sent_windows_on_upgrade_and_rollback(
 	// can be applied and reversed independently.
 	let backfill = ("identity", "0114_policy_revision_backfill");
 	fixture
-		.migrate_excluding(&[
+		.migrate_before_goals(&[
 			("identity", name),
 			backfill,
 			("identity", "0115_suspension_resume_refusal"),
@@ -1609,7 +1787,9 @@ async fn budget_notice_delivery_preserves_sent_windows_on_upgrade_and_rollback(
 		sqlx::query_scalar(&notices).fetch_all(&pool).await.unwrap()
 	};
 
-	fixture.migrate_excluding(&[backfill]).await;
+	fixture
+		.migrate_before_goals(&[backfill, ("identity", "0115_suspension_resume_refusal")])
+		.await;
 	assert_eq!(read_notices().await, vec![Some(sent_at)]);
 	let pending = Query::insert()
 		.into_table(Alias::new("budget_notices"))
@@ -2009,10 +2189,11 @@ async fn local_database_preparation_uses_and_replays_the_native_history(
 		.args([&fixture.url, &fixture.url])
 		.kill_on_drop(true);
 
-	// Act: the second preparation must reuse the same applied records.
-	let output = tokio::time::timeout(Duration::from_secs(35), command.output())
+	// Apply the full graph and replay it in one process. The deadline catches
+	// a hung preparation while allowing both passes on a shared CI host.
+	let output = tokio::time::timeout(Duration::from_secs(120), command.output())
 		.await
-		.unwrap()
+		.expect("local database preparation did not complete")
 		.unwrap();
 
 	// Assert: local setup runs the shared migrator and its extension version check.
@@ -2055,6 +2236,7 @@ async fn management_refuses_fake_baseline_rollback_without_changing_data_or_hist
 		.title("Retained")
 		.revision(0)
 		.deleted_at(None)
+		.scratch_wipe_requested(false)
 		.finish();
 	Thread::objects()
 		.create_with_conn(&mut lease.handle(), &workspace)
@@ -2242,6 +2424,7 @@ async fn escaped_whitespace_checks_still_reject_blank_content(
 		.title(whitespace)
 		.revision(0)
 		.deleted_at(None)
+		.scratch_wipe_requested(false)
 		.finish();
 	// Act
 	let error = Thread::objects()
@@ -2500,7 +2683,7 @@ async fn registry_upgrade_keeps_existing_compaction_decider(
 ) {
 	let fixture = fresh_database.await;
 	fixture
-		.migrate_excluding(&[
+		.migrate_before_goals(&[
 			("registry", "0065_agent_default_removals"),
 			("registry", "0066_native_context_recovery"),
 			("registry", "0067_optional_memory_roles"),
@@ -2532,6 +2715,9 @@ async fn registry_upgrade_keeps_existing_compaction_decider(
 			("workspaces", "0065_duty_pending_events"),
 			("workspaces", "0066_deleted_duty_flow_ancestry"),
 			("workspaces", "0067_task_duty_start"),
+			("workspaces", "0072_node_scratch_spaces"),
+			("workspaces", "0073_default_scratch_index"),
+			("workspaces", "0074_thread_scratch_wipes"),
 			("execution", "0148_threads"),
 			("execution", "0149_threads_state"),
 			("execution", "0150_task_executions"),
@@ -2549,12 +2735,20 @@ async fn registry_upgrade_keeps_existing_compaction_decider(
 			("execution", "0164_model_call_recovery"),
 			("execution", "0165_background_time_limit"),
 			("execution", "0166_scope_connection_debits"),
+			("execution", "0180_unorder_runs"),
+			("execution", "0181_unordered_run_bindings"),
+			("execution", "0182_unpin_live_previews"),
+			("execution", "0183_detach_run_area_bindings"),
+			("execution", "0184_retire_area_holds"),
 			("identity", "0110_threads"),
 			("identity", "0111_thread_member_policy"),
 			("identity", "0112_budget_lineage"),
 			("identity", "0113_budget_notice_delivery"),
 			("identity", "0114_policy_revision_backfill"),
 			("identity", "0115_suspension_resume_refusal"),
+			("identity", "0120_tenant_embedding_settings"),
+			("identity", "0121_tenant_embedding_settings_rls"),
+			("identity", "0122_tenant_embedding_settings_guard"),
 			("knowledge", "0058_threads"),
 			("knowledge", "0059_threads_state"),
 			("federation", "0030_threads"),
@@ -2562,6 +2756,11 @@ async fn registry_upgrade_keeps_existing_compaction_decider(
 			("federation", "0032_transaction_parts_state"),
 			("registry", "0081_thread_tools"),
 			("registry", "0082_thread_source_scope"),
+			("registry", "0090_prune_definition_fields"),
+			("registry", "0091_thread_target_kinds"),
+			("registry", "0092_registry_kind_check"),
+			("registry", "0093_registry_kind_state"),
+			("registry", "0094_thread_target_kind_state"),
 		])
 		.await;
 	fixture.tenant_root("acme").await;
@@ -2580,7 +2779,9 @@ async fn registry_upgrade_keeps_existing_compaction_decider(
 	sqlx::query("INSERT INTO registry (tenant,id,version,kind,metadata) VALUES ('acme','aidash.compaction-decider','1.0.0','decider',$1)")
 		.bind(&decider).execute(&mut *tx).await.unwrap();
 	tx.commit().await.unwrap();
-	fixture.migrate().await;
+	fixture
+		.migrate_before_goals(REGISTRY_PRUNING_MIGRATIONS)
+		.await;
 	let mut tx = aidash_server::database::scope::begin_fixture_deployment(&pool)
 		.await
 		.unwrap();
@@ -2619,7 +2820,7 @@ async fn agent_default_removals_agree_with_rust(#[future] fresh_database: Migrat
 		(json!(["compaction"]), false),
 		(json!(["unknown"]), false),
 	] {
-		let config = json!({"schema_version":1,"model":{"id":"model","version":"1.0.0"},"instructions":"Work","remove_default":removals});
+		let config = json!({"model":{"id":"model","version":"1.0.0"},"instructions":"Work","remove_default":removals});
 		let rust = serde_json::from_value::<aidash_domain::registry::bindings::AgentBindings>(
 			config.clone(),
 		)
@@ -2674,7 +2875,9 @@ async fn attachment_tools_migration_admits_and_reverses_the_new_contract(
 	#[future] fresh_database: MigrationFixture,
 ) {
 	let fixture = fresh_database.await;
-	fixture.migrate().await;
+	fixture
+		.migrate_before_goals(REGISTRY_PRUNING_MIGRATIONS)
+		.await;
 	let pool = fixture.connection.clone().into_postgres().unwrap();
 	let descriptor = serde_json::to_value(
 		aidash_domain::tool::providers::core_descriptor("aidash://fixture", "attachment_copy")
@@ -3247,7 +3450,9 @@ async fn completion_policy_migration_validates_policies_and_refuses_rollback_whi
 	use aidash_server::apps::registry::{models::Definition, services::states::DefinitionKind};
 	// Arrange
 	let fixture = fresh_database.await;
-	fixture.migrate().await;
+	fixture
+		.migrate_before_goals(REGISTRY_PRUNING_MIGRATIONS)
+		.await;
 	fixture.tenant_root("acme").await;
 	let pool = fixture.connection.clone().into_postgres().unwrap();
 	let agent = |policy: serde_json::Value| {
@@ -3410,7 +3615,9 @@ async fn agent_plugins_migration_validates_references_and_refuses_rollback_while
 	use aidash_server::apps::registry::{models::Definition, services::states::DefinitionKind};
 	// Arrange
 	let fixture = fresh_database.await;
-	fixture.migrate().await;
+	fixture
+		.migrate_before_goals(REGISTRY_PRUNING_MIGRATIONS)
+		.await;
 	fixture.tenant_root("acme").await;
 	let pool = fixture.connection.clone().into_postgres().unwrap();
 	let digest = format!("sha256:{}", "ab01".repeat(16));
@@ -3609,7 +3816,9 @@ async fn agent_plugin_settings_migration_validates_the_key_and_refuses_rollback_
 	use aidash_server::apps::registry::{models::Definition, services::states::DefinitionKind};
 	// Arrange
 	let fixture = fresh_database.await;
-	fixture.migrate().await;
+	fixture
+		.migrate_before_goals(REGISTRY_PRUNING_MIGRATIONS)
+		.await;
 	fixture.tenant_root("acme").await;
 	let pool = fixture.connection.clone().into_postgres().unwrap();
 	let agent = |settings: serde_json::Value| {
@@ -3826,7 +4035,9 @@ async fn agent_plugin_server_secrets_migration_validates_the_secret_and_refuses_
 	use aidash_server::apps::registry::{models::Definition, services::states::DefinitionKind};
 	// Arrange
 	let fixture = fresh_database.await;
-	fixture.migrate().await;
+	fixture
+		.migrate_before_goals(REGISTRY_PRUNING_MIGRATIONS)
+		.await;
 	fixture.tenant_root("acme").await;
 	let pool = fixture.connection.clone().into_postgres().unwrap();
 	let agent = |settings: serde_json::Value| {
@@ -4095,7 +4306,9 @@ async fn removed_harness_contracts_refuse_the_upgrade_while_still_stored(
 	use aidash_server::apps::registry::{models::Definition, services::states::DefinitionKind};
 	// Arrange
 	let fixture = fresh_database.await;
-	fixture.migrate().await;
+	fixture
+		.migrate_before_goals(REGISTRY_PRUNING_MIGRATIONS)
+		.await;
 	let pool = fixture.connection.clone().into_postgres().unwrap();
 	let migration =
 		FilesystemSource::new(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("migrations"))
@@ -4724,7 +4937,7 @@ async fn deferred_exposure_contract_rejects_explicit_null_budgets(
 	let fixture = fresh_database.await;
 	fixture.migrate().await;
 	let pool = fixture.connection.clone().into_postgres().unwrap();
-	let agent = |exposure: serde_json::Value| json!({"schema_version":1,"model":{"id":"fixture-model","version":"1.0.0"},"instructions":"Assist.","exposure":exposure});
+	let agent = |exposure: serde_json::Value| json!({"model":{"id":"fixture-model","version":"1.0.0"},"instructions":"Assist.","exposure":exposure});
 	assert!(
 		contract_accepts(
 			&pool,
@@ -4936,11 +5149,7 @@ async fn node_deletion_history_preserves_deadlines_and_permanent_ownership(
 		.execute(&pool)
 		.await
 		.unwrap();
-	sqlx::query("DELETE FROM nodes WHERE tenant='acme' AND name=$1")
-		.bind(&node)
-		.execute(&pool)
-		.await
-		.unwrap();
+	purge_fixture_node(&pool, "acme", &node).await;
 	let retained: i64 =
 		sqlx::query_scalar("SELECT count(*) FROM node_deletions WHERE tenant='acme' AND node=$1")
 			.bind(&node)
@@ -5186,11 +5395,7 @@ async fn node_administration_audit_preserves_permanent_tenant_ownership(
 		.execute(&pool)
 		.await
 		.unwrap();
-	sqlx::query("DELETE FROM nodes WHERE tenant='acme' AND name=$1")
-		.bind(&name)
-		.execute(&pool)
-		.await
-		.unwrap();
+	purge_fixture_node(&pool, "acme", &name).await;
 	let retained: (String, String) =
 		sqlx::query_as("SELECT tenant,node FROM dashboard_administration_history WHERE id=$1")
 			.bind(id)
@@ -5227,6 +5432,9 @@ const THREAD_MIGRATIONS: &[(&str, &str)] = &[
 	("workspaces", "0065_duty_pending_events"),
 	("workspaces", "0066_deleted_duty_flow_ancestry"),
 	("workspaces", "0067_task_duty_start"),
+	("workspaces", "0072_node_scratch_spaces"),
+	("workspaces", "0073_default_scratch_index"),
+	("workspaces", "0074_thread_scratch_wipes"),
 	("execution", "0148_threads"),
 	("execution", "0149_threads_state"),
 	("identity", "0110_threads"),
@@ -5235,6 +5443,9 @@ const THREAD_MIGRATIONS: &[(&str, &str)] = &[
 	("identity", "0113_budget_notice_delivery"),
 	("identity", "0114_policy_revision_backfill"),
 	("identity", "0115_suspension_resume_refusal"),
+	("identity", "0120_tenant_embedding_settings"),
+	("identity", "0121_tenant_embedding_settings_rls"),
+	("identity", "0122_tenant_embedding_settings_guard"),
 	("knowledge", "0058_threads"),
 	("knowledge", "0059_threads_state"),
 	("federation", "0030_threads"),
@@ -5255,6 +5466,16 @@ const THREAD_MIGRATIONS: &[(&str, &str)] = &[
 	("execution", "0164_model_call_recovery"),
 	("execution", "0165_background_time_limit"),
 	("execution", "0166_scope_connection_debits"),
+	("registry", "0090_prune_definition_fields"),
+	("registry", "0091_thread_target_kinds"),
+	("registry", "0092_registry_kind_check"),
+	("registry", "0093_registry_kind_state"),
+	("registry", "0094_thread_target_kind_state"),
+	("execution", "0180_unorder_runs"),
+	("execution", "0181_unordered_run_bindings"),
+	("execution", "0182_unpin_live_previews"),
+	("execution", "0183_detach_run_area_bindings"),
+	("execution", "0184_retire_area_holds"),
 ];
 
 struct SourceLifetimeMigration {
@@ -5329,7 +5550,12 @@ async fn node_purge_source_lifetime_migrations_round_trip_without_weakening_prov
 	// history just before them.
 	let before_threads = migrations
 		.iter()
-		.filter(|m| !THREAD_MIGRATIONS.contains(&(m.app_label.as_str(), m.name.as_str())))
+		.filter(|m| {
+			let key = (m.app_label.as_str(), m.name.as_str());
+			!THREAD_MIGRATIONS.contains(&key)
+				&& !GOAL_MIGRATIONS.contains(&key)
+				&& !DRIVE_MIGRATIONS.contains(&key)
+		})
 		.cloned()
 		.collect::<Vec<_>>();
 	let mut executor = DatabaseMigrationExecutor::new(fixture.connection.clone());
@@ -5537,6 +5763,15 @@ async fn node_purge_registration_recovery_ownership_roundtrips_without_a_catalog
 	let mut executor = DatabaseMigrationExecutor::new(fixture.connection.clone())
 		.with_migration_history(migrations.clone());
 	executor.apply_migrations(&migrations).await.unwrap();
+	if table == "events" {
+		// The historical event migration also restores the Run-to-Area key.
+		// Restore the tables and columns that key names for this round trip.
+		let mut later = Vec::new();
+		for name in ["0183_detach_run_area_bindings", "0184_retire_area_holds"] {
+			later.push(source.get_migration("execution", name).await.unwrap());
+		}
+		executor.rollback_migrations(&later).await.unwrap();
+	}
 	let pool = fixture.connection.clone().into_postgres().unwrap();
 	for (pass, parent) in ["node_names", "nodes", "node_names"]
 		.into_iter()
@@ -5610,11 +5845,7 @@ async fn node_purge_registration_recovery_ownership_roundtrips_without_a_catalog
 			.execute(&pool)
 			.await
 			.unwrap();
-		sqlx::query("DELETE FROM nodes WHERE tenant='event-owner' AND name=$1")
-			.bind(&node)
-			.execute(&pool)
-			.await
-			.unwrap();
+		purge_fixture_node(&pool, "event-owner", &node).await;
 		let retained: (String, String) =
 			sqlx::query_as("SELECT tenant,node FROM events WHERE id=$1")
 				.bind(id)
@@ -5640,14 +5871,9 @@ async fn memory_role_migration_accepts_agent_model_and_optional_embedding(
 	#[future] fresh_database: MigrationFixture,
 ) {
 	let fixture = fresh_database.await;
-	let source =
-		FilesystemSource::new(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("migrations"));
-	let migrations = source.all_migrations().await.unwrap();
-	DatabaseMigrationExecutor::new(fixture.connection.clone())
-		.with_migration_history(migrations.clone())
-		.apply_migrations(&migrations)
-		.await
-		.unwrap();
+	fixture
+		.migrate_before_goals(REGISTRY_PRUNING_MIGRATIONS)
+		.await;
 	let pool = fixture.connection.clone().into_postgres().unwrap();
 	let mut policy: serde_json::Value = serde_json::from_str(include_str!(
 		"../../../../../tests/fixtures/native_memory_policy_baseline.json"
@@ -5785,7 +6011,7 @@ async fn existing_conversations_receive_distinct_dedicated_scratch_spaces(
 ) {
 	let fixture = fresh_database.await;
 	fixture
-		.migrate_excluding(&[
+		.migrate_before_goals(&[
 			("workspaces", "0021_conversation_scratch_space"),
 			("workspaces", "0022_scratch_space_model_state"),
 			("workspaces", "0023_scratch_node_index"),
@@ -5829,6 +6055,11 @@ async fn existing_conversations_receive_distinct_dedicated_scratch_spaces(
 			("execution", "0164_model_call_recovery"),
 			("execution", "0165_background_time_limit"),
 			("execution", "0166_scope_connection_debits"),
+			("execution", "0180_unorder_runs"),
+			("execution", "0181_unordered_run_bindings"),
+			("execution", "0182_unpin_live_previews"),
+			("execution", "0183_detach_run_area_bindings"),
+			("execution", "0184_retire_area_holds"),
 			("identity", "0110_threads"),
 			("identity", "0111_thread_member_policy"),
 			("identity", "0112_budget_lineage"),
@@ -5848,6 +6079,9 @@ async fn existing_conversations_receive_distinct_dedicated_scratch_spaces(
 			("workspaces", "0065_duty_pending_events"),
 			("workspaces", "0066_deleted_duty_flow_ancestry"),
 			("workspaces", "0067_task_duty_start"),
+			("workspaces", "0072_node_scratch_spaces"),
+			("workspaces", "0073_default_scratch_index"),
+			("workspaces", "0074_thread_scratch_wipes"),
 		])
 		.await;
 	fixture.tenant_root("scratch-upgrade").await;
@@ -5900,7 +6134,7 @@ async fn existing_conversations_receive_distinct_dedicated_scratch_spaces(
 	}
 	let before_backfill = chrono::Utc::now();
 	fixture
-		.migrate_excluding(&[
+		.migrate_before_goals(&[
 			("workspaces", "0024_workspace_scratch_space"),
 			("workspaces", "0025_scratch_workspace_model_state"),
 			("workspaces", "0026_scratch_binding_indexes"),
@@ -5941,6 +6175,11 @@ async fn existing_conversations_receive_distinct_dedicated_scratch_spaces(
 			("execution", "0164_model_call_recovery"),
 			("execution", "0165_background_time_limit"),
 			("execution", "0166_scope_connection_debits"),
+			("execution", "0180_unorder_runs"),
+			("execution", "0181_unordered_run_bindings"),
+			("execution", "0182_unpin_live_previews"),
+			("execution", "0183_detach_run_area_bindings"),
+			("execution", "0184_retire_area_holds"),
 			("identity", "0110_threads"),
 			("identity", "0111_thread_member_policy"),
 			("identity", "0112_budget_lineage"),
@@ -5960,6 +6199,9 @@ async fn existing_conversations_receive_distinct_dedicated_scratch_spaces(
 			("workspaces", "0065_duty_pending_events"),
 			("workspaces", "0066_deleted_duty_flow_ancestry"),
 			("workspaces", "0067_task_duty_start"),
+			("workspaces", "0072_node_scratch_spaces"),
+			("workspaces", "0073_default_scratch_index"),
+			("workspaces", "0074_thread_scratch_wipes"),
 		])
 		.await;
 	let pool = fixture.connection.clone().into_postgres().unwrap();
@@ -6020,7 +6262,7 @@ async fn existing_workspace_receives_scratch_space_owned_by_its_creator(
 ) {
 	let fixture = fresh_database.await;
 	fixture
-		.migrate_excluding(&[
+		.migrate_before_goals(&[
 			("workspaces", "0024_workspace_scratch_space"),
 			("workspaces", "0025_scratch_workspace_model_state"),
 			("workspaces", "0026_scratch_binding_indexes"),
@@ -6061,6 +6303,11 @@ async fn existing_workspace_receives_scratch_space_owned_by_its_creator(
 			("execution", "0164_model_call_recovery"),
 			("execution", "0165_background_time_limit"),
 			("execution", "0166_scope_connection_debits"),
+			("execution", "0180_unorder_runs"),
+			("execution", "0181_unordered_run_bindings"),
+			("execution", "0182_unpin_live_previews"),
+			("execution", "0183_detach_run_area_bindings"),
+			("execution", "0184_retire_area_holds"),
 			("identity", "0110_threads"),
 			("identity", "0111_thread_member_policy"),
 			("identity", "0112_budget_lineage"),
@@ -6080,6 +6327,9 @@ async fn existing_workspace_receives_scratch_space_owned_by_its_creator(
 			("workspaces", "0065_duty_pending_events"),
 			("workspaces", "0066_deleted_duty_flow_ancestry"),
 			("workspaces", "0067_task_duty_start"),
+			("workspaces", "0072_node_scratch_spaces"),
+			("workspaces", "0073_default_scratch_index"),
+			("workspaces", "0074_thread_scratch_wipes"),
 		])
 		.await;
 	fixture.tenant_root("scratch-workspace-upgrade").await;
@@ -6220,7 +6470,14 @@ async fn existing_workspace_receives_scratch_space_owned_by_its_creator(
 		fixture.connection.execute(&sql, vec![]).await.unwrap();
 	}
 
-	fixture.migrate().await;
+	// Observe the historical per-Thread bindings before the Node Scratch cutover.
+	fixture
+		.migrate_excluding(&[
+			("workspaces", "0072_node_scratch_spaces"),
+			("workspaces", "0073_default_scratch_index"),
+			("workspaces", "0074_thread_scratch_wipes"),
+		])
+		.await;
 	let pool = fixture.connection.clone().into_postgres().unwrap();
 	let sql = Query::select()
 		.columns(
@@ -6381,11 +6638,7 @@ async fn scope_egress_rows_are_tenant_bound_and_purged_with_the_node(
 			.await
 			.unwrap();
 	assert_eq!(receipts, None);
-	sqlx::query("DELETE FROM nodes WHERE tenant = 'acme' AND name = $1")
-		.bind(&node)
-		.execute(&pool)
-		.await
-		.unwrap();
+	purge_fixture_node(&pool, "acme", &node).await;
 	for table in [
 		"egress_scope_state",
 		"egress_scope_daily",
@@ -6489,7 +6742,7 @@ async fn content_store_cutover_discards_only_rows_naming_legacy_objects(
 ) {
 	let fixture = fresh_database.await;
 	fixture
-		.migrate_excluding(CONTENT_STORE_CUTOVER_MIGRATIONS)
+		.migrate_before_goals(CONTENT_STORE_CUTOVER_MIGRATIONS)
 		.await;
 	fixture.tenant_root("acme").await;
 	let pool = PgPool::connect(&fixture.url).await.unwrap();
@@ -6529,7 +6782,9 @@ async fn content_store_cutover_discards_only_rows_naming_legacy_objects(
 		sqlx::query("INSERT INTO core_records (id,tenant,owner,kind,state,data) VALUES ($1,'acme','alice',$2,'ready','{}')")
             .bind(Uuid::new_v4()).bind(kind).execute(&pool).await.unwrap();
 	}
-	fixture.migrate().await;
+	fixture
+		.migrate_excluding(&[("execution", "0184_retire_area_holds")])
+		.await;
 	let surviving: Vec<Uuid> = sqlx::query_scalar("SELECT id FROM channel_attachments ORDER BY id")
 		.fetch_all(&pool)
 		.await
@@ -6594,7 +6849,7 @@ async fn area_queue_sleep_backfills_executions_on_upgrade(
 ) {
 	let fixture = fresh_database.await;
 	fixture
-		.migrate_excluding(&[
+		.migrate_before_goals(&[
 			("execution", "0153_area_queue_sleep"),
 			("execution", "0154_worker_stints"),
 			("execution", "0155_model_calls"),
@@ -6607,6 +6862,11 @@ async fn area_queue_sleep_backfills_executions_on_upgrade(
 			("execution", "0164_model_call_recovery"),
 			("execution", "0165_background_time_limit"),
 			("execution", "0166_scope_connection_debits"),
+			("execution", "0180_unorder_runs"),
+			("execution", "0181_unordered_run_bindings"),
+			("execution", "0182_unpin_live_previews"),
+			("execution", "0183_detach_run_area_bindings"),
+			("execution", "0184_retire_area_holds"),
 		])
 		.await;
 	let tenant = "area-sleep";
@@ -6674,7 +6934,16 @@ async fn area_queue_sleep_backfills_executions_on_upgrade(
 		.unwrap();
 	}
 
-	fixture.migrate().await;
+	// Keep the old queue through this historical assertion and reversal.
+	fixture
+		.migrate_excluding(&[
+			("execution", "0180_unorder_runs"),
+			("execution", "0181_unordered_run_bindings"),
+			("execution", "0182_unpin_live_previews"),
+			("execution", "0183_detach_run_area_bindings"),
+			("execution", "0184_retire_area_holds"),
+		])
+		.await;
 	let asleep: Vec<bool> =
 		sqlx::query_scalar("SELECT asleep FROM core_runs WHERE area_id = $1 ORDER BY sequence")
 			.bind(area)
@@ -6716,7 +6985,7 @@ async fn merged_working_areas_keep_the_active_one_and_leave_no_reference_behind(
 	// id holding a Run and a message's file version.
 	let fixture = fresh_database.await;
 	fixture
-		.migrate_excluding(&[
+		.migrate_before_goals(&[
 			("execution", "0148_threads"),
 			("execution", "0149_threads_state"),
 			("execution", "0150_task_executions"),
@@ -6734,6 +7003,11 @@ async fn merged_working_areas_keep_the_active_one_and_leave_no_reference_behind(
 			("execution", "0164_model_call_recovery"),
 			("execution", "0165_background_time_limit"),
 			("execution", "0166_scope_connection_debits"),
+			("execution", "0180_unorder_runs"),
+			("execution", "0181_unordered_run_bindings"),
+			("execution", "0182_unpin_live_previews"),
+			("execution", "0183_detach_run_area_bindings"),
+			("execution", "0184_retire_area_holds"),
 		])
 		.await;
 	fixture.tenant_root("area-merge").await;
@@ -6914,7 +7188,15 @@ async fn merged_working_areas_keep_the_active_one_and_leave_no_reference_behind(
 	}
 
 	// Act
-	fixture.migrate().await;
+	fixture
+		.migrate_excluding(&[
+			("execution", "0180_unorder_runs"),
+			("execution", "0181_unordered_run_bindings"),
+			("execution", "0182_unpin_live_previews"),
+			("execution", "0183_detach_run_area_bindings"),
+			("execution", "0184_retire_area_holds"),
+		])
+		.await;
 
 	// Assert: the active Area is the key's only one.
 	let pool = fixture.connection.clone().into_postgres().unwrap();
@@ -6974,7 +7256,7 @@ async fn thread_member_policy_names_thread_actions_kind_and_attribute(
 	// Arrange: a stored bundle from before #1008, with a custom condition.
 	let fixture = fresh_database.await;
 	fixture
-		.migrate_excluding(&[
+		.migrate_before_goals(&[
 			("identity", "0111_thread_member_policy"),
 			("identity", "0112_budget_lineage"),
 			("identity", "0113_budget_notice_delivery"),
@@ -6995,6 +7277,11 @@ async fn thread_member_policy_names_thread_actions_kind_and_attribute(
 			("execution", "0164_model_call_recovery"),
 			("execution", "0165_background_time_limit"),
 			("execution", "0166_scope_connection_debits"),
+			("execution", "0180_unorder_runs"),
+			("execution", "0181_unordered_run_bindings"),
+			("execution", "0182_unpin_live_previews"),
+			("execution", "0183_detach_run_area_bindings"),
+			("execution", "0184_retire_area_holds"),
 		])
 		.await;
 	fixture.tenant_root("thread-policy").await;
@@ -7175,7 +7462,7 @@ async fn default_member_policy_upgrade_preserves_authorization_history(
 
 	// Act
 	fixture
-		.migrate_excluding(&[
+		.migrate_before_goals(&[
 			("identity", "0114_policy_revision_backfill"),
 			("identity", "0115_suspension_resume_refusal"),
 		])
@@ -7374,6 +7661,47 @@ async fn thread_source_scope_migration_admits_thread_and_reverses(
 	pool.close().await;
 }
 
+#[rstest]
+#[tokio::test]
+async fn drive_tool_contract_admits_seeded_descriptors_and_independent_default_removals(
+	#[future] fresh_database: MigrationFixture,
+) {
+	let fixture = fresh_database.await;
+	fixture.migrate().await;
+	let pool = fixture.connection.clone().into_postgres().unwrap();
+	let accepts_descriptor = async |descriptor| {
+		contract_accepts(&pool, "aidash_descriptor_is_valid", vec![descriptor]).await
+	};
+	for operation in ["drive_publish", "drive_publish_status", "drive_search"] {
+		let descriptor = serde_json::to_value(
+			aidash_domain::tool::providers::core_descriptor("aidash://fixture", operation).unwrap(),
+		)
+		.unwrap();
+		assert!(accepts_descriptor(descriptor.clone()).await, "{operation}");
+		let mut wrong = descriptor;
+		wrong["tier"] = if operation == "drive_search" {
+			json!("sandboxed")
+		} else {
+			json!("builtin")
+		};
+		assert!(!accepts_descriptor(wrong).await, "{operation}");
+	}
+	let agent = |remove_default| {
+		json!({"model":{"id":"model","version":"1.0.0"},
+			"instructions":"Work","remove_default":remove_default})
+	};
+	let accepts_agent = async |remove_default| {
+		contract_accepts(
+			&pool,
+			"aidash_agent_bindings_is_valid",
+			vec![agent(remove_default)],
+		)
+		.await
+	};
+	assert!(accepts_agent(json!(["file_search", "drive_search"])).await);
+	assert!(!accepts_agent(json!(["drive_search", "drive_search"])).await);
+}
+
 /// The new write contract is enforced by PostgreSQL, even outside the worker.
 #[rstest]
 #[tokio::test]
@@ -7382,7 +7710,7 @@ async fn model_call_usage_requires_one_owner_after_upgrade(
 ) {
 	let fixture = fresh_database.await;
 	fixture
-		.migrate_excluding(&[
+		.migrate_before_goals(&[
 			("execution", "0155_model_calls"),
 			("execution", "0156_model_call_state"),
 			("execution", "0157_stdio_session_recheck"),
@@ -7393,6 +7721,11 @@ async fn model_call_usage_requires_one_owner_after_upgrade(
 			("execution", "0164_model_call_recovery"),
 			("execution", "0165_background_time_limit"),
 			("execution", "0166_scope_connection_debits"),
+			("execution", "0180_unorder_runs"),
+			("execution", "0181_unordered_run_bindings"),
+			("execution", "0182_unpin_live_previews"),
+			("execution", "0183_detach_run_area_bindings"),
+			("execution", "0184_retire_area_holds"),
 		])
 		.await;
 	let tenant = "call-owner";

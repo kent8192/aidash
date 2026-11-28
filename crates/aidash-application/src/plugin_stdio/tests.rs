@@ -303,6 +303,7 @@ impl StdioPluginHost for Host {
 		Ok(Some(StdioPod {
 			runtime: self.pod.clone(),
 			settings: ExecutionPodSettings {
+				command_slots: 8,
 				scratch_space_id: "space".into(),
 				image: "image".into(),
 				cpu: 1,

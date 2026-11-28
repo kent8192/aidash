@@ -12,325 +12,7 @@ use uuid::Uuid;
 
 #[fixture]
 fn index_spec() -> Value {
-	json!({"embedding":{"provider":"openai","endpoint":"http://localhost:9","model":"fixture","model_version":"1","dimensions":8},"vector":{"provider":"postgres","endpoint":"local","credential_env":null},"enabled":true,"auto_context":false,"max_sources":10,"max_results":5,"max_result_tokens":128,"max_input_bytes":256})
-}
-
-#[rstest]
-#[tokio::test]
-async fn legacy_images_without_an_owner_run_wait_without_blocking_other_candidates(
-	#[future] endpoint: EndpointFixture,
-	mut index_spec: Value,
-) {
-	use reinhardt::query::{
-		Alias, Expr, ExprTrait as _, PostgresQueryBuilder, Query, QueryStatementBuilder as _,
-	};
-	let app = endpoint.await;
-	let member = crate::endpoint::tenant_subject(&app, "member").await;
-	let thread = thread(&member, "Legacy image ordering").await;
-	let thread_id: Uuid = serde_json::from_value(thread["id"].clone()).unwrap();
-	index_spec["max_images"] = json!(1);
-	let area = Uuid::new_v4();
-	let unknown = Uuid::new_v4();
-	let known = Uuid::new_v4();
-	let image_bytes = b"\x89PNG\r\n\x1a\nlegacy";
-	let image_digest = aidash_server::capabilities::objects::digest(image_bytes);
-	let manifest = json!([
-		{"file_id":unknown,"path":"unknown","digest":image_digest,"size":image_bytes.len(),"media_type":"application/octet-stream","scope":"working","provenance":{}},
-		{"file_id":known,"path":"image.png","digest":"11".repeat(32),"size":4,"media_type":"image/png","scope":"working","provenance":{}}
-	]);
-	let sql = Query::insert()
-		.into_table(Alias::new("core_areas"))
-		.columns(
-			[
-				"id",
-				"tenant",
-				"home_node",
-				"agent_id",
-				"owner",
-				"thread_id",
-			]
-			.map(Alias::new),
-		)
-		.values_panic::<_, reinhardt::query::Value>([
-			area.into(),
-			"endpoint".into(),
-			app.runtime.store.deployment.to_string().into(),
-			"fixture".into(),
-			"member".into(),
-			thread_id.into(),
-		])
-		.to_string(PostgresQueryBuilder);
-	sqlx::query(&sql)
-		.execute(app.runtime.store.pool.fixture_driver())
-		.await
-		.unwrap();
-	// The Area's current manifest is its revision 1 row; the unknown image is a
-	// content-addressed blob in the local store.
-	let sql = Query::insert()
-		.into_table(Alias::new("core_manifest_revisions"))
-		.columns(["tenant", "area_id", "revision", "manifest"].map(Alias::new))
-		.values_panic::<_, reinhardt::query::Value>([
-			"endpoint".into(),
-			area.into(),
-			1_i64.into(),
-			manifest.into(),
-		])
-		.to_string(PostgresQueryBuilder);
-	sqlx::query(&sql)
-		.execute(app.runtime.store.pool.fixture_driver())
-		.await
-		.unwrap();
-	let blob = app
-		.runtime
-		.store
-		.capabilities
-		.0
-		.storage
-		.join("tenants")
-		.join(aidash_server::capabilities::objects::digest(b"endpoint"))
-		.join("sha256")
-		.join(&image_digest[..2])
-		.join(&image_digest[2..4])
-		.join(&image_digest);
-	tokio::fs::create_dir_all(blob.parent().unwrap())
-		.await
-		.unwrap();
-	tokio::fs::write(&blob, image_bytes).await.unwrap();
-	// Every manifest entry names a Tenant blob, so a later revision can retain it.
-	let sql = Query::insert()
-		.into_table(Alias::new("core_blobs"))
-		.columns(["tenant", "digest", "size"].map(Alias::new))
-		.values_panic::<_, reinhardt::query::Value>([
-			"endpoint".into(),
-			image_digest.clone().into(),
-			(image_bytes.len() as i64).into(),
-		])
-		.values_panic::<_, reinhardt::query::Value>([
-			"endpoint".into(),
-			"11".repeat(32).into(),
-			4_i64.into(),
-		])
-		.to_string(PostgresQueryBuilder);
-	sqlx::query(&sql)
-		.execute(app.runtime.store.pool.fixture_driver())
-		.await
-		.unwrap();
-	let sql = Query::insert()
-		.into_table(Alias::new("core_objects"))
-		.columns(["id", "tenant", "area_id", "kind", "digest", "size"].map(Alias::new))
-		.values_panic::<_, reinhardt::query::Value>([
-			unknown.into(),
-			"endpoint".into(),
-			area.into(),
-			"working".into(),
-			image_digest.into(),
-			(image_bytes.len() as i64).into(),
-		])
-		.values_panic::<_, reinhardt::query::Value>([
-			known.into(),
-			"endpoint".into(),
-			area.into(),
-			"working".into(),
-			"11".repeat(32).into(),
-			4_i64.into(),
-		])
-		.to_string(PostgresQueryBuilder);
-	sqlx::query(&sql)
-		.execute(app.runtime.store.pool.fixture_driver())
-		.await
-		.unwrap();
-	assert_json(
-		member
-			.post(
-				&format!("/api/threads/{thread_id}/semantic/index"),
-				&json!({"expected_revision":0,"spec":index_spec}),
-				"json",
-			)
-			.await
-			.unwrap(),
-		200,
-	);
-	worker::sweep(&app.runtime.store).await.unwrap();
-	let sql = Query::select()
-		.columns(["slots", "waiting_authority"].map(Alias::new))
-		.from(Alias::new("semantic_image_ledgers"))
-		.and_where(Expr::col("thread_id").eq(Expr::value(thread_id)))
-		.to_string(PostgresQueryBuilder);
-	let row = sqlx::query_as::<_, (Value, bool)>(&sql)
-		.fetch_one(app.runtime.store.pool.fixture_driver())
-		.await
-		.unwrap();
-	assert!(row.1);
-	assert_eq!(
-		row.0["legacy_candidates"][0]["file_id"],
-		unknown.to_string()
-	);
-	assert_eq!(row.0["entries"][0]["file_id"], known.to_string());
-	assert_eq!(row.0["entries"][0]["assigned"], true);
-	let sql = Query::select()
-		.columns(["state", "last_error"].map(Alias::new))
-		.from(Alias::new("semantic_entries"))
-		.and_where(Expr::col("thread_id").eq(Expr::value(thread_id)))
-		.to_string(PostgresQueryBuilder);
-	let row = sqlx::query_as::<_, (String, Option<String>)>(&sql)
-		.fetch_one(app.runtime.store.pool.fixture_driver())
-		.await
-		.unwrap();
-	assert_eq!(row, ("PENDING".into(), Some("awaiting_owner_run".into())));
-
-	// A later owner Run carries an actual retained authorization grant. Force
-	// the bounded retry due so the worker can restore it deterministically.
-	let task = assert_json(
-		member
-			.post(
-				&format!("/api/threads/{thread_id}/tasks"),
-				&json!({"title":"Owner run","description":"Resume legacy indexing"}),
-				"json",
-			)
-			.await
-			.unwrap(),
-		200,
-	);
-	let task_id: Uuid = serde_json::from_value(task["id"].clone()).unwrap();
-	let credential: Uuid = sqlx::query_scalar(
-		&Query::select()
-			.column("id")
-			.from(Alias::new("authorization_credentials"))
-			.and_where(Expr::col("tenant").eq("endpoint"))
-			.and_where(Expr::col("subject").eq("member"))
-			.order_by("created_at", reinhardt::query::Order::Desc)
-			.limit(1)
-			.to_string(PostgresQueryBuilder),
-	)
-	.fetch_one(app.runtime.store.pool.fixture_driver())
-	.await
-	.unwrap();
-	let run = Uuid::new_v4();
-	let node = aidash_domain::nodes::NodeName::derived("endpoint");
-	let home = app.runtime.store.deployment.node(node.clone());
-	let sql = Query::insert()
-		.into_table(Alias::new("task_executions"))
-		.columns(
-			[
-				"id",
-				"task_id",
-				"thread_id",
-				"home_node",
-				"node",
-				"agent_id",
-				"agent_version",
-				"tenant",
-			]
-			.map(Alias::new),
-		)
-		.values_panic::<_, reinhardt::query::Value>([
-			run.into(),
-			task_id.into(),
-			thread_id.into(),
-			home.to_string().into(),
-			node.to_string().into(),
-			"fixture".into(),
-			"1.0.0".into(),
-			"endpoint".into(),
-		])
-		.to_string(PostgresQueryBuilder);
-	sqlx::query(&sql)
-		.execute(app.runtime.store.pool.fixture_driver())
-		.await
-		.unwrap();
-	let sql = Query::insert()
-		.into_table(Alias::new("core_runs"))
-		.columns(["run_id", "tenant", "area_id", "sequence"].map(Alias::new))
-		.values_panic::<_, reinhardt::query::Value>([
-			run.into(),
-			"endpoint".into(),
-			area.into(),
-			1_i64.into(),
-		])
-		.to_string(PostgresQueryBuilder);
-	sqlx::query(&sql)
-		.execute(app.runtime.store.pool.fixture_driver())
-		.await
-		.unwrap();
-	let sql = Query::insert()
-		.into_table(Alias::new("authorization_execution"))
-		.columns(
-			[
-				"run_id",
-				"task_id",
-				"thread_id",
-				"tenant",
-				"credential_id",
-				"root_subject",
-				"subject_chain",
-			]
-			.map(Alias::new),
-		)
-		.from_subquery(
-			Query::select()
-				.expr(Expr::value(run))
-				.expr(Expr::value(task_id))
-				.expr(Expr::value(thread_id))
-				.expr(Expr::value("endpoint"))
-				.expr(Expr::value(credential))
-				.expr(Expr::value("member"))
-				.expr(Expr::cust("ARRAY['member','member']::text[]"))
-				.to_owned(),
-		)
-		.to_string(PostgresQueryBuilder);
-	sqlx::query(&sql)
-		.execute(app.runtime.store.pool.fixture_driver())
-		.await
-		.unwrap();
-	let sql = Query::update()
-		.table(Alias::new("semantic_image_ledgers"))
-		.value_expr("next_authority_check", Expr::cust("CLOCK_TIMESTAMP()"))
-		.and_where(Expr::col("thread_id").eq(Expr::value(thread_id)))
-		.to_string(PostgresQueryBuilder);
-	sqlx::query(&sql)
-		.execute(app.runtime.store.pool.fixture_driver())
-		.await
-		.unwrap();
-	worker::sweep(&app.runtime.store).await.unwrap();
-	// Publication maintenance runs after the current indexing batch.
-	worker::sweep(&app.runtime.store).await.unwrap();
-	let sql = Query::select()
-		.columns(["source", "state", "last_error"].map(Alias::new))
-		.from(Alias::new("semantic_entries"))
-		.and_where(Expr::col("thread_id").eq(Expr::value(thread_id)))
-		.to_string(PostgresQueryBuilder);
-	let rows = sqlx::query_as::<_, (Value, String, Option<String>)>(&sql)
-		.fetch_all(app.runtime.store.pool.fixture_driver())
-		.await
-		.unwrap();
-	assert_eq!(rows.len(), 2);
-	assert!(
-		rows.iter().any(
-			|(source, state, reason)| source["file_id"] == unknown.to_string()
-				&& state == "UNSUPPORTED"
-				&& reason.as_deref() == Some("modality")
-		),
-		"{rows:?}"
-	);
-	assert!(
-		rows.iter().any(
-			|(source, state, reason)| source["file_id"] == known.to_string()
-				&& state == "UNSUPPORTED"
-				&& reason.as_deref() == Some("limit")
-		),
-		"{rows:?}"
-	);
-	// The Area's current manifest is the revision row its `revision` points at.
-	let manifest: Value = sqlx::query_scalar(
-		"SELECT m.manifest FROM core_manifest_revisions m JOIN core_areas a \
-		 ON a.tenant = m.tenant AND a.id = m.area_id AND a.revision = m.revision \
-		 WHERE a.id = $1",
-	)
-	.bind(area)
-	.fetch_one(app.runtime.store.pool.fixture_driver())
-	.await
-	.unwrap();
-	assert_eq!(manifest[0]["media_type"], "image/png");
+	json!({"vector":{"provider":"postgres","endpoint":"local","credential_env":null},"enabled":true,"auto_context":false,"max_sources":10,"max_results":5,"max_result_tokens":128,"max_input_bytes":256})
 }
 
 #[rstest]
@@ -425,34 +107,13 @@ async fn index_contract_validation_precedes_persistence_and_accepts_boundary_val
 		("/enabled", json!("true"), 422),
 		("/embedding", json!({}), 422),
 		("/vector", json!({}), 422),
-		("/embedding/provider", json!("unsupported"), 400),
 		("/vector/provider", json!("pgvector"), 400),
-		(
-			"/embedding/endpoint",
-			json!("http://user:password@localhost/v1"),
-			400,
-		),
-		(
-			"/embedding/endpoint",
-			json!("http://localhost/v1?token=x"),
-			400,
-		),
 		("/vector/endpoint", json!("file:///tmp/vectors"), 400),
 		(
 			"/vector/endpoint",
 			json!("http://999.999.999.999/vectors"),
 			400,
 		),
-		// ADR 0006: embeddings cannot name an environment key at all, so the
-		// field is rejected while decoding, before validation.
-		(
-			"/embedding/credential_env",
-			json!("AIDASH_SECRET_EMBEDDING"),
-			422,
-		),
-		("/embedding/model", json!(" \t\u{2003}"), 400),
-		("/embedding/model", json!("m".repeat(257)), 400),
-		("/embedding/model_version", json!("v".repeat(129)), 400),
 	] {
 		let mut wrong = index_spec.clone();
 		let (parent, key) = field.rsplit_once('/').unwrap();
@@ -472,7 +133,7 @@ async fn index_contract_validation_precedes_persistence_and_accepts_boundary_val
 			invalid.push((wrong, 400));
 		}
 	}
-	for section in ["embedding", "vector"] {
+	for section in ["vector"] {
 		for field in index_spec[section]
 			.as_object()
 			.unwrap()
@@ -491,11 +152,6 @@ async fn index_contract_validation_precedes_persistence_and_accepts_boundary_val
 			wrong[section][field] = value;
 			invalid.push((wrong, 422));
 		}
-	}
-	for dimensions in [0, 8193] {
-		let mut wrong = index_spec.clone();
-		wrong["embedding"]["dimensions"] = json!(dimensions);
-		invalid.push((wrong, 400));
 	}
 	for (spec, status) in invalid {
 		let response = member
@@ -533,23 +189,6 @@ async fn index_contract_validation_precedes_persistence_and_accepts_boundary_val
 			assert_eq!(saved["revision"], revision);
 			assert_eq!(saved["spec"][field], value);
 		}
-	}
-	for dimensions in [1, 8192] {
-		let mut boundary = index_spec.clone();
-		boundary["embedding"]["dimensions"] = json!(dimensions);
-		let saved = assert_json(
-			member
-				.post(
-					&path,
-					&json!({"expected_revision":revision,"spec":boundary}),
-					"json",
-				)
-				.await
-				.unwrap(),
-			200,
-		);
-		revision += 1;
-		assert_eq!(saved["revision"], revision);
 	}
 }
 
@@ -665,7 +304,7 @@ async fn index_generation_replay_and_cleanup_retries_keep_durable_tombstones(
 	);
 	let original = assert_json(member.post(&entries_path,
 		&json!({"key":"memory","expected_revision":0,"source":{"kind":"memory","text":"first"},"metadata":{}}), "json").await.unwrap(), 200);
-	index_spec["embedding"]["model_version"] = json!("2");
+	index_spec["max_results"] = json!(2);
 	let second = assert_json(
 		member
 			.post(
@@ -702,23 +341,36 @@ async fn index_generation_replay_and_cleanup_retries_keep_durable_tombstones(
 	let store = &app.runtime.store;
 	let first_collection = first["collection"].as_str().unwrap();
 	let second_collection = second["collection"].as_str().unwrap();
-	aidash_server::semantic::backend::ensure_collection(store, &vector, first_collection, 8)
-		.await
-		.unwrap();
-	aidash_server::semantic::backend::ensure_collection(store, &vector, second_collection, 8)
-		.await
-		.unwrap();
+	let dimensions = first["spec"]["embedding"]["dimensions"].as_u64().unwrap() as usize;
+	aidash_server::semantic::backend::ensure_collection(
+		store,
+		&vector,
+		first_collection,
+		dimensions,
+	)
+	.await
+	.unwrap();
+	aidash_server::semantic::backend::ensure_collection(
+		store,
+		&vector,
+		second_collection,
+		dimensions,
+	)
+	.await
+	.unwrap();
 	let thread_tenant: String = sqlx::query_scalar("SELECT tenant FROM threads WHERE id = $1")
 		.bind(thread["id"].as_str().unwrap().parse::<Uuid>().unwrap())
 		.fetch_one(store.pool.fixture_driver())
 		.await
 		.unwrap();
+	let mut point = vec![0.; dimensions];
+	point[0] = 1.;
 	aidash_server::semantic::backend::upsert(
 		store,
 		&vector,
 		second_collection,
 		point_id,
-		&[1., 0., 0., 0., 0., 0., 0., 0.],
+		&point,
 		json!({"thread_id":thread["id"],"tenant":thread_tenant}),
 	)
 	.await
@@ -1087,7 +739,7 @@ async fn members_configure_their_index_under_semantic_index_manage(
 #[case::loopback("http://127.0.0.1:9/v1")]
 #[case::metadata("http://169.254.169.254/v1")]
 #[tokio::test]
-async fn a_keyless_endpoint_at_an_unpermitted_private_address_is_refused_when_configured(
+async fn index_configuration_refuses_client_embedding_overrides(
 	#[future] endpoint: EndpointFixture,
 	mut index_spec: Value,
 	#[case] address: &str,
@@ -1095,18 +747,21 @@ async fn a_keyless_endpoint_at_an_unpermitted_private_address_is_refused_when_co
 	let app = endpoint.await;
 	let member = crate::endpoint::tenant_subject(&app, "member").await;
 	let thread = thread(&member, "Private embeddings").await;
-	index_spec["embedding"]["endpoint"] = json!(address);
-	let body = json!({"expected_revision":0,"spec":index_spec});
+	let options = json!({"expected_revision":0,"spec":index_spec});
+	index_spec["embedding"] = json!({"provider":"openai","endpoint":address,"model":"injected","model_version":"1","dimensions":8});
+	let override_request = json!({"expected_revision":0,"spec":index_spec});
 	let path = format!(
 		"/api/threads/{}/semantic/index",
 		thread["id"].as_str().unwrap()
 	);
-	assert_json(member.post(&path, &body, "json").await.unwrap(), 400);
-	// A Deployment Administrator holds no Tenant settings authority (#484), so
-	// the refusal precedes the address check.
+	assert_json_rejection(
+		member.post(&path, &override_request, "json").await.unwrap(),
+		422,
+	);
+	// A Deployment Administrator holds no Tenant settings authority (#484).
 	assert_json(
 		app.deployment_administrator
-			.post(&path, &body, "json")
+			.post(&path, &options, "json")
 			.await
 			.unwrap(),
 		403,

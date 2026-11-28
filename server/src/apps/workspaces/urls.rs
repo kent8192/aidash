@@ -3,9 +3,23 @@ use super::views::{channels, duties, duty_events, management, scratch};
 use crate::apps::identity::services::boundary::AccessBoundary;
 use reinhardt::UnifiedRouter;
 
+use crate::apps::drives::views as drives;
+
 pub fn url_patterns() -> UnifiedRouter {
 	UnifiedRouter::new().server(|server| {
 		server
+			.endpoint(drives::browse)
+			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
+			.endpoint(drives::download)
+			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
+			.endpoint(drives::mutation)
+			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
+			.endpoint(drives::upload_start)
+			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
+			.endpoint(drives::upload_part)
+			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
+			.endpoint(drives::upload_commit)
+			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
 			.endpoint(duties::thread_list)
 			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
 			.endpoint(duties::create)
@@ -60,6 +74,8 @@ pub fn url_patterns() -> UnifiedRouter {
 			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
 			.endpoint(scratch::clear)
 			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
+			.endpoint(scratch::clear_thread)
+			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
 			.endpoint(scratch::remove)
 			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
 			.endpoint(management::task_list)
@@ -71,6 +87,10 @@ pub fn url_patterns() -> UnifiedRouter {
 			.endpoint(management::thread_get)
 			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
 			.endpoint(management::thread_update)
+			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
+			.endpoint(management::task_goal)
+			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
+			.endpoint(management::task_goal_change)
 			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
 			.endpoint(management::task_create)
 			.with_route_middleware(AccessBoundary::authenticated().with_visibility())

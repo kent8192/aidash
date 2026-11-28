@@ -14,7 +14,7 @@ use aidash_domain::{
 	keyless::Destination,
 	model::ModelConfig,
 	nodes::DeploymentId,
-	registry::{AgentConfig, ClusterConfig, Entry},
+	registry::{AgentConfig, Entry},
 	tool::ToolConfig,
 };
 use serde_json::Value;
@@ -250,6 +250,11 @@ impl DefinitionValidation {
 	) -> std::collections::BTreeMap<String, aidash_domain::provider::ToolSpec> {
 		self.core_tools.legacy_specifications()
 	}
+	pub fn pre_scratch_node_specifications(
+		&self,
+	) -> std::collections::BTreeMap<String, aidash_domain::provider::ToolSpec> {
+		self.core_tools.pre_scratch_specifications()
+	}
 	pub fn node_specifications(
 		&self,
 	) -> std::collections::BTreeMap<String, aidash_domain::provider::ToolSpec> {
@@ -421,19 +426,6 @@ impl DefinitionValidation {
 					serde_json::from_value(e.config.clone())?;
 				input.validate()?;
 				self.validate_plugin_servers(&input)?;
-			}
-			"cluster" => {
-				let cluster: ClusterConfig =
-					serde_json::from_value(e.config.clone()).map_err(|error| {
-						Error::Invalid(format!("cluster requires a coordinator reference: {error}"))
-					})?;
-				if cluster.coordinator.id.trim().is_empty()
-					|| semver::Version::parse(&cluster.coordinator.version).is_err()
-				{
-					return Err(Error::Invalid(
-						"cluster coordinator requires an id and semantic version".into(),
-					));
-				}
 			}
 			"tool" if aidash_domain::tool::legacy_config(&e.config)?.is_some() => {
 				return Err(Error::Invalid(

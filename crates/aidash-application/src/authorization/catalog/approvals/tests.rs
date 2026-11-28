@@ -38,7 +38,7 @@ fn agent(model: &str, tools: &[&str]) -> Entry {
 	entry(
 		json!({"id":"agent","version":"1.0.0","kind":"agent","name":{"en":"Agent"},
 		"description":{"en":"Fixture"},
-		"config":{"schema_version":1,"model":{"id":model,"version":"1.0.0"},"instructions":"Help","bindings":bindings,"remove_default":[]}}),
+		"config":{"model":{"id":model,"version":"1.0.0"},"instructions":"Help","bindings":bindings,"remove_default":[]}}),
 	)
 }
 fn model() -> Entry {
@@ -326,9 +326,7 @@ async fn a_dependency_withdrawn_in_the_same_request_is_unapproved() {
 #[rstest]
 #[tokio::test]
 async fn context_recovery_needs_no_separate_model_approval() {
-	let mut agent = agent("model", &[]);
-	agent.config["context_policy"] = json!({"version":"context-recovery/1", "summary":{}});
-	let mut fixture = Fixture::new(vec![agent, model()]);
+	let mut fixture = Fixture::new(vec![agent("model", &[]), model()]);
 	fixture.approved.insert(("model".into(), "1.0.0".into()));
 	assert!(
 		approve(&mut fixture, &[approval("agent", true)])

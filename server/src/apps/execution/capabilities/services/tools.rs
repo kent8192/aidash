@@ -48,20 +48,15 @@ impl Tool for CoreTool {
 		// A Run executing here for another Home reaches the Home's person and the Home's Run
 		// through the Home, not through this Node's own people and Areas (ADR 0139). Neither
 		// call holds a transaction across its Federation requests.
-		if !ctx.run.is_local(ctx.store.deployment.as_str()) {
-			match self.name {
-				"file_share" => {
-					return authority
-						.share_to_home(&ctx.store, &ctx.run, &ctx.home, input, key)
-						.await;
-				}
-				"outbound_get" => {
-					return authority
-						.outbound_to_home(&ctx.store, &ctx.run, &ctx.home, input, key)
-						.await;
-				}
-				_ => {}
-			}
+		if self.name == "outbound_get" && !ctx.run.is_local(ctx.store.deployment.as_str()) {
+			return authority
+				.outbound_to_home(&ctx.store, &ctx.run, &ctx.home, input, key)
+				.await;
+		}
+		if crate::apps::drives::tools::handles(self.name, &input) {
+			return authority
+				.drive_tool(&ctx.store, &ctx.run, self.name, input, key)
+				.await;
 		}
 		let shared_read = aidash_domain::tool::concurrency::batchable(&self.contract.behavior)
 			&& aidash_domain::tool::concurrency::shares_every_resource(self.name, &input);
@@ -109,6 +104,71 @@ pub(crate) fn legacy_specifications() -> BTreeMap<String, ToolSpec> {
 		),
 	])
 }
+/// The immutable file tool schemas published with Execution Pods.
+pub(crate) fn pre_scratch_specifications() -> BTreeMap<String, ToolSpec> {
+	use super::contracts::{Representation, SearchMode};
+
+	/// `file_read` as Agents call it: a Working Area or Reference file by
+	/// `file_id`, or a Scratch Space file by `path` (#745).
+	#[derive(schemars::JsonSchema)]
+	#[serde(deny_unknown_fields)]
+	#[allow(dead_code)]
+	struct ToolFileRead {
+		/// A Working Area or Reference file. Leave it out to read `path`.
+		file_id: Option<uuid::Uuid>,
+		/// A file in the Scratch Space, relative to its root. Leave out `file_id`.
+		path: Option<String>,
+		thread_id: Option<uuid::Uuid>,
+		area_id: Option<uuid::Uuid>,
+		representation: Option<Representation>,
+		offset: Option<usize>,
+		max_bytes: Option<usize>,
+		expected_digest: Option<String>,
+	}
+
+	/// Where `file_search` looks; `scratch` is the Run's Scratch Space (#745).
+	#[derive(schemars::JsonSchema)]
+	#[serde(rename_all = "snake_case")]
+	#[allow(dead_code)]
+	enum ToolFileScope {
+		Working,
+		References,
+		Received,
+		Scratch,
+	}
+
+	/// `file_search` as Agents call it (#745).
+	#[derive(schemars::JsonSchema)]
+	#[serde(deny_unknown_fields)]
+	#[allow(dead_code)]
+	struct ToolFileSearch {
+		/// May be empty in `path` mode, which then lists every path in the scope.
+		query: String,
+		mode: SearchMode,
+		scope: ToolFileScope,
+		path: Option<String>,
+		/// Scratch Space only: a glob such as `src/*.rs` the whole path must match.
+		glob: Option<String>,
+		cursor: Option<String>,
+		limit: Option<usize>,
+	}
+
+	[
+		(
+			"file_read",
+			"Read authorized text or metadata. Give file_id for a Working Area or Reference file, or path for a file in the Scratch Space your commands run in (text only, continue with next_offset). Set thread_id and area_id together to read a Subnode you created. Use model_input with an exact digest to include an image or audio file in the next model inference only.",
+			schema::<ToolFileRead>(),
+		),
+		(
+			"file_search",
+			"Search authorized files with located provenance and revision-bound continuation. In path mode an empty query lists every path in the scope. scope=scratch searches the Scratch Space your commands run in (literal, regex or path mode, optional glob); its results have no cursor.",
+			schema::<ToolFileSearch>(),
+		),
+	]
+	.into_iter()
+	.map(|(name, description, parameters)| (name.to_owned(), ToolSpec { name: name.into(), description: description.into(), parameters }))
+	.collect()
+}
 /// Provider implementation inventory; capability availability comes from Bindings.
 pub(crate) fn implementations() -> BTreeMap<String, Arc<dyn Tool>> {
 	let mut tools = BTreeMap::<String, Arc<dyn Tool>>::new();
@@ -116,39 +176,38 @@ pub(crate) fn implementations() -> BTreeMap<String, Arc<dyn Tool>> {
 		approvals::Outbound,
 		contracts::*,
 		python::Python,
-		sharing::Share,
 		skills::{SkillList, SkillLoad, SkillRead},
 	};
 	use crate::apps::execution::capabilities::serializers::contracts as pod;
 	for (name, description, mut parameters) in [
 		(
 			"file_search",
-			"Search authorized files with located provenance and revision-bound continuation. In path mode an empty query lists every path in the scope. scope=scratch searches the Scratch Space your commands run in (literal, regex or path mode, optional glob); its results have no cursor.",
+			"Search authorized files with located provenance and revision-bound continuation. In path mode an empty query lists every path in the scope. scope=drive searches authorized Node Drives. scope=scratch searches the Scratch Space your commands run in (literal, regex or path mode, optional glob); its results have no cursor.",
 			schema::<pod::ToolFileSearch>(),
 		),
 		(
 			"file_read",
-			"Read authorized text or metadata. Give file_id for a Working Area or Reference file, or path for a file in the Scratch Space your commands run in (text only, continue with next_offset). Set thread_id and area_id together to read a Subnode you created. Use model_input with an exact digest to include an image or audio file in the next model inference only.",
+			"Read authorized text or metadata. Give file_id for a Reference file, or path for a file relative to the Scratch Space root. Use drive={node,path,version?} to read a Drive File. Continue text reads with next_offset. Use model_input to select a Scratch Space image, or use it with the exact digest of a Reference or Drive file.",
 			schema::<pod::ToolFileRead>(),
 		),
 		(
-			"file_save",
-			"Save files from the Scratch Space into the Working Area so they outlast it and can be shared, attached or read by others. paths are files or directories (\".\" is everything); ignore_files defaults to [\".gitignore\"], exclude beats it and include beats both. Do not save what can be regenerated, such as build output or installed dependencies (node_modules, .venv, target). sync also removes saved files under paths that are gone. A save over a limit is refused whole and names the first file over it.",
-			schema::<pod::FileSave>(),
+			"drive_publish",
+			"Publish selected Scratch Space files to your Node Drive. Supply base_version for each destination path, or new for a new file, and an explicit index selector or none. Use drive_publish_status for a background publication.",
+			schema::<aidash_domain::drive::Publish>(),
 		),
 		(
-			"file_remove",
-			"Remove saved files, or every saved file under a directory, from the Working Area. The Scratch Space is not changed.",
-			schema::<pod::FileRemove>(),
+			"drive_publish_status",
+			"Read the progress or result of a Drive publication by this Task.",
+			schema::<crate::apps::drives::tools::Status>(),
 		),
 		(
-			"file_copy",
-			"Copy saved Working Area files (deliverables, attachments, references) into the Scratch Space at their paths, or under destination. Files already there are replaced.",
-			schema::<pod::FileCopy>(),
+			"drive_search",
+			"Search authorized Drive passages and paths by meaning. The optional node limits the search to one Node Drive.",
+			schema::<crate::apps::drives::tools::Search>(),
 		),
 		(
 			"process_list",
-			"List this Run's Background processes in the Execution Pod: what a command left running when it ended (its result names it in left_running) and Live previews.",
+			"List this Run's timed Background processes, processes that commands left running (the results name them in left_running), and Live previews.",
 			schema::<pod::ProcessList>(),
 		),
 		(
@@ -163,7 +222,7 @@ pub(crate) fn implementations() -> BTreeMap<String, Arc<dyn Tool>> {
 		),
 		(
 			"shell",
-			"Start a Shell operation. Set background to true and provide timeout_seconds to keep it running without waiting. Set notify_on_exit to receive a Task input when it ends. wait_seconds defaults to 300 for foreground commands and zero for Background processes, and is capped at 3600. Cancellation cannot undo earlier effects. expected_revision is the revision from the previous result; a new area starts at 1.",
+			"Start a Shell operation. Set background to true and provide timeout_seconds to keep it running without waiting. Set notify_on_exit to receive a Task input when it ends. wait_seconds defaults to 300 for foreground commands and zero for Background processes, and is capped at 3600. Commands start in the Thread or Duty directory in the Scratch Space. Cancellation cannot undo earlier effects.",
 			schema::<Shell>(),
 		),
 		(
@@ -178,7 +237,7 @@ pub(crate) fn implementations() -> BTreeMap<String, Arc<dyn Tool>> {
 		),
 		(
 			"code_interpreter",
-			"Execute in the live isolated Python kernel and wait for completion without another model call. wait_seconds defaults to 300, is capped at 3600, and zero returns immediately. Pass the previous result's session_id as expected_session_id when relying on variables or imports. On SESSION_RESET, rebuild state using the new ID if supplied, or omit expected_session_id to start fresh. Saved files survive heap loss. expected_revision is the revision from the previous result; a new area starts at 1.",
+			"Execute in the live isolated Python kernel and wait for completion without another model call. wait_seconds defaults to 300, is capped at 3600, and zero returns immediately. Pass the previous result's session_id as expected_session_id when relying on variables or imports. On SESSION_RESET, rebuild state using the new ID if supplied, or omit expected_session_id to start fresh. Cells start in the Thread or Duty directory in the Scratch Space. Saved files survive heap loss.",
 			schema::<Python>(),
 		),
 		(
@@ -198,22 +257,17 @@ pub(crate) fn implementations() -> BTreeMap<String, Arc<dyn Tool>> {
 		),
 		(
 			"apply_patch",
-			"Apply a Codex add/update/delete patch with the current revision and exact digest-or-absence preconditions for every path. expected_revision is the revision from the previous result; a new area starts at 1.",
+			"Apply a Codex add/update/delete patch to paths relative to the Scratch Space root.",
 			schema::<Patch>(),
 		),
 		(
-			"file_share",
-			"Share selected immutable files with an exact authorized Agent/thread; delivery cannot recall information already read. expected_revision is the revision from the previous result; a new area starts at 1.",
-			schema::<Share>(),
-		),
-		(
 			"live_preview_start",
-			"Start this Run's Live preview: a long-lived Web server from the current Working Area revision. 'port' must be the Deployment's preview Pod port (preview.pod_port); any other port is refused. Waits up to 120 s for the port and returns its status and a bounded startup log, never a viewing address. Starting replaces a running preview.",
+			"Start this Run's Live preview: a long-lived Web server in the Task’s Scratch folder. 'port' must be the Deployment's preview Pod port (preview.pod_port); any other port is refused. Waits up to 120 s for the port and returns its status and a bounded startup log, never a viewing address. Starting replaces a running preview.",
 			schema::<LivePreviewStart>(),
 		),
 		(
 			"live_preview_stop",
-			"Stop this Run's Live preview and release the File versions it kept.",
+			"Stop this Run's Live preview.",
 			schema::<LivePreviewStop>(),
 		),
 		(

@@ -2,7 +2,8 @@
 use super::RemoteCommandScope;
 use crate::Result;
 use aidash_domain::{
-	ArtifactInput, Message, NewTask, Task, TaskStatus,
+	Message, NewTask, Task, TaskStatus,
+	deliverable::Completion,
 	policy::Resource,
 	registry::{EntityRef, Entry},
 };
@@ -35,11 +36,18 @@ pub enum Effect<'a> {
 		through: Option<i64>,
 		reason: Option<&'static str>,
 	},
-	Artifact {
-		artifact: &'a ArtifactInput,
-		complete_through: Option<i64>,
+	ChildGoal {
+		child: Uuid,
+		goal: &'a str,
+	},
+	GoalVerdict {
+		verdict: &'a aidash_domain::goal::VerdictRecord,
+	},
+	Complete {
+		completion: &'a Completion,
+		through: i64,
 		/// Unassigned children abandoned in the transaction that completes
-		/// the Task (#772). Empty unless `complete_through` is set.
+		/// the Task (#772).
 		abandon: &'a [Uuid],
 	},
 	/// Abandon Unassigned children now, without completing the Task.
@@ -118,7 +126,7 @@ pub trait RemoteCommandEffects: RemoteCommandScope {
 	fn resource(&self, kind: &str, id: &str, attributes: Value) -> Resource;
 	async fn require(&mut self, resource: &Resource, action: &str) -> Result<()>;
 	async fn thread(&mut self, id: Uuid) -> Result<Resource>;
-	async fn artifact_creation_resource(&mut self, task: Uuid, owner: &str) -> Result<Resource>;
+
 	async fn snapshot(&mut self, thread: Uuid) -> Result<Value>;
 	/// `exclude_run` leaves that Run's own events out of the view (#942).
 	async fn observation(

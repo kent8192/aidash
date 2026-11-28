@@ -280,7 +280,7 @@ pub(crate) enum UnitChanges {
 	/// Built-in Memory changes its own Units (#852 decision 8): pass over the
 	/// change and keep checking every source behind the Unit, so any `Conflict`
 	/// left reports a withdrawn source (revoked or expired Research, a removed
-	/// Journal range, message, artifact, Run or publication).
+	/// Journal range, message, Run or publication).
 	Forgive,
 }
 
@@ -495,27 +495,6 @@ pub(crate) fn sources_in_reader<'a>(
 								!= digest
 						{
 							return Err(Error::Conflict("memory message source changed".into()));
-						}
-					}
-					Evidence::Artifact {
-						id,
-						revision,
-						digest,
-					} => {
-						let mut disclosure = super::disclosure::Disclosure { lease };
-						let artifact = disclosure.artifact(id, thread).await?.ok_or_else(|| {
-							Error::Conflict("memory artifact source removed".into())
-						})?;
-						if disclosure.scoped() && !disclosure.artifact_visible(&artifact).await? {
-							return Err(Error::Forbidden);
-						}
-						// Current Artifact bodies are immutable version 1; no invented update version is accepted.
-						if revision != 1
-							|| aidash_domain::semantic::indexing::content_digest(
-								&serde_json::to_string(&artifact.content)?,
-							) != digest
-						{
-							return Err(Error::Conflict("memory artifact source changed".into()));
 						}
 					}
 					Evidence::Run {

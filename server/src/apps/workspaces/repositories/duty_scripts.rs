@@ -393,12 +393,16 @@ pub(crate) async fn outcome(
 	tenant: &str,
 	task: Uuid,
 ) -> Result<(Option<String>, Option<String>)> {
-	let content: Option<Value> = native::query_scalar(
+	let content: Option<String> = native::query_scalar(
 		&Query::select()
 			.column(Alias::new("content"))
-			.from(Alias::new("artifacts"))
+			.from(Alias::new("messages"))
 			.and_where(Expr::col("tenant").eq(tenant.to_owned()))
-			.and_where(Expr::col("task_id").eq(Expr::value(task)))
+			.and_where(Expr::col("completion").is_not_null())
+			.and_where(reinhardt::query::SimpleExpr::CustomWithExpr(
+				"completion @> ?".into(),
+				vec![Expr::value(serde_json::json!({"task_id": task})).into()],
+			))
 			.order_by(Alias::new("created_at"), Order::Desc)
 			.limit(1)
 			.to_string(PostgresQueryBuilder),
@@ -416,10 +420,7 @@ pub(crate) async fn outcome(
 	)
 	.scalar_optional(&mut *tx)
 	.await?;
-	Ok((
-		content.and_then(|content| content.as_str().map(str::to_owned)),
-		error.flatten(),
-	))
+	Ok((content, error.flatten()))
 }
 
 /// The open model Tasks of a Duty, as its Router sees them: Tasks its ticks

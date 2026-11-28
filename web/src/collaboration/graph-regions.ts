@@ -10,7 +10,7 @@ export type GraphRegion = {
   threadName?: Record<string, string>;
 };
 
-const sharedKinds = new Set(["thread", "task", "conversation", "artifact"]);
+const sharedKinds = new Set(["thread", "task", "conversation"]);
 const configurationKinds = new Set(["tool", "model", "skill", "cluster"]);
 
 export function regionForNode(node: MeshNode): GraphRegion | undefined {
@@ -184,7 +184,7 @@ export function graphRegionPositions(
               kind === "execution"
                 ? ["agent", "run"]
                 : kind === "shared"
-                  ? ["thread", "task", "conversation", "artifact"]
+                  ? ["thread", "task", "conversation"]
                   : ["cluster", "tool", "model", "skill"];
             return (
               order.indexOf(a.kind) - order.indexOf(b.kind) ||

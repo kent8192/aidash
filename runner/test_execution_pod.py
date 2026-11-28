@@ -84,13 +84,15 @@ class SystemTreeTest(unittest.TestCase):
             root = Path(directory)
             (root / 'etc').mkdir()
             (root / 'scratch').mkdir()
+            (root / 'work').mkdir()
             (root / 'etc' / 'edited').write_text('old')
             (root / 'etc' / 'removed').write_text('gone')
             before = system_tree_index(root)
             (root / 'etc' / 'edited').write_text('new contents')
             (root / 'etc' / 'removed').unlink()
             (root / 'etc' / 'added').write_text('new')
-            (root / 'scratch' / 'work').write_text('ignored')
+            (root / 'scratch' / 'ignored').write_text('ignored')
+            (root / 'work' / 'ignored').write_text('ignored')
             after = system_tree_index(root)
             self.assertEqual(system_tree_diff(before, after), {
                 'added': ['etc/added'], 'modified': ['etc', 'etc/edited'],
@@ -3028,6 +3030,34 @@ class LongRunningBackgroundTest(unittest.TestCase):
             self.controller.stop_idle(now=now)
             return {item['operation_id']: item for item in self.controller.background_processes('space')['processes']}
 
+    def test_timed_command_preserves_the_node_space_slots_and_helper_protocol(self):
+        import uuid
+        from unittest.mock import Mock, patch
+        from execution_pod import CommandQueue
+        from helper_protocol import HELPER_PROTOCOL
+
+        annotations = self.pod['metadata']['annotations']
+        annotations['aidash.run/command-slots'] = '32'
+        annotations['aidash.run/helper-protocol'] = HELPER_PROTOCOL
+        operation = str(uuid.UUID(int=1))
+        cwd = 'threads/' + str(uuid.UUID(int=2))
+        request = {'operation_id': operation, 'scratch_space_id': 'space', 'run_id': 'run',
+                   'code': 'sleep 9000', 'cwd': cwd, 'timeout_seconds': 9000,
+                   'background': True, 'notify_on_exit': True}
+        with patch.object(self.controller, '_admitted_uid', return_value='original'), \
+             patch('execution_pod.CommandQueue', wraps=CommandQueue) as queue:
+            self.controller._execute_command = Mock()
+            self.controller.submit_command(request)
+            self.addCleanup(self.controller.queues['space'].close)
+            queue.assert_called_once_with(32)
+
+        record = self.controller._read_command(operation)
+        self.assertEqual(record['cwd'], cwd)
+        self.assertEqual(record['timeout_seconds'], 9000)
+        self.assertEqual(record['helper_protocol'], HELPER_PROTOCOL)
+        self.assertTrue(record['time_limited'])
+        self.assertTrue(record['notify_on_exit'])
+
     def test_different_deadlines_keep_pod_through_runner_restart(self):
         short = self.record(1, seconds=3600)
         long = self.record(2, seconds=9000)
@@ -3790,7 +3820,7 @@ from pod_base import chroot_command
 os.environ['AIDASH_PROCESS_LIMIT'] = '128'
 def execute(*args):
     print(*resource.getrlimit(resource.RLIMIT_NPROC))
-with patch('os.chroot'), patch('os.chdir'), patch('pod_base.validate_system_root'), patch('pod_base.image_environment', return_value={}), patch('pod_base.drop_user_capabilities'), patch('os.execvpe', execute):
+with patch('os.chroot'), patch('pod_base.enter_working_directory'), patch('pod_base.validate_system_root'), patch('pod_base.image_environment', return_value={}), patch('pod_base.drop_user_capabilities'), patch('os.execvpe', execute):
     chroot_command('/rootfs', '.', ['/bin/true'], False)
 """
         result = subprocess.run([sys.executable, '-c', code], cwd=os.path.dirname(__file__),

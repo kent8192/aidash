@@ -1,6 +1,6 @@
 use super::*;
 use crate::Error;
-use aidash_domain::{Artifact, Message, policy::Resource};
+use aidash_domain::{Message, policy::Resource};
 use async_trait::async_trait;
 use rstest::{fixture, rstest};
 use serde_json::Value;
@@ -27,27 +27,13 @@ fn entry() -> Entry {
 	}
 }
 #[fixture]
-fn artifact() -> Artifact {
-	Artifact {
-		id: Uuid::from_u128(6),
-		thread_id: Uuid::from_u128(2),
-		task_id: Uuid::from_u128(7),
-		kind: "data".into(),
-		name: "Saved".into(),
-		content: json!({"saved":[1,true]}),
-		created_by: "artifact-author".into(),
-		idempotency_key: "artifact-key".into(),
-		created_at: chrono::Utc::now(),
-		run_id: None,
-	}
-}
-#[fixture]
 fn message() -> Message {
 	Message {
 		id: Uuid::from_u128(8),
 		thread_id: Uuid::from_u128(2),
 		sender: "stored-sender".into(),
 		content: "original message bytes\n".into(),
+		completion: None,
 		idempotency_key: None,
 		created_at: chrono::Utc::now(),
 		run_id: None,
@@ -57,7 +43,6 @@ struct Scope {
 	scoped: bool,
 	deployment_administrator: bool,
 	managed: Option<(String, String)>,
-	artifact: Option<Artifact>,
 	message: Option<Message>,
 	visible: bool,
 	denied: BTreeSet<String>,
@@ -72,7 +57,6 @@ fn scope() -> Scope {
 		scoped: true,
 		deployment_administrator: true,
 		managed: None,
-		artifact: Some(artifact()),
 		message: Some(message()),
 		visible: true,
 		denied: BTreeSet::new(),
@@ -130,20 +114,10 @@ impl SemanticDisclosureScope for Scope {
 		self.resources.push((resource.clone(), action.into()));
 		Ok(!self.denied.contains(action))
 	}
-	async fn artifact(&mut self, id: Uuid, thread: Uuid) -> Result<Option<Artifact>> {
-		self.touch("artifact")?;
-		self.lookups.push((id, thread));
-		Ok(self.artifact.clone())
-	}
 	async fn message(&mut self, id: Uuid, thread: Uuid) -> Result<Option<Message>> {
 		self.touch("message")?;
 		self.lookups.push((id, thread));
 		Ok(self.message.clone())
-	}
-	async fn artifact_visible(&mut self, row: &Artifact) -> Result<bool> {
-		assert_eq!(row.id, Uuid::from_u128(6));
-		self.touch("artifact_visible")?;
-		Ok(self.visible)
 	}
 	async fn message_visible(&mut self, row: &Message) -> Result<bool> {
 		assert_eq!(row.id, Uuid::from_u128(8));
@@ -224,78 +198,36 @@ async fn deployment_administrator_disclosure_requires_visible_thread_before_any_
 	assert_eq!(scope.calls, vec!["deployment_administrator"]);
 }
 #[rstest]
-#[case::artifact(true)]
-#[case::message(false)]
 #[tokio::test]
-async fn scoped_source_bytes_require_the_stored_resource_to_be_visible(
-	mut scope: Scope,
-	#[case] artifact_kind: bool,
-) {
-	let row_source = if artifact_kind {
-		Source::Artifact {
-			id: Uuid::from_u128(6),
-		}
-	} else {
-		Source::Message {
-			id: Uuid::from_u128(8),
-		}
+async fn scoped_source_bytes_require_the_stored_resource_to_be_visible(mut scope: Scope) {
+	let row_source = Source::Message {
+		id: Uuid::from_u128(8),
 	};
 	let result = source(&mut scope, Uuid::from_u128(2), &row_source)
 		.await
 		.unwrap();
-	assert_eq!(
-		result,
-		Some(if artifact_kind {
-			"{\"saved\":[1,true]}".into()
-		} else {
-			"original message bytes\n".into()
-		})
-	);
+	assert_eq!(result, Some("original message bytes\n".into()));
 	assert_eq!(
 		scope.lookups,
-		vec![(
-			if artifact_kind {
-				Uuid::from_u128(6)
-			} else {
-				Uuid::from_u128(8)
-			},
-			Uuid::from_u128(2)
-		)]
+		vec![(Uuid::from_u128(8), Uuid::from_u128(2))]
 	);
-	assert_eq!(
-		scope.calls,
-		if artifact_kind {
-			vec!["artifact", "artifact_visible"]
-		} else {
-			vec!["message", "message_visible"]
-		}
-	);
+	assert_eq!(scope.calls, vec!["message", "message_visible"]);
 }
 #[rstest]
-#[case::missing_artifact(true, true)]
-#[case::missing_message(false, true)]
-#[case::denied_artifact(true, false)]
-#[case::denied_message(false, false)]
+#[case::missing_message(true)]
+#[case::denied_message(false)]
 #[tokio::test]
 async fn absent_or_denied_stored_source_cannot_disclose_content(
 	mut scope: Scope,
-	#[case] artifact_kind: bool,
 	#[case] missing: bool,
 ) {
 	if missing {
-		scope.artifact = None;
 		scope.message = None;
 	} else {
 		scope.visible = false;
 	}
-	let row_source = if artifact_kind {
-		Source::Artifact {
-			id: Uuid::from_u128(6),
-		}
-	} else {
-		Source::Message {
-			id: Uuid::from_u128(8),
-		}
+	let row_source = Source::Message {
+		id: Uuid::from_u128(8),
 	};
 	assert_eq!(
 		source(&mut scope, Uuid::from_u128(2), &row_source)
@@ -306,23 +238,12 @@ async fn absent_or_denied_stored_source_cannot_disclose_content(
 	assert_eq!(scope.calls.len(), if missing { 1 } else { 2 });
 }
 #[rstest]
-#[case::artifact(true)]
-#[case::message(false)]
 #[tokio::test]
-async fn deployment_administrator_source_checks_thread_and_retains_query_scope(
-	mut scope: Scope,
-	#[case] artifact_kind: bool,
-) {
+async fn deployment_administrator_source_checks_thread_and_retains_query_scope(mut scope: Scope) {
 	scope.scoped = false;
 	scope.visible = false;
-	let row_source = if artifact_kind {
-		Source::Artifact {
-			id: Uuid::from_u128(6),
-		}
-	} else {
-		Source::Message {
-			id: Uuid::from_u128(8),
-		}
+	let row_source = Source::Message {
+		id: Uuid::from_u128(8),
 	};
 	assert!(
 		source(&mut scope, Uuid::from_u128(2), &row_source)
@@ -330,43 +251,23 @@ async fn deployment_administrator_source_checks_thread_and_retains_query_scope(
 			.unwrap()
 			.is_some()
 	);
-	assert_eq!(
-		scope.calls,
-		if artifact_kind {
-			vec!["deployment_administrator", "artifact"]
-		} else {
-			vec!["deployment_administrator", "message"]
-		}
-	);
+	assert_eq!(scope.calls, vec!["deployment_administrator", "message"]);
 }
 #[rstest]
-#[case::artifact(true)]
-#[case::message(false)]
 #[tokio::test]
 async fn active_semantic_read_rechecks_its_saved_underlying_source(
 	mut scope: Scope,
 	mut entry: Entry,
-	#[case] artifact_kind: bool,
 ) {
 	scope.visible = false;
-	entry.source = serde_json::to_value(if artifact_kind {
-		Source::Artifact {
-			id: Uuid::from_u128(6),
-		}
-	} else {
-		Source::Message {
-			id: Uuid::from_u128(8),
-		}
+	entry.source = serde_json::to_value(Source::Message {
+		id: Uuid::from_u128(8),
 	})
 	.unwrap();
 	assert!(!permits(&mut scope, &entry, "semantic.read").await.unwrap());
 	assert_eq!(
 		scope.calls,
-		if artifact_kind {
-			vec!["thread", "semantic_policy", "artifact", "artifact_visible"]
-		} else {
-			vec!["thread", "semantic_policy", "message", "message_visible"]
-		}
+		vec!["thread", "semantic_policy", "message", "message_visible"]
 	);
 }
 #[rstest]
@@ -385,8 +286,6 @@ async fn malformed_active_source_returns_its_decode_error_after_policy(
 #[rstest]
 #[case::thread("thread")]
 #[case::semantic("semantic_policy")]
-#[case::artifact("artifact")]
-#[case::artifact_visibility("artifact_visible")]
 #[tokio::test]
 async fn source_policy_adapter_failures_remain_opaque(
 	mut scope: Scope,
@@ -395,8 +294,8 @@ async fn source_policy_adapter_failures_remain_opaque(
 ) {
 	scope.fail = Some(fail);
 	scope.managed = Some(("managed".into(), "1".into()));
-	entry.source = serde_json::to_value(Source::Artifact {
-		id: Uuid::from_u128(6),
+	entry.source = serde_json::to_value(Source::Message {
+		id: Uuid::from_u128(7),
 	})
 	.unwrap();
 	let Error::Port(error) = permits(&mut scope, &entry, "semantic.read")
@@ -411,8 +310,6 @@ async fn source_policy_adapter_failures_remain_opaque(
 }
 #[rstest]
 #[case::deployment_administrator("deployment_administrator", false)]
-#[case::message("message", true)]
-#[case::message_visibility("message_visible", true)]
 #[tokio::test]
 async fn source_adapter_failures_stop_at_the_original_boundary(
 	mut scope: Scope,

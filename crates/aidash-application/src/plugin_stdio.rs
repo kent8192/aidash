@@ -817,6 +817,7 @@ async fn save_data(
 			// `.git` is listed only when included.
 			include: vec!["**".into()],
 			max_files: stdio_session::MAX_PLUGIN_DATA_FILES,
+			after: None,
 			missing_ok: false,
 		})
 		.await

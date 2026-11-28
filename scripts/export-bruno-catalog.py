@@ -18,10 +18,21 @@ ROUTE = re.compile(
     rf"^(/\S*)\s+({METHOD_PATTERN}(?:,\s*{METHOD_PATTERN})*)\s+(\S+)\s+(\S+)\s*$"
 )
 NODE_PATH = "/api/tenants/{tenant}/nodes/{node}"
+DRIVE_PATH = "/api/nodes/{node}/drive"
+DRIVE_SOURCE = "server/src/apps/drives/views.rs"
+EXECUTION_SCOPE_SOURCE = "server/src/apps/execution/capabilities/views/management.rs"
 REGISTRATION_KEYS = NODE_PATH + "/registration-keys"
 # Only reviewed dispatch metadata for source-defined additions.
 # These entries cannot include a route absent from the saved native inventory.
 ADDITIONS = {
+    ("GET", "/api/tenants/{tenant}/embedding-settings"): ("tenant-embedding-settings", "embedding_settings"),
+    ("PUT", "/api/tenants/{tenant}/embedding-settings"): ("tenant-embedding-settings-update", "embedding_settings"),
+    ("GET", DRIVE_PATH): ("drive-browse", DRIVE_SOURCE),
+    ("POST", DRIVE_PATH): ("drive-update", DRIVE_SOURCE),
+    ("GET", DRIVE_PATH + "/file"): ("drive-download", DRIVE_SOURCE),
+    ("POST", DRIVE_PATH + "/uploads"): ("drive-upload-start", DRIVE_SOURCE),
+    ("POST", DRIVE_PATH + "/uploads/{id}/chunks"): ("drive-upload-part", DRIVE_SOURCE),
+    ("POST", DRIVE_PATH + "/uploads/{id}/commit"): ("drive-upload-commit", DRIVE_SOURCE),
     ("GET", "/api/registry/{id}/{version}/reference-revocations"): ("registry-source-revocations", "registry/management"),
     ("GET", "/api/tenants/{tenant}/invitation-approvals"): ("tenant-invitation-approvals", "tenant_administration"),
     ("POST", NODE_PATH + "/default"): ("tenant-node-default", "nodes"),
@@ -34,6 +45,12 @@ ADDITIONS = {
     ("POST", "/api/duties/{id}/template"): ("duty-template-publish", "marketplace/duty_templates"),
     ("POST", "/api/marketplace/packages/{key}/duty"): ("marketplace-install-duty", "marketplace/duty_templates"),
     ("POST", "/api/duties/{id}/template-update"): ("duty-template-update", "marketplace/duty_templates"),
+    ("GET", "/api/execution-scopes"): ("execution_scope_list", EXECUTION_SCOPE_SOURCE),
+    ("GET", "/api/execution-scopes/{id}/session"): ("core_session_status", EXECUTION_SCOPE_SOURCE),
+    ("POST", "/api/execution-scopes/{id}/steer"): ("core_session_steer", EXECUTION_SCOPE_SOURCE),
+    ("GET", "/api/executions/{id}/execution-scope"): ("execution_scope", EXECUTION_SCOPE_SOURCE),
+    ("GET", "/api/executions/{id}/core-operations/{operation}/files/{file}/download"): ("command_output_download", EXECUTION_SCOPE_SOURCE),
+    ("POST", "/api/threads/{id}/scratch/clear"): ("thread-scratch-clear", "workspaces/scratch"),
     ("GET", "/api/threads/{id}/executions"): ("thread-executions", "execution/management"),
     # A named successor takes a Duty over (#991, ADR 0145).
     ("POST", "/api/duties/{id}/take-over"): ("duty-take-over", "workspaces/duties"),
@@ -211,7 +228,14 @@ def project(showurls, document, reviewed):
             if addition is None or native_name != addition[0]:
                 raise ValueError(f"unannotated native route: {method} {path}")
             name, module = addition
-            prior = {"name": name, "source": (f"server/src/apps/{module.rsplit('/', 1)[0]}/views/{module.rsplit('/', 1)[1]}.rs" if '/' in module else f"server/src/apps/identity/views/{module}.rs")}
+            if module.startswith("server/"):
+                source = module
+            elif "/" in module:
+                app, view = module.rsplit("/", 1)
+                source = f"server/src/apps/{app}/views/{view}.rs"
+            else:
+                source = f"server/src/apps/identity/views/{module}.rs"
+            prior = {"name": name, "source": source}
             if identity not in public:
                 raise ValueError(f"new typed operation missing from native OpenAPI: {identity}")
         name = prior["name"]

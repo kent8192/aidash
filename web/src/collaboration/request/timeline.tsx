@@ -11,7 +11,7 @@ import {
 import { useI18n } from "../../ui";
 import { cn } from "../../lib/utils";
 
-type Kind = "task" | "run" | "tool" | "request" | "artifact" | "peer" | "error";
+type Kind = "task" | "run" | "tool" | "request" | "peer" | "error";
 
 const kindCopy: Record<"ja-JP" | "en-US", Record<Kind, string>> = {
   "ja-JP": {
@@ -19,7 +19,6 @@ const kindCopy: Record<"ja-JP" | "en-US", Record<Kind, string>> = {
     run: "実行",
     tool: "ツール",
     request: "判断",
-    artifact: "成果物",
     peer: "ピア",
     error: "エラー",
   },
@@ -28,7 +27,6 @@ const kindCopy: Record<"ja-JP" | "en-US", Record<Kind, string>> = {
     run: "Run",
     tool: "Tool",
     request: "Decision",
-    artifact: "Artifact",
     peer: "Peer",
     error: "Error",
   },
@@ -39,7 +37,6 @@ const kindMark: Record<Kind, string> = {
   run: "rounded-full bg-brand-mark",
   tool: "h-2.5 w-[3px] rounded-[1px] bg-muted-foreground",
   request: "rotate-45 rounded-[1px] bg-warning",
-  artifact: "rounded-[1px] border-[1.5px] border-success bg-transparent",
   peer: "rotate-45 rounded-[1px] bg-edge-strong",
   error: "rounded-[1px] bg-destructive",
 };
@@ -49,7 +46,6 @@ function eventKind(kind: string): Kind {
   if (/fail|error|invalid|abandon|cancel/.test(kind)) return "error";
   if (/human|approval|request/.test(kind)) return "request";
   if (kind.startsWith("tool.") || kind.includes("tool_")) return "tool";
-  if (kind.startsWith("artifact.")) return "artifact";
   if (kind.startsWith("peer.") || kind.includes("remote")) return "peer";
   if (kind.startsWith("execution.")) return "run";
   return "task";

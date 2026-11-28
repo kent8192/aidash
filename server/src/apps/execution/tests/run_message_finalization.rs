@@ -7,11 +7,7 @@ use upstream_fixtures::{reply, upstream};
 #[path = "support/fixtures.rs"]
 mod common;
 
-use aidash_server::{
-	domain::{ArtifactInput, qualified_agent},
-	federation::Home,
-	harness::Harness,
-};
+use aidash_server::{domain::qualified_agent, federation::Home, harness::Harness};
 
 use common::{bootstrap, cleanup};
 use serde_json::{Value, json};
@@ -241,11 +237,12 @@ async fn old_worker_cannot_lease_after_input_ledger_admission(
 	} else {
 		task
 	};
-	let artifact = ArtifactInput {
-		kind: "text".into(),
-		name: "stale response".into(),
-		content: json!("stale response"),
-	};
+	let artifact = aidash_domain::deliverable::Completion::new(
+		task.id,
+		"legacy-completion",
+		"stale response".into(),
+		None,
+	);
 	let error = f
 		.store
 		.complete(
@@ -730,11 +727,13 @@ async fn messages_accepted_during_and_after_inference_are_seen_before_completion
 		tracked,
 		"run-directed message must be tracked as an authorized source"
 	);
-	assert_eq!(snapshot.artifacts.len(), 1);
-	assert_eq!(
-		snapshot.artifacts[0].content,
-		"answer with both corrections"
-	);
+	let completions = snapshot
+		.messages
+		.iter()
+		.filter(|message| message.completion.is_some())
+		.collect::<Vec<_>>();
+	assert_eq!(completions.len(), 1);
+	assert_eq!(completions[0].content, "answer with both corrections");
 	assert!(
 		snapshot
 			.messages
@@ -881,8 +880,12 @@ async fn the_commit_fence_persists_the_completion_basis(
 		.await
 		.unwrap();
 	let mut leased = f.store.lease_run(worker, 30).await.unwrap().unwrap();
-	leased.context.completion.attempts = 1;
-	leased.context.completion.basis = Some(aidash_domain::completion::CompletionBasis::Verified);
+	leased.context.final_completion = Some(Box::new(aidash_domain::deliverable::Completion::new(
+		run.task_id,
+		&leased.completion_key(),
+		"Done.".into(),
+		None,
+	)));
 	assert!(
 		f.store
 			.begin_final_completion(&TEST_FIXTURE, &leased, worker)
@@ -890,7 +893,10 @@ async fn the_commit_fence_persists_the_completion_basis(
 			.unwrap()
 	);
 	let stored = f.store.run(&TEST_FIXTURE, run.id).await.unwrap();
-	assert_eq!(stored.context.completion, leased.context.completion);
+	assert_eq!(
+		stored.context.final_completion,
+		leased.context.final_completion
+	);
 	assert_eq!(stored.context.history.len(), leased.context.history.len());
 	if delete_node {
 		use reinhardt::query::{
@@ -969,7 +975,10 @@ async fn the_commit_fence_persists_the_completion_basis(
 		}
 		let completed = f.store.run(&TEST_FIXTURE, run.id).await.unwrap();
 		assert_eq!(completed.phase().as_str(), "COMPLETED");
-		assert_eq!(completed.context.completion, leased.context.completion);
+		assert_eq!(
+			completed.context.final_completion,
+			leased.context.final_completion
+		);
 		assert_eq!(
 			f.store
 				.task(&TEST_FIXTURE, run.task_id)
@@ -986,9 +995,12 @@ async fn the_commit_fence_persists_the_completion_basis(
 			.unwrap();
 		assert_eq!(
 			snapshot
-				.artifacts
+				.messages
+				.into_iter()
+				.filter(|message| message.completion.is_some())
+				.collect::<Vec<_>>()
 				.iter()
-				.filter(|artifact| artifact.content == json!("Done."))
+				.filter(|artifact| artifact.content == "Done.")
 				.count(),
 			1
 		);
@@ -1036,6 +1048,7 @@ async fn a_cancelled_finalizing_run_settles_its_saved_abandonment(
 			&aidash_server::domain::NewTask {
 				title: "Nobody's".into(),
 				description: "Never delegated".into(),
+				goal: None,
 				requirements: json!({}),
 				dependencies: vec![],
 				parent_id: Some(run.task_id),
@@ -1153,9 +1166,12 @@ async fn a_cancelled_finalizing_run_settles_its_saved_abandonment(
 		.unwrap();
 	assert_eq!(
 		snapshot
-			.artifacts
+			.messages
+			.into_iter()
+			.filter(|message| message.completion.is_some())
+			.collect::<Vec<_>>()
 			.iter()
-			.filter(|artifact| artifact.content == json!(sentence))
+			.filter(|artifact| artifact.content == sentence)
 			.count(),
 		1
 	);
@@ -1164,7 +1180,7 @@ async fn a_cancelled_finalizing_run_settles_its_saved_abandonment(
 
 #[rstest::rstest]
 #[tokio::test]
-async fn a_new_input_discards_pending_tool_calls_without_spending_the_last_inference_step(
+async fn a_new_input_discards_pending_tool_calls_without_advancing_the_step(
 	#[future(awt)]
 	#[from(common::native_application)]
 	fixture: common::ApplicationFixture,
@@ -1177,25 +1193,14 @@ async fn a_new_input_discards_pending_tool_calls_without_spending_the_last_infer
 	})).await;
 	assert_eq!(status, 200, "{created}");
 	let run = f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
-	let agent = f
-		.registry
-		.get(
-			&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
-			&run.agent_id,
-			&run.agent_version,
-		)
-		.await
-		.unwrap();
-	let max_steps = serde_json::from_value::<aidash_server::registry::AgentConfig>(agent.config)
-		.unwrap()
-		.max_steps;
 	let harness = Harness {
 		federation: f.clone(),
 	};
 	assert!(harness.worker_once().await.unwrap());
 	let worker = Uuid::new_v4();
 	let mut leased = f.store.lease_run(worker, 30).await.unwrap().unwrap();
-	leased.step = max_steps - 1;
+	let response_step = 3;
+	leased.step = response_step;
 
 	leased.state = aidash_server::domain::RunState::ToolCall(Box::new(common::tool_call(json!({
 		"response_epoch":leased.revision + i64::from(leased.step) + 1,
@@ -1242,11 +1247,7 @@ async fn a_new_input_discards_pending_tool_calls_without_spending_the_last_infer
 	assert!(harness.worker_once().await.unwrap());
 	let current = f.store.run(&TEST_FIXTURE, run.id).await.unwrap();
 	assert_eq!(current.phase().as_str(), "THINKING");
-	assert_eq!(current.step, max_steps - 1);
-	assert!(
-		current.step < max_steps,
-		"the correction can still be inferred"
-	);
+	assert_eq!(current.step, response_step);
 	assert!(json!(current.state)["data"].get("response").is_none());
 	assert!(
 		f.store
@@ -1302,7 +1303,7 @@ async fn a_new_input_discards_pending_tool_calls_without_spending_the_last_infer
 #[case::empty("", false)]
 #[case::oversized("summary that is too long", true)]
 #[tokio::test]
-async fn rejected_catchup_summary_consumes_the_last_step(
+async fn rejected_catchup_summary_consumes_one_step(
 	#[case] response_text: &str,
 	#[case] oversized: bool,
 	#[future(awt)]
@@ -1326,20 +1327,9 @@ async fn rejected_catchup_summary_consumes_the_last_step(
 	);
 	let worker = Uuid::new_v4();
 	let mut leased = f.store.lease_run(worker, 30).await.unwrap().unwrap();
-	let agent = f
-		.registry
-		.get(
-			&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
-			"research",
-			"1.0.0",
-		)
-		.await
-		.unwrap();
-	let max_steps = serde_json::from_value::<aidash_server::registry::AgentConfig>(agent.config)
-		.unwrap()
-		.max_steps;
 	let selected = json!({"file_id":Uuid::new_v4(),"expected_digest":"digest"});
-	leased.step = max_steps - 1;
+	let response_step = 3;
+	leased.step = response_step;
 
 	leased.context.media_inferred_seq = 7;
 	leased.observed_input_seq = 7;
@@ -1370,7 +1360,7 @@ async fn rejected_catchup_summary_consumes_the_last_step(
 	);
 	let current = f.store.run(&TEST_FIXTURE, run.id).await.unwrap();
 	assert_eq!(current.phase().as_str(), "THINKING");
-	assert_eq!(current.step, max_steps);
+	assert_eq!(current.step, response_step + 1);
 	assert_eq!(json!(current.context)["run_message_summary_seq"], 0);
 	assert_eq!(json!(current.context)["run_message_summary"], "");
 	assert_eq!(json!(current.context)["media_inferred_seq"], 0);
@@ -1389,16 +1379,6 @@ async fn rejected_catchup_summary_consumes_the_last_step(
 					&& (!oversized || entry["event"]["max_bytes"] == 8)
 			)
 	);
-	assert!(
-		(Harness {
-			federation: f.clone()
-		})
-		.worker_once()
-		.await
-		.unwrap()
-	);
-	let bounded = f.store.run(&TEST_FIXTURE, run.id).await.unwrap();
-	assert_eq!(json!(bounded.state)["data"]["target"], "FAILED");
 	cleanup(f, &url, &schema).await;
 }
 

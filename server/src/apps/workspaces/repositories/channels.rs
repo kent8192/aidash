@@ -628,14 +628,7 @@ impl ChannelScope for NativeChannels<'_> {
 		message: Uuid,
 		citations: &[aidash_domain::threads::channels::CitedFileVersion],
 	) -> Result<Vec<aidash_domain::threads::channels::ChannelCitation>> {
-		super::citations::record(
-			self.store,
-			self.federation,
-			&mut *self.lease,
-			message,
-			citations,
-		)
-		.await?;
+		super::citations::require_supported(citations)?;
 		let mut stored = super::citations::for_messages(
 			self.store,
 			self.federation,

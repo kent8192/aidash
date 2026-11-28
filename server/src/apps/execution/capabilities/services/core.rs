@@ -1,8 +1,6 @@
 //! Harness-owned files and execution capabilities. No Registry tool identity grants authority.
 #[path = "approvals.rs"]
 pub(crate) mod approvals;
-#[path = "cleanup.rs"]
-pub(crate) mod cleanup;
 #[path = "configuration.rs"]
 pub(crate) mod configuration;
 #[path = "contracts.rs"]
@@ -23,8 +21,6 @@ pub(crate) mod network;
 pub mod objects;
 #[path = "operations.rs"]
 pub mod operations;
-#[path = "patch.rs"]
-pub(crate) mod patch;
 #[path = "python.rs"]
 pub(crate) mod python;
 #[path = "reclamation.rs"]
@@ -33,22 +29,16 @@ pub mod reclamation;
 pub(crate) mod records;
 #[path = "references.rs"]
 pub(crate) mod references;
-#[path = "retention.rs"]
-pub mod retention;
 #[path = "service.rs"]
 pub(crate) mod service;
 #[path = "sessions.rs"]
 pub(crate) mod sessions;
-#[path = "sharing.rs"]
-pub(crate) mod sharing;
 #[path = "skills.rs"]
 pub(crate) mod skills;
 #[path = "thread_lifecycle.rs"]
 pub(crate) mod thread_lifecycle;
 #[path = "tools.rs"]
 pub(crate) mod tools;
-#[path = "transfer.rs"]
-pub mod transfer;
 
 use crate::{Error, Result};
 use std::{path::PathBuf, sync::Arc};

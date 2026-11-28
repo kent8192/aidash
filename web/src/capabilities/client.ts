@@ -15,7 +15,6 @@ export type Area = {
   state: string;
   revision: number;
   generation: number;
-  manifest: CoreFile[];
 };
 export type Operation = {
   operation_id: string;

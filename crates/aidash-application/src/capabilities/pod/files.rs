@@ -11,7 +11,7 @@ use crate::{
 		pod_operations::PodContext,
 	},
 };
-use aidash_domain::capabilities::files::{ScratchRead, ScratchSearch, SearchMode};
+use aidash_domain::capabilities::files::{Representation, ScratchRead, ScratchSearch, SearchMode};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use serde_json::{Value, json};
 
@@ -53,6 +53,42 @@ pub(crate) use in_pod;
 /// character stops before it, and `next_offset` continues from there.
 pub async fn read(context: &PodContext, input: ScratchRead, read_bytes: usize) -> Result<Value> {
 	aidash_domain::registry::rules::validate_path(&input.path)?;
+	if matches!(
+		input.representation,
+		Some(Representation::Metadata | Representation::ModelInput)
+	) {
+		if input.offset.is_some() || input.max_bytes.is_some() {
+			return Err(Error::Invalid(
+				"Scratch Space image reads do not accept text ranges".into(),
+			));
+		}
+		let (digest, bytes) = read_snapshot(context, &input.path, 8 * 1024 * 1024).await?;
+		if input
+			.expected_digest
+			.is_some_and(|expected| expected != digest)
+		{
+			return Err(Error::Conflict("FILE_CHANGED".into()));
+		}
+		let media_type = aidash_domain::provider::detect_image(&bytes);
+		let selection = if matches!(input.representation, Some(Representation::ModelInput)) {
+			if media_type.is_none() {
+				return Err(Error::Invalid(
+					"Scratch Space file must be a supported image".into(),
+				));
+			}
+			Some(aidash_domain::media::ScratchImageSelection {
+				scratch_path: input.path.clone(),
+				expected_digest: digest.clone(),
+			})
+		} else {
+			None
+		};
+		return Ok(json!({
+			"metadata":{"scratch_path":input.path,"digest":digest,"size":bytes.len(),"media_type":media_type},
+			"selection":selection
+		}));
+	}
+
 	let limit = input.max_bytes.unwrap_or(read_bytes);
 	if limit == 0 || limit > read_bytes {
 		return Err(Error::Invalid("INVALID_READ_RANGE".into()));
@@ -97,6 +133,67 @@ pub async fn read(context: &PodContext, input: ScratchRead, read_bytes: usize) -
 	}))
 }
 
+/// Snapshot a single named file. Verify the bytes after the chunked read
+/// against the Runner's manifest so edits during a read cannot mix versions.
+pub async fn read_snapshot(
+	context: &PodContext,
+	path: &str,
+	max_bytes: u64,
+) -> Result<(String, Vec<u8>)> {
+	use sha2::{Digest as _, Sha256};
+	aidash_domain::registry::rules::validate_path(path)?;
+	let manifest = FileManifestRequest {
+		scratch_space_id: context.scratch_space_id().to_owned(),
+		root: path.to_owned(),
+		ignore_files: Vec::new(),
+		include: Vec::new(),
+		exclude: Vec::new(),
+		max_files: 1,
+		after: None,
+		missing_ok: false,
+	};
+	let discovered = in_pod!(context, context.runtime.file_manifest(&manifest))?;
+	let [file] = discovered.files.as_slice() else {
+		return Err(Error::NotFound(format!(
+			"Scratch Space file unavailable: {path}"
+		)));
+	};
+	if file.path != path || discovered.truncated {
+		return Err(Error::Invalid(format!("Path must name one file: {path}")));
+	}
+	if file.size > max_bytes {
+		return Err(Error::Invalid(
+			"Scratch Space file read exceeds its byte limit".into(),
+		));
+	}
+	let mut bytes = Vec::with_capacity(file.size as usize);
+	while (bytes.len() as u64) < file.size {
+		let offset = bytes.len() as u64;
+		let input = FileReadRequest {
+			scratch_space_id: context.scratch_space_id().to_owned(),
+			path: path.to_owned(),
+			offset: Some(offset),
+			limit: (file.size - offset).min(CHUNK_BYTES as u64) as u32,
+		};
+		let chunk = in_pod!(context, context.runtime.file_read(&input))?;
+		let block = STANDARD
+			.decode(chunk.data)
+			.map_err(|_| Error::External("invalid Runner file encoding".into()))?;
+		if chunk.size != file.size
+			|| block.is_empty()
+			|| block.len() as u64 > u64::from(input.limit)
+		{
+			return Err(Error::Conflict("FILE_CHANGED".into()));
+		}
+		bytes.extend(block);
+	}
+	let digest = format!("{:x}", Sha256::digest(&bytes));
+	if digest != file.sha256 {
+		return Err(Error::Conflict("FILE_CHANGED".into()));
+	}
+	Ok((digest, bytes))
+}
+
 /// Search Scratch Space files. In `path` mode the query matches paths, listed
 /// from the selection `.gitignore` files leave; otherwise it matches lines.
 /// `max_matches` and `max_bytes` are the Deployment's search ceilings, as for
@@ -126,6 +223,7 @@ pub async fn search(
 			exclude: vec![],
 			include: vec![],
 			max_files: 10_000,
+			after: None,
 			missing_ok: false,
 		};
 		let manifest = in_pod!(context, context.runtime.file_manifest(&request))?;

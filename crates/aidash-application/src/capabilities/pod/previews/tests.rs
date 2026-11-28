@@ -17,9 +17,16 @@ async fn a_preview_starts_in_the_pod_with_the_run_credential() {
 	let runtime = Arc::new(Runtime::default());
 	let preview = Uuid::from_u128(5);
 	let run = Uuid::from_u128(9);
-	let host = start(&context(runtime.clone()), preview, run, "npm run dev", 8080)
-		.await
-		.unwrap();
+	let host = start(
+		&context(runtime.clone()),
+		preview,
+		run,
+		"npm run dev",
+		8080,
+		"shared".into(),
+	)
+	.await
+	.unwrap();
 	assert_eq!(host, "10.0.0.7");
 	assert_eq!(runtime.calls(), ["ensure", "preview_start"]);
 	let request = runtime.previews.lock().unwrap()[0].clone();

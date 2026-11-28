@@ -794,15 +794,6 @@ pub fn workspace_observation_event_fits(
 	)
 }
 
-pub fn result_artifact_name(title: &str) -> String {
-	let limit = 64_000 - " result".len();
-	let mut end = title.len().min(limit);
-	while !title.is_char_boundary(end) {
-		end -= 1;
-	}
-	format!("{} result", &title[..end])
-}
-
 pub fn choose_inference_media(
 	selected_parts: Vec<aidash_domain::provider::ContentPart>,
 	human_parts: Vec<aidash_domain::provider::ContentPart>,

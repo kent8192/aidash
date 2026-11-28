@@ -11,22 +11,9 @@ use reinhardt::db::orm::Model;
 use rstest::fixture;
 use serde_json::json;
 use uuid::Uuid;
-/// The Tenant's default Node, as `tenants::create` writes it.
-async fn default_node(pool: &sqlx::PgPool, tenant: &str) {
-	let name = aidash_domain::nodes::NodeName::derived(tenant);
-	sqlx::query("INSERT INTO node_names (name, tenant, created_at) VALUES ($1, $2, clock_timestamp()) ON CONFLICT (name) DO NOTHING")
-		.bind(name.as_str())
-		.bind(tenant)
-		.execute(pool)
-		.await
-		.unwrap();
-	sqlx::query("INSERT INTO nodes (tenant, name, label, is_default, created_at, created_by_kind) VALUES ($1, $2, 'Default', true, clock_timestamp(), 'deployment_administrator') ON CONFLICT DO NOTHING")
-		.bind(tenant)
-		.bind(name.as_str())
-		.execute(pool)
-		.await
-		.unwrap();
-}
+
+use crate::tenant_roots;
+
 pub(super) fn reference(id: &str) -> EntityRef {
 	EntityRef {
 		id: id.into(),
@@ -57,7 +44,7 @@ pub(super) fn entry(kind: &str, id: &str, mut config: serde_json::Value) -> Entr
 		{
 			bindings.push(json!({"kind":"source","target":{"registry_deployment":"aidash://native-memory","id":source["id"],"version":source["version"]},"narrow":{}}));
 		}
-		config = json!({"schema_version":1,"model":config["model"],"instructions":config["instructions"],"bindings":bindings,"remove_default":["file_search","file_read"]});
+		config = json!({"model":config["model"],"instructions":config["instructions"],"bindings":bindings,"remove_default":["file_search","file_read"]});
 	}
 	serde_json::from_value(json!({"id":id,"version":"1.0.0","kind":kind,"name":{"en":id,"ja":id},"description":{"en":"fixture"},
 		"capabilities":[],"languages":["en","ja"],"config":config})).unwrap()
@@ -227,6 +214,7 @@ async fn setup_endpoint_policy_with_window(
 	store.keyless.permit_origin_of(endpoint).unwrap();
 	// Every row of a Tenant references its root record (ADR 0050).
 	let tenant = Tenant::build()
+		.goal_judge_model(None)
 		.name("acme".to_owned())
 		.label(Some("acme".to_owned()))
 		.personal(false)
@@ -243,7 +231,7 @@ async fn setup_endpoint_policy_with_window(
 		})
 		.await
 		.unwrap();
-	default_node(store.pool.fixture_driver(), "acme").await;
+	tenant_roots::default_node_in(store.pool.fixture_driver(), "acme").await;
 	let registry = Registry::new(store.pool.clone(), &store.deployment).unwrap();
 	registry
 		.seed(&aidash_domain::tenancy::TenantName::new("acme").unwrap())

@@ -1,6 +1,8 @@
 use super::*;
+use crate::capabilities::pod::tests::{Runtime, context};
 use crate::ports::capabilities::files::Limits;
 use aidash_domain::{policy::Resource, registry::Entry};
+use std::sync::Arc;
 async fn invoke(
 	scope: &mut dyn FileScopePort,
 	run: &RunMetadata,
@@ -25,27 +27,19 @@ struct Scope {
 	reference_queries: usize,
 	search_seconds: u64,
 	open_delay: std::time::Duration,
-	previous: Value,
-	previous_generation: Option<i64>,
-	superseded: Vec<Uuid>,
-	persisted: Option<Area>,
-	events: Vec<(String, Value)>,
-	image_publications: Vec<Vec<aidash_domain::semantic::indexing::ImageChange>>,
+
 	snapshot: Option<aidash_domain::registry::bindings::BindingSnapshot>,
 	area: Option<Area>,
 	deny_entry: Option<String>,
 	deny_pinned: Option<String>,
 	changed: Option<String>,
-	/// Inputs of Completion Gate Checks admitted to the operation journal.
-	verified: Vec<Value>,
 	/// `(kind, cancel, input)` of every operation control request.
 	polled: Vec<(String, bool, Value)>,
 	control_result: Option<Value>,
-	active_run: Option<Uuid>,
-	pending: Vec<u8>,
+
 	cache_entry: Option<(Uuid, String, Value)>,
-	/// A Subnode Area the Run created, which `subnode_area` hands back.
-	subnode: Option<Area>,
+	references: Vec<FileEntry>,
+	pod: Option<PodContext>,
 }
 #[async_trait::async_trait]
 impl FileScopePort for Scope {
@@ -57,7 +51,7 @@ impl FileScopePort for Scope {
 	}
 	fn limits(&self) -> Result<Limits> {
 		Ok(Limits {
-			working_bytes: 1_000_000,
+			patch_bytes: 64000,
 			read_bytes: 16,
 			search_matches: 20,
 			search_bytes: 10_000,
@@ -109,32 +103,17 @@ impl FileScopePort for Scope {
 		assert!(self.snapshot.is_some());
 		Ok(())
 	}
-	async fn serialize_sharing(&mut self) -> Result<()> {
-		panic!("unexpected serialize_sharing effect")
-	}
 	async fn for_run(&mut self, _run: &RunMetadata) -> Result<Area> {
 		Ok(self.area.as_ref().expect("admitted area").clone())
 	}
-	async fn subnode_area(
-		&mut self,
-		_run: &RunMetadata,
-		_thread: Uuid,
-		area: Uuid,
-	) -> Result<Area> {
-		self.subnode
-			.clone()
-			.filter(|subnode| subnode.id == area)
-			.ok_or(Error::Forbidden)
+	async fn pod(&mut self, _: &RunMetadata) -> Result<Option<PodContext>> {
+		Ok(self.pod.clone())
+	}
+	async fn bound_references(&mut self, _: &AgentConfig) -> Result<Vec<FileEntry>> {
+		Ok(self.references.clone())
 	}
 	async fn authorize(&mut self, _area: &Area, action: &str) -> Result<()> {
 		assert!(matches!(action, "file.read" | "file.write"));
-		Ok(())
-	}
-	async fn current_run(&mut self, _area: &Area) -> Result<Option<Uuid>> {
-		Ok(self.active_run)
-	}
-	async fn require_current(&mut self, _area: &Area, _run: &RunMetadata) -> Result<()> {
-		assert!(self.snapshot.is_some());
 		Ok(())
 	}
 	async fn execute(
@@ -145,10 +124,6 @@ impl FileScopePort for Scope {
 		_key: &str,
 	) -> Result<Value> {
 		match action {
-			Action::Verify => {
-				self.verified.push(input);
-				Ok(json!({"operation_id": Uuid::nil(), "status": "prepared"}))
-			}
 			Action::Control { kind, cancel } => {
 				self.polled.push((kind.to_owned(), cancel, input));
 				Ok(self
@@ -189,62 +164,6 @@ impl FileScopePort for Scope {
 		self.cache_entry = Some((key, digest.to_owned(), result.clone()));
 		Ok(())
 	}
-	async fn begin_pending(&mut self, _area: Uuid, _size: u64) -> Result<()> {
-		self.pending.clear();
-		Ok(())
-	}
-	async fn read_chunk(&mut self, _file: &FileEntry, _offset: u64) -> Result<Vec<u8>> {
-		panic!("unexpected read_chunk effect")
-	}
-	async fn write_pending(&mut self, bytes: &[u8]) -> Result<()> {
-		self.pending.extend_from_slice(bytes);
-		Ok(())
-	}
-	async fn finish_pending(&mut self, expected: &str) -> Result<(Uuid, String)> {
-		Ok((Uuid::new_v4(), expected.to_owned()))
-	}
-	async fn message(&mut self, _thread: Uuid, _id: Uuid) -> Result<Value> {
-		panic!("unexpected message effect")
-	}
-	async fn documents(&mut self, _entry: &Entry) -> Result<Value> {
-		panic!("unexpected documents effect")
-	}
-	async fn text_file(
-		&mut self,
-		_area: Uuid,
-		_path: String,
-		_text: &str,
-		_scope: FileScope,
-		_provenance: Value,
-	) -> Result<FileEntry> {
-		panic!("unexpected text_file effect")
-	}
-	async fn previous_manifest(&mut self, _area: &Area) -> Result<Value> {
-		Ok(self.previous.clone())
-	}
-	async fn previous_generation(&mut self, area: &Area) -> Result<i64> {
-		Ok(self.previous_generation.unwrap_or(area.generation))
-	}
-	async fn supersede(&mut self, _area: &Area, file: Uuid) -> Result<()> {
-		self.superseded.push(file);
-		Ok(())
-	}
-	async fn persist_manifest(&mut self, area: &Area) -> Result<()> {
-		self.persisted = Some(area.clone());
-		Ok(())
-	}
-	async fn event(&mut self, _thread: Uuid, kind: &str, data: Value) -> Result<()> {
-		self.events.push((kind.to_owned(), data));
-		Ok(())
-	}
-	async fn image_publication(
-		&mut self,
-		_: &Area,
-		changes: &[aidash_domain::semantic::indexing::ImageChange],
-	) -> Result<()> {
-		self.image_publications.push(changes.to_vec());
-		Ok(())
-	}
 }
 fn fixture(bytes: &[u8]) -> (Scope, Area, FileEntry) {
 	let file = FileEntry {
@@ -269,7 +188,6 @@ fn fixture(bytes: &[u8]) -> (Scope, Area, FileEntry) {
 		state: "active".into(),
 		manifest: json!([file]),
 		constraints: json!([]),
-		next_sequence: 1,
 	};
 	(
 		Scope {
@@ -280,24 +198,18 @@ fn fixture(bytes: &[u8]) -> (Scope, Area, FileEntry) {
 			reference_queries: 0,
 			search_seconds: 5,
 			open_delay: std::time::Duration::ZERO,
-			previous: area.manifest.clone(),
-			previous_generation: None,
-			superseded: vec![],
-			persisted: None,
-			events: vec![],
-			image_publications: vec![],
+
 			snapshot: None,
 			area: None,
 			deny_entry: None,
 			deny_pinned: None,
 			changed: None,
-			verified: vec![],
 			polled: vec![],
 			control_result: None,
-			active_run: None,
-			pending: vec![],
+
 			cache_entry: None,
-			subnode: None,
+			references: Vec::new(),
+			pod: None,
 		},
 		area,
 		file,
@@ -311,8 +223,6 @@ fn selection(
 ) -> FileRead {
 	FileRead {
 		file_id: file.file_id,
-		thread_id: None,
-		area_id: None,
 		representation,
 		offset,
 		max_bytes,
@@ -605,9 +515,8 @@ fn reference_file(path: &str, record: Uuid) -> FileEntry {
 	}
 }
 #[tokio::test]
-async fn a_revoked_reference_file_is_neither_read_searched_nor_copied() {
-	let (mut scope, run, _) = invoke_fixture("file_read", json!({}));
-	scope.active_run = Some(run.id);
+async fn a_revoked_reference_file_is_neither_read_nor_searched() {
+	let (mut scope, _, _) = invoke_fixture("file_read", json!({}));
 	let (kept, gone) = (Uuid::new_v4(), Uuid::new_v4());
 	let (kept_file, gone_file) = (
 		reference_file("kept.md", kept),
@@ -676,125 +585,9 @@ async fn a_revoked_reference_file_is_neither_read_searched_nor_copied() {
 	.await
 	.unwrap();
 	assert_eq!(paths(&listed), ["references/kept.md"], "{listed}");
-
-	let refused = materialize(
-		&mut scope,
-		&run,
-		Materialize {
-			idempotency_key: Uuid::new_v4(),
-			expected_revision: area.revision,
-			path: "copy.md".into(),
-			source: MaterializeSource::File {
-				file_id: gone_file.file_id,
-				expected_digest: gone_file.digest.clone(),
-			},
-		},
-	)
-	.await
-	.unwrap_err();
-	assert!(matches!(refused, Error::NotFound(_)), "{refused}");
-	assert!(scope.pending.is_empty(), "nothing was copied");
 }
-#[tokio::test]
-async fn publication_tombstones_only_removed_working_objects() {
-	let (mut scope, mut area, file) = fixture(b"bytes");
-	let received = FileEntry {
-		file_id: Uuid::new_v4(),
-		scope: FileScope::Received,
-		..file.clone()
-	};
-	let reference = FileEntry {
-		file_id: Uuid::new_v4(),
-		scope: FileScope::References,
-		..file.clone()
-	};
-	scope.previous = json!([file, received, reference]);
-	area.manifest = json!([]);
-	publish(&mut scope, &mut area).await.unwrap();
-	assert_eq!(scope.superseded, vec![file.file_id]);
-	assert_eq!(area.revision, 5);
-	assert_eq!(scope.persisted.as_ref().unwrap().revision, 5);
-	assert_eq!(
-		scope.events,
-		vec![(
-			"capability.files_changed".into(),
-			json!({"area_id":area.id,"revision":5,"generation":7})
-		)]
-	);
-}
-
-#[tokio::test]
-async fn a_receiving_area_publishes_without_a_thread_index_or_event() {
-	let (mut scope, mut area, mut image) = fixture(b"bytes");
-	image.path = "image.png".into();
-	image.media_type = "image/png".into();
-	scope.previous = json!([]);
-	area.manifest = json!([image]);
-	area.constraints = json!([
-		aidash_domain::capabilities::sessions::remote_home_constraint("aidash://home/node")
-	]);
-	publish(&mut scope, &mut area).await.unwrap();
-	// The revision is still saved, so the Area's readers see the Reference set.
-	assert_eq!(scope.persisted.as_ref().unwrap().revision, area.revision);
-	assert!(scope.image_publications.is_empty());
-	assert!(scope.events.is_empty());
-}
-
-#[tokio::test]
-async fn publication_records_image_versions_in_publication_order() {
-	use aidash_domain::semantic::indexing::ImageChange;
-	let (mut scope, mut area, mut old) = fixture(b"bytes");
-	old.path = "image.png".into();
-	old.media_type = "image/png".into();
-	let mut replacement = old.clone();
-	replacement.file_id = Uuid::new_v4();
-	let mut added = old.clone();
-	added.file_id = Uuid::new_v4();
-	added.path = "next.png".into();
-	scope.previous = json!([old]);
-	area.manifest = json!([replacement, added]);
-	publish(&mut scope, &mut area).await.unwrap();
-	assert_eq!(scope.image_publications.len(), 1);
-	let changes = &scope.image_publications[0];
-	assert!(matches!(&changes[0], ImageChange::Removed { file_id, .. } if *file_id == old.file_id));
-	assert!(
-		matches!(&changes[1], ImageChange::Published { file_id, .. } if *file_id == replacement.file_id)
-	);
-	assert!(
-		matches!(&changes[2], ImageChange::Published { file_id, .. } if *file_id == added.file_id)
-	);
-}
-
-#[tokio::test]
-async fn a_new_area_generation_republishes_unchanged_image_versions() {
-	use aidash_domain::semantic::indexing::ImageChange;
-	let (mut scope, mut area, mut image) = fixture(b"bytes");
-	image.path = "image.png".into();
-	image.media_type = "image/png".into();
-	scope.previous = json!([image]);
-	scope.previous_generation = Some(area.generation - 1);
-	area.manifest = json!([image]);
-	publish(&mut scope, &mut area).await.unwrap();
-	let changes = &scope.image_publications[0];
-	assert!(
-		matches!(&changes[..], [ImageChange::Removed { file_id: old, .. }, ImageChange::Published { file_id: new, .. }] if *old == image.file_id && *new == image.file_id)
-	);
-}
-
-#[tokio::test]
-async fn publication_detects_images_in_generic_binary_files_by_signature() {
-	let (mut scope, mut area, mut file) = fixture(b"\x89PNG\r\n\x1a\nimage");
-	file.path = "without-extension".into();
-	file.media_type = "application/octet-stream".into();
-	scope.previous = json!([]);
-	area.manifest = json!([file]);
-	publish(&mut scope, &mut area).await.unwrap();
-	assert_eq!(area.manifest[0]["media_type"], "image/png");
-	assert_eq!(scope.image_publications.len(), 1);
-}
-
 fn invoke_fixture(operation: &str, narrow: Value) -> (Scope, RunMetadata, FileEntry) {
-	let (mut scope, area, file) = fixture(b"abcdefgh");
+	let (mut scope, area, mut file) = fixture(b"abcdefgh");
 	let node = "aidash://local";
 	let mut agent = crate::test_support::agent("agent");
 	let mut binding = crate::test_support::binding("tool", node, &format!("aidash.{operation}"));
@@ -832,116 +625,49 @@ fn invoke_fixture(operation: &str, narrow: Value) -> (Scope, RunMetadata, FileEn
 		lease_until: None,
 		updated_at: chrono::Utc::now(),
 	};
+	file.scope = FileScope::References;
+	file.provenance = json!({"kind": "reference", "id": Uuid::new_v4()});
+	scope.references = vec![file.clone()];
 	scope.area = Some(area);
 	(scope, run, file)
 }
 
 #[tokio::test]
-async fn message_files_are_snapshots_of_authorized_current_working_area_paths() {
+async fn message_files_are_bounded_snapshots_of_scratch_paths() {
 	let (mut scope, run, file) = invoke_fixture("file_read", json!({}));
-	let result = snapshot_message_files(&mut scope, &run, std::slice::from_ref(&file.path))
-		.await
-		.unwrap();
-	assert_eq!(result[0].0.file_id, file.file_id);
-	assert_eq!(result[0].1, b"abcdefgh");
-	assert_eq!(scope.opens, 1);
-	let error = snapshot_message_files(&mut scope, &run, &["missing.png".into()])
-		.await
-		.unwrap_err();
-	assert!(matches!(error, Error::NotFound(_)));
-	assert_eq!(scope.opens, 1);
-	let too_many = vec![file.path; 9];
-	let error = snapshot_message_files(&mut scope, &run, &too_many)
-		.await
-		.unwrap_err();
-	assert!(matches!(error, Error::Invalid(_)));
-	let mut oversized: Vec<FileEntry> =
-		serde_json::from_value(scope.area.as_ref().unwrap().manifest.clone()).unwrap();
-	oversized[0].size = 8 * 1024 * 1024 + 1;
-	let path = oversized[0].path.clone();
-	scope.area.as_mut().unwrap().manifest = json!(oversized);
-	assert!(
-		matches!(snapshot_message_files(&mut scope, &run, &[path]).await, Err(Error::Invalid(message)) if message.contains("8 MiB"))
-	);
-	assert_eq!(scope.opens, 1);
-}
+	let runtime = Arc::new(Runtime::default());
+	runtime.file(&file.path, b"abcdefgh");
+	scope.pod = Some(context(runtime.clone()));
 
-#[tokio::test]
-async fn message_attachments_can_snapshot_saved_files_while_the_area_is_running() {
-	let (mut scope, run, file) = invoke_fixture("file_read", json!({}));
-	scope.area.as_mut().unwrap().state = "running".into();
 	let files = snapshot_message_files(&mut scope, &run, std::slice::from_ref(&file.path))
 		.await
 		.unwrap();
+	assert_eq!(files[0].0.path, file.path);
 	assert_eq!(files[0].1, b"abcdefgh");
-	scope.area.as_mut().unwrap().state = "uncertain".into();
-	assert!(
-		matches!(snapshot_message_files(&mut scope, &run, &[file.path]).await,
-		Err(Error::Domain(aidash_domain::Error::Conflict(code))) if code == "AREA_UNAVAILABLE")
-	);
-}
+	assert_eq!(runtime.calls(), ["file_manifest", "file_read"]);
+	assert_eq!(scope.opens, 0);
 
-#[tokio::test]
-async fn message_files_enforce_reference_sharing_rules_for_local_and_receiving_areas() {
-	let (mut scope, run, _) = invoke_fixture("file_read", json!({}));
-	let record = Uuid::new_v4();
-	let file = |path: &str, digest: &str, kind, provenance| FileEntry {
-		file_id: Uuid::new_v4(),
-		path: path.into(),
-		digest: digest.into(),
-		size: 8,
-		media_type: "text/plain".into(),
-		scope: kind,
-		provenance,
-	};
-	let reference = json!({"kind":"reference","id":record});
-	let manifest = vec![
-		file(
-			"references/doc.txt",
-			"reference",
-			FileScope::References,
-			reference.clone(),
-		),
-		// `file_copy` keeps the original's provenance.
-		file("copy.txt", "reference", FileScope::Working, reference),
-		// The same bytes saved again carry no provenance of a Reference.
-		file("out/doc.txt", "reference", FileScope::Working, json!({})),
-		file("ordinary.txt", "ordinary", FileScope::Working, json!({})),
-	];
-	let home = aidash_domain::capabilities::sessions::remote_home_constraint("aidash://home/node");
-	let area = scope.area.as_mut().unwrap();
-	area.manifest = json!(manifest);
-	for (destination, constraints) in [("local Thread", vec![]), ("remote Home", vec![home])] {
-		scope.area.as_mut().unwrap().constraints = json!(constraints);
-		for path in ["copy.txt", "out/doc.txt", "references/doc.txt"] {
-			assert!(
-				matches!(
-					snapshot_message_files(&mut scope, &run, &[path.into()]).await,
-					Err(Error::NotFound(_))
-				),
-				"{destination} must refuse {path}"
-			);
-		}
-		let sent = snapshot_message_files(&mut scope, &run, &["ordinary.txt".into()])
-			.await
-			.unwrap();
-		assert_eq!(sent[0].0.path, "ordinary.txt");
-		assert_eq!(sent[0].1, b"abcdefgh");
-
-		// Copying a Reference also adds a constraint that bars the Area from sending files.
-		let mut barred = constraints;
-		barred.push(json!({"kind":"reference","id":record}));
-		scope.area.as_mut().unwrap().constraints = json!(barred);
-		assert!(matches!(
-			snapshot_message_files(&mut scope, &run, &["ordinary.txt".into()]).await,
-			Err(Error::Forbidden)
-		));
-	}
+	assert!(matches!(
+		snapshot_message_files(&mut scope, &run, &["missing.png".into()]).await,
+		Err(Error::NotFound(_))
+	));
+	assert!(matches!(
+		snapshot_message_files(&mut scope, &run, &vec![file.path; 9]).await,
+		Err(Error::Invalid(_))
+	));
+	runtime.file("large.txt", &vec![0; 8 * 1024 * 1024 + 1]);
+	assert!(matches!(
+		snapshot_message_files(&mut scope, &run, &["large.txt".into()]).await,
+		Err(Error::Invalid(message)) if message.contains("byte limit")
+	));
 }
 
 #[tokio::test]
 async fn committed_message_replay_never_reopens_a_changed_or_deleted_file() {
 	let (mut scope, run, file) = invoke_fixture("file_read", json!({}));
+	let runtime = Arc::new(Runtime::default());
+	runtime.file(&file.path, b"abcdefgh");
+	scope.pod = Some(context(runtime.clone()));
 	let key = Uuid::new_v4();
 	let digest = "original request";
 	let paths = vec![file.path];
@@ -954,8 +680,8 @@ async fn committed_message_replay_never_reopens_a_changed_or_deleted_file() {
 		.cache(key, digest, &json!({"sent":true}))
 		.await
 		.unwrap();
-	scope.bytes = b"changed".to_vec();
-	scope.area.as_mut().unwrap().manifest = json!([]);
+
+	runtime.file(&paths[0], b"changed");
 	assert!(
 		snapshot_message_files_once(&mut scope, &run, key, digest, false, &paths)
 			.await
@@ -969,101 +695,9 @@ async fn committed_message_replay_never_reopens_a_changed_or_deleted_file() {
 			.unwrap()
 			.is_none()
 	);
-	assert_eq!(scope.opens, 1);
+	assert_eq!(runtime.calls(), ["file_manifest", "file_read"]);
 }
 
-#[tokio::test]
-async fn attachment_copy_publishes_provenance_and_enforces_working_quota() {
-	let (mut scope, run, _) = invoke_fixture("file_read", json!({}));
-	scope.active_run = Some(run.id);
-	let area = scope.area.as_ref().unwrap().clone();
-	let message = Uuid::new_v4();
-	let attachment = Uuid::new_v4();
-	let key = Uuid::new_v4();
-	let AttachmentCopy::Complete(output) = copy_thread_attachment(
-		&mut scope,
-		&run,
-		key,
-		area.revision,
-		"copied.png".into(),
-		message,
-		attachment,
-		"image/png".into(),
-		"digest".into(),
-		b"image",
-	)
-	.await
-	.unwrap() else {
-		panic!("expected a Working Area copy");
-	};
-	assert_eq!(scope.pending, b"image");
-	assert_eq!(
-		output["file"]["provenance"],
-		json!({"kind":"thread_attachment", "thread_id":area.thread_id, "message_id":message, "attachment_id":attachment})
-	);
-	assert!(
-		scope
-			.persisted
-			.as_ref()
-			.unwrap()
-			.constraints
-			.as_array()
-			.unwrap()
-			.contains(&json!({"kind":"message", "id":message}))
-	);
-	assert_eq!(scope.events[0].0, "capability.files_changed");
-	let too_large = vec![0; 1_000_001];
-	let error = copy_thread_attachment(
-		&mut scope,
-		&run,
-		Uuid::new_v4(),
-		area.revision,
-		"too-large".into(),
-		message,
-		attachment,
-		"image/png".into(),
-		"digest".into(),
-		&too_large,
-	)
-	.await;
-	assert!(matches!(error, Err(Error::Conflict(reason)) if reason == "WORKING_QUOTA"));
-}
-
-/// A receiving Area cannot read its Home's message, so a copy of that message's attachment
-/// adds no message source, which would make every later check of the Area refuse (ADR 0139).
-#[tokio::test]
-async fn a_receiving_areas_attachment_copy_adds_no_home_message_source() {
-	let (mut scope, run, _) = invoke_fixture("file_read", json!({}));
-	scope.active_run = Some(run.id);
-	let home = aidash_domain::capabilities::sessions::remote_home_constraint("aidash://home/node");
-	scope.area.as_mut().unwrap().constraints = json!([home]);
-	let area = scope.area.as_ref().unwrap().clone();
-	let message = Uuid::new_v4();
-	let attachment = Uuid::new_v4();
-	let AttachmentCopy::Complete(output) = copy_thread_attachment(
-		&mut scope,
-		&run,
-		Uuid::new_v4(),
-		area.revision,
-		"copied.png".into(),
-		message,
-		attachment,
-		"image/png".into(),
-		"digest".into(),
-		b"image",
-	)
-	.await
-	.unwrap() else {
-		panic!("expected a Working Area copy");
-	};
-	// The file still says where it came from.
-	assert_eq!(output["file"]["provenance"]["message_id"], json!(message));
-	assert_eq!(
-		scope.persisted.as_ref().unwrap().constraints,
-		json!([home]),
-		"only the Home the Area serves"
-	);
-}
 #[rstest::rstest]
 #[case("outbound_get", json!({"allowed_hosts":["example.com"]}), json!({"url":"https://outside.example/data"}))]
 #[case("file_read", json!({"scope":{"representation":["text"]}}), json!({"representation":"model_input"}))]
@@ -1081,7 +715,7 @@ async fn direct_invocations_reject_inputs_outside_admitted_binding_before_effect
 		Err(Error::Domain(aidash_domain::Error::Invalid(_)))
 	));
 	assert_eq!(scope.opens, 0);
-	assert!(scope.events.is_empty());
+	assert!(scope.cache_entry.is_none());
 }
 #[tokio::test]
 async fn direct_file_read_applies_the_admitted_limit_when_input_omits_it() {
@@ -1104,71 +738,35 @@ async fn direct_file_read_applies_the_admitted_limit_when_input_omits_it() {
 #[case::read("file_read")]
 #[case::search("file_search")]
 #[tokio::test]
-async fn a_running_area_exposes_only_its_saved_files(#[case] operation: &str) {
+async fn area_state_does_not_gate_reference_reads(#[case] operation: &str) {
 	let (mut scope, run, file) = invoke_fixture(operation, json!({}));
-	scope.area.as_mut().unwrap().state = "running".into();
 	let input = if operation == "file_read" {
 		json!({"file_id":file.file_id,"representation":"text","expected_digest":file.digest})
 	} else {
-		json!({"query":"abc","mode":"literal","scope":"working"})
+		json!({"query":"abc","mode":"literal","scope":"references"})
 	};
-	let result = invoke(&mut scope, &run, operation, input.clone(), "request")
-		.await
-		.unwrap();
-	assert_eq!(result.status, "completed");
-	assert_eq!(scope.opens, 1);
-	scope.area.as_mut().unwrap().state = "uncertain".into();
-	assert!(
-		matches!(invoke(&mut scope, &run, operation, input, "request").await,
-		Err(Error::Domain(aidash_domain::Error::Conflict(code))) if code == "AREA_UNAVAILABLE")
-	);
+	for state in ["running", "uncertain"] {
+		scope.area.as_mut().unwrap().state = state.into();
+		let result = invoke(&mut scope, &run, operation, input.clone(), "request")
+			.await
+			.unwrap();
+		assert_eq!(result.status, "completed");
+	}
+	assert_eq!(scope.opens, 2);
 }
 
 #[tokio::test]
-async fn subnode_file_selection_requires_both_ids_and_an_authorizing_adapter() {
+async fn reference_reads_reject_old_area_selectors() {
 	let (mut scope, run, file) = invoke_fixture("file_read", json!({}));
-	let mut input =
-		json!({"file_id": file.file_id, "representation": "text", "thread_id": Uuid::new_v4()});
-	assert!(matches!(
-		invoke(&mut scope, &run, "file_read", input.clone(), "request").await,
-		Err(Error::Invalid(_))
-	));
-	input["area_id"] = json!(Uuid::new_v4());
-	assert!(matches!(
-		invoke(&mut scope, &run, "file_read", input, "request").await,
-		Err(Error::Forbidden)
-	));
+	for field in ["thread_id", "area_id"] {
+		let mut input = json!({"file_id":file.file_id,"representation":"text"});
+		input[field] = json!(Uuid::new_v4());
+		assert!(matches!(
+			invoke(&mut scope, &run, "file_read", input, "request").await,
+			Err(Error::Invalid(_))
+		));
+	}
 	assert_eq!(scope.opens, 0);
-}
-
-#[tokio::test]
-async fn a_creating_run_reads_a_members_copy_but_not_its_reference_set() {
-	let (mut scope, run, file) = invoke_fixture("file_read", json!({}));
-	let mut reference = file.clone();
-	reference.file_id = Uuid::new_v4();
-	reference.path = "references/plan.md".into();
-	reference.scope = FileScope::References;
-	reference.provenance = json!({"kind":"reference","id":Uuid::new_v4()});
-	let mut copy = reference.clone();
-	copy.file_id = Uuid::new_v4();
-	copy.path = "plan.md".into();
-	copy.scope = FileScope::Working;
-	let mut member = scope.area.clone().unwrap();
-	member.id = Uuid::new_v4();
-	member.thread_id = Uuid::new_v4();
-	member.manifest = json!([reference, copy]);
-	scope.subnode = Some(member.clone());
-	let read = |file: &FileEntry| json!({"file_id": file.file_id, "representation": "text", "thread_id": member.thread_id, "area_id": member.id});
-
-	assert!(matches!(
-		invoke(&mut scope, &run, "file_read", read(&reference), "reference").await,
-		Err(Error::NotFound(_))
-	));
-	assert_eq!(scope.opens, 0);
-	let copied = invoke(&mut scope, &run, "file_read", read(&copy), "copy")
-		.await
-		.unwrap();
-	assert_eq!(copied.result["content"], "abcdefgh");
 }
 
 #[rstest::rstest]
@@ -1206,67 +804,7 @@ async fn direct_invocations_recheck_the_bound_definition_before_any_effect(
 		assert!(matches!(result, Err(Error::Forbidden)));
 	}
 	assert_eq!(scope.opens, 0);
-	assert!(scope.events.is_empty());
-}
-
-#[tokio::test]
-async fn a_completion_check_is_admitted_like_the_models_own_shell_call() {
-	let (mut scope, run, _) = invoke_fixture("shell", json!({}));
-	let input = json!({"idempotency_key":Uuid::nil(),"command":"cargo test","expected_revision":4});
-	verify(&mut scope, &run, input.clone(), "check")
-		.await
-		.unwrap();
-	assert_eq!(scope.verified, [input]);
-}
-
-#[rstest::rstest]
-#[case("catalog")]
-#[case("installation")]
-#[case("digest")]
-#[tokio::test]
-async fn a_completion_check_rechecks_the_bound_shell_before_any_effect(#[case] withdrawal: &str) {
-	let (mut scope, run, _) = invoke_fixture("shell", json!({}));
-	let id = scope
-		.binding_snapshot()
-		.unwrap()
-		.operation("shell")
-		.unwrap()
-		.identity
-		.id
-		.clone();
-	match withdrawal {
-		"catalog" => scope.deny_entry = Some(id),
-		"installation" => scope.deny_pinned = Some(id),
-		_ => scope.changed = Some(id),
-	}
-	let result = verify(&mut scope, &run, json!({"command":"cargo test"}), "check").await;
-	if withdrawal == "digest" {
-		assert!(matches!(result, Err(Error::Conflict(_))));
-	} else {
-		assert!(matches!(result, Err(Error::Forbidden)));
-	}
-	assert!(scope.verified.is_empty());
-}
-
-/// Polling a Check reads its operation as a `verification`, never as the
-/// model's shell, and never cancels it.
-#[tokio::test]
-async fn a_completion_check_is_polled_as_a_verification_operation() {
-	let (mut scope, run, _) = invoke_fixture("shell", json!({}));
-	let operation = Uuid::from_u128(7);
-	let result = verification(&mut scope, &run, operation, "poll")
-		.await
-		.unwrap();
-	assert_eq!(result["status"], "running");
-	assert_eq!(
-		scope.polled,
-		[(
-			aidash_domain::capabilities::operations::VERIFICATION.to_owned(),
-			false,
-			json!({"operation_id": operation}),
-		)]
-	);
-	assert!(scope.verified.is_empty());
+	assert!(scope.cache_entry.is_none());
 }
 
 #[tokio::test]
@@ -1289,64 +827,6 @@ async fn polling_preserves_the_runner_error_message_in_the_tool_result() {
 		response.result["error"]["message"],
 		"File changes were not saved."
 	);
-}
-
-#[tokio::test]
-async fn a_completion_check_needs_a_bound_shell() {
-	let (mut scope, run, _) = invoke_fixture("file_read", json!({}));
-	assert!(matches!(
-		verify(&mut scope, &run, json!({"command":"cargo test"}), "check").await,
-		Err(Error::Domain(aidash_domain::Error::Invalid(message))) if message.contains("shell")
-	));
-	assert!(scope.verified.is_empty());
-}
-
-fn working_copy(paths: &[&str]) -> WorkingCopy {
-	WorkingCopy {
-		idempotency_key: Uuid::new_v4(),
-		paths: paths.iter().map(|path| (*path).to_owned()).collect(),
-		destination: None,
-	}
-}
-
-#[tokio::test]
-async fn copying_saved_files_into_the_scratch_space_needs_the_active_run() {
-	let (mut scope, run, file) = invoke_fixture("file_read", json!({}));
-	let area = scope.area.as_ref().unwrap().clone();
-	let refused = crate::capabilities::pod::save::Copy::prepare(
-		&mut scope,
-		&run,
-		&area,
-		working_copy(&[&file.path]),
-	)
-	.await;
-	assert!(matches!(refused, Err(Error::Conflict(message)) if message == "RUN_NOT_ACTIVE"));
-}
-
-#[tokio::test]
-async fn copying_saved_files_writes_them_at_their_paths() {
-	let (mut scope, run, file) = invoke_fixture("file_read", json!({}));
-	scope.active_run = Some(run.id);
-	let area = scope.area.as_ref().unwrap().clone();
-	let runtime = std::sync::Arc::new(crate::capabilities::pod::tests::Runtime::default());
-	let context = crate::capabilities::pod::tests::context(runtime.clone());
-	let Prepared::Call(mut copy) = crate::capabilities::pod::save::Copy::prepare(
-		&mut scope,
-		&run,
-		&area,
-		working_copy(&[&file.path]),
-	)
-	.await
-	.unwrap() else {
-		panic!("expected a fresh copy");
-	};
-	let copied = copy.execute(&run, &context).await.unwrap();
-	assert_eq!(copied["copied"][0]["path"], file.path);
-	let writes = runtime.writes.lock().unwrap().clone();
-	assert_eq!(writes.len(), 1);
-	assert_eq!(writes[0].path, file.path);
-	assert!(writes[0].final_chunk);
-	assert_eq!(writes[0].run_id, run.id.to_string());
 }
 
 #[test]

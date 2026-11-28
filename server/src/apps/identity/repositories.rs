@@ -187,6 +187,7 @@ pub(crate) mod budgets;
 pub(crate) mod data_protection;
 pub(crate) mod execution_settings;
 pub(crate) mod flows;
+pub(crate) mod goal_judge;
 pub(crate) mod manual_keys;
 pub mod oauth_clients;
 pub(crate) mod standing_instructions;
@@ -195,3 +196,5 @@ pub(crate) mod subnodes;
 pub mod connection_policy;
 
 pub mod oauth_connections;
+
+pub(crate) mod embedding_settings;

@@ -1,0 +1,10 @@
+SET LOCAL aidash.scope = 'deployment';
+ALTER TABLE public.registry DISABLE TRIGGER marketplace_registry_fence;
+UPDATE "registry" SET "metadata" = jsonb_set(metadata - 'binding_normalization', '{config}', CASE WHEN jsonb_typeof(metadata #> '{config,bindings}') = 'array' THEN jsonb_set(CASE WHEN jsonb_typeof(metadata #> '{config,remove_default}') = 'array' THEN jsonb_set((metadata->'config') - 'completion', '{remove_default}', (metadata #> '{config,remove_default}') - 'artifact_publish') ELSE (metadata->'config') - 'completion' END, '{bindings}', COALESCE((SELECT jsonb_agg(binding ORDER BY position) FROM jsonb_array_elements(metadata #> '{config,bindings}') WITH ORDINALITY AS b(binding, position) WHERE binding #>> '{target,id}' IS DISTINCT FROM 'aidash.artifact_publish'), '[]'::jsonb)) ELSE CASE WHEN jsonb_typeof(metadata #> '{config,remove_default}') = 'array' THEN jsonb_set((metadata->'config') - 'completion', '{remove_default}', (metadata #> '{config,remove_default}') - 'artifact_publish') ELSE (metadata->'config') - 'completion' END END) WHERE "kind" = 'agent';
+ALTER TABLE public.registry ENABLE TRIGGER marketplace_registry_fence;
+UPDATE "task_executions" SET "context" = context - 'completion' WHERE context ? 'completion';
+UPDATE "task_executions" SET "context" = jsonb_set(context, '{execution_summary,content}', (context #> '{execution_summary,content}') - 'goal' || jsonb_build_object('intent', context #> '{execution_summary,content,goal}')) WHERE context #> '{execution_summary,content,goal}' IS NOT NULL;
+UPDATE "core_operations" SET "state" = 'cancelled' WHERE "kind" = 'verification' AND "state" IN ('prepared', 'submitted', 'running', 'cancelling');
+DELETE FROM "authorization_run_reads" WHERE "resource_kind" = 'artifact';
+DELETE FROM "semantic_entries" WHERE source->>'kind' = 'artifact';
+DELETE FROM "events" WHERE "kind" = 'artifact.published';

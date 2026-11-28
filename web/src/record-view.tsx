@@ -51,8 +51,6 @@ export function useRecordLabels() {
       run.id,
       `${labels.get(run.task_id) ?? t("execution")} · ${t(run.phase)}`,
     );
-  for (const artifact of data?.artifacts ?? [])
-    labels.set(artifact.id, artifact.name || t("artifact"));
   const endpointLabel = (endpoint: string) => {
     try {
       const url = new URL(endpoint);

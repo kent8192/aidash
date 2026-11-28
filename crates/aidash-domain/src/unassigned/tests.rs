@@ -154,7 +154,7 @@ fn none() -> BTreeSet<Uuid> {
 #[test]
 fn nothing_pending_finishes() {
 	assert_eq!(
-		decide_children(&summary(0, false, vec![]), &none(), false),
+		decide_children(&summary(0, false, vec![]), &none()),
 		ChildrenDecision::Finish
 	);
 }
@@ -163,7 +163,7 @@ fn nothing_pending_finishes() {
 fn a_failed_child_goes_to_a_person_first() {
 	let summary = summary(2, true, vec![unassigned(1, true, false)]);
 	assert_eq!(
-		decide_children(&summary, &none(), false),
+		decide_children(&summary, &none()),
 		ChildrenDecision::AskAboutFailed
 	);
 }
@@ -171,14 +171,7 @@ fn a_failed_child_goes_to_a_person_first() {
 #[test]
 fn another_child_that_can_change_means_waiting() {
 	let summary = summary(2, false, vec![unassigned(1, true, false)]);
-	assert_eq!(
-		decide_children(&summary, &none(), false),
-		ChildrenDecision::Wait
-	);
-	assert_eq!(
-		decide_children(&summary, &none(), true),
-		ChildrenDecision::Wait
-	);
+	assert_eq!(decide_children(&summary, &none()), ChildrenDecision::Wait);
 }
 
 #[test]
@@ -190,7 +183,7 @@ fn an_untold_task_is_told_once() {
 	);
 	let told = BTreeSet::from([id(1)]);
 	assert_eq!(
-		decide_children(&summary, &told, false),
+		decide_children(&summary, &told),
 		ChildrenDecision::Tell(vec![unassigned(2, true, false)])
 	);
 }
@@ -201,7 +194,7 @@ fn a_notice_names_at_most_32_tasks_in_id_order() {
 	let mut tasks = tasks;
 	tasks.sort_by_key(|task| task.id);
 	let summary = summary(40, false, tasks);
-	let ChildrenDecision::Tell(told) = decide_children(&summary, &none(), false) else {
+	let ChildrenDecision::Tell(told) = decide_children(&summary, &none()) else {
 		panic!("expected a notice");
 	};
 	assert_eq!(told.len(), LIST_LIMIT);
@@ -210,20 +203,11 @@ fn a_notice_names_at_most_32_tasks_in_id_order() {
 }
 
 #[test]
-fn with_no_step_left_nobody_is_told() {
-	let summary = summary(1, false, vec![unassigned(1, true, false)]);
-	assert_eq!(
-		decide_children(&summary, &none(), true),
-		ChildrenDecision::FinishAbandoning(vec![unassigned(1, true, false)])
-	);
-}
-
-#[test]
 fn told_tasks_made_by_this_run_are_abandoned_as_the_parent_completes() {
 	let summary = summary(1, false, vec![unassigned(1, true, false)]);
 	let told = BTreeSet::from([id(1)]);
 	assert_eq!(
-		decide_children(&summary, &told, false),
+		decide_children(&summary, &told),
 		ChildrenDecision::FinishAbandoning(vec![unassigned(1, true, false)])
 	);
 }
@@ -237,7 +221,7 @@ fn a_task_made_elsewhere_goes_to_a_person_and_nothing_is_abandoned() {
 	);
 	let told = BTreeSet::from([id(1), id(2)]);
 	assert_eq!(
-		decide_children(&summary, &told, false),
+		decide_children(&summary, &told),
 		ChildrenDecision::AskAboutUnassigned(vec![unassigned(2, false, false)])
 	);
 }
@@ -247,7 +231,7 @@ fn a_task_with_open_children_of_its_own_is_not_abandonable_so_it_goes_to_a_perso
 	let summary = summary(1, false, vec![unassigned(1, false, false)]);
 	let told = BTreeSet::from([id(1)]);
 	assert_eq!(
-		decide_children(&summary, &told, true),
+		decide_children(&summary, &told),
 		ChildrenDecision::AskAboutUnassigned(vec![unassigned(1, false, false)])
 	);
 }
@@ -261,7 +245,7 @@ fn a_handed_over_child_makes_the_parent_abandon_and_wait() {
 	);
 	let told = BTreeSet::from([id(1), id(2)]);
 	assert_eq!(
-		decide_children(&summary, &told, false),
+		decide_children(&summary, &told),
 		ChildrenDecision::AbandonAndWait(vec![unassigned(1, true, false)])
 	);
 }
@@ -275,7 +259,7 @@ fn a_handed_over_child_whose_root_goes_to_a_person_waits_for_the_person() {
 	);
 	let told = BTreeSet::from([id(1), id(2)]);
 	assert_eq!(
-		decide_children(&summary, &told, false),
+		decide_children(&summary, &told),
 		ChildrenDecision::AskAboutUnassigned(vec![unassigned(1, false, false)])
 	);
 }
@@ -286,10 +270,7 @@ fn nothing_to_abandon_beside_a_handed_over_child_waits() {
 	// either abandonable or asked about.
 	let summary = summary(1, false, vec![unassigned(2, true, true)]);
 	let told = BTreeSet::from([id(2)]);
-	assert_eq!(
-		decide_children(&summary, &told, false),
-		ChildrenDecision::Wait
-	);
+	assert_eq!(decide_children(&summary, &told), ChildrenDecision::Wait);
 }
 
 #[test]

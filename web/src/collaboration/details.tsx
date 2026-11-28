@@ -38,7 +38,6 @@ import {
   taskExecutions as taskRunPage,
 } from "../generated/aidash";
 import type {
-  Artifact,
   Discovery,
   Entry,
   HumanRequest,
@@ -67,8 +66,8 @@ import {
 import { GenerationAssignForm } from "../generation";
 import { EntityDetails } from "../entity-details";
 import { ApprovalReviewPanel } from "../approval-review";
+import { TaskGoal } from "./task-goal";
 import { RunSubnodes } from "./subnodes";
-import { ArtifactList } from "./channel";
 import {
   answeredAtDeadline,
   closedWhenRunEnded,
@@ -94,7 +93,6 @@ export type Selection = {
   thread?: Thread;
   run?: Run;
   request?: HumanRequest;
-  artifact?: Artifact;
   node?: string;
   carryResults?: {
     node: string;
@@ -168,8 +166,7 @@ export function OperationsDialog({
   const continues = request ? continuesAt(request) : null;
   const isDeploymentAdministrator =
     data.access.kind === "deployment_administrator";
-  const unavailable =
-    isDeploymentAdministrator && (d.kind === "entity" || d.kind === "cluster");
+  const unavailable = isDeploymentAdministrator && d.kind === "entity";
   const execution = ["thread", "goal", "task", "assign", "human"].includes(
     d.kind,
   );
@@ -209,7 +206,6 @@ export function OperationsDialog({
                   assign: "delegate",
                   generate: "generationAssign",
                   entity: "register",
-                  cluster: "register",
                   registrationCarry: "register",
                 } as Record<string, string>
               )[d.kind] ?? d.kind,
@@ -270,12 +266,8 @@ export function OperationsDialog({
             {d.kind === "task" && (
               <TaskForm data={data} thread={d.thread?.id} submit={submit} />
             )}
-            {(d.kind === "entity" || d.kind === "cluster") && (
-              <EntityForm
-                data={data}
-                submit={submit}
-                initial={d.kind === "cluster" ? "cluster" : "agent"}
-              />
+            {d.kind === "entity" && (
+              <EntityForm data={data} submit={submit} initial="agent" />
             )}
             {d.kind === "assign" && task && (
               <AssignForm
@@ -504,10 +496,13 @@ export function OperationsDialog({
                   <Disclosure summary={t("requirements")}>
                     <JsonView value={task.requirements} />
                   </Disclosure>
-                  <ArtifactList
-                    artifacts={(taskSnapshot.data?.artifacts ?? []).filter(
-                      (artifact) => artifact.task_id === task.id,
-                    )}
+                  <TaskGoal
+                    task={task}
+                    editable={
+                      data.access.kind === "subject" &&
+                      data.access.subject === task.created_by
+                    }
+                    submit={submit}
                   />
                 </>
               ) : (

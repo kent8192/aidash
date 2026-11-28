@@ -1020,6 +1020,7 @@ async fn purge_pages_reader_and_publication_journals_beyond_graph_capacity(
 				&NewTask {
 					title: format!("Memory reader {ordinal}"),
 					description: "Retained journal fixture".into(),
+					goal: None,
 					requirements: json!({}),
 					dependencies: vec![],
 					parent_id: None,

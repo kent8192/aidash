@@ -27,7 +27,6 @@ fn entry(id: &str, kind: &str, config: Value) -> Entry {
 		capabilities: vec![],
 		tags: vec![],
 		languages: vec![],
-		skills: vec![],
 		schema: json!({"type":"object"}),
 		config,
 	}
@@ -61,6 +60,7 @@ impl Catalog {
 					| "workspace_message"
 					| "memory_mutate"
 					| "subnode_task"
+					| "task_create" | "task_delegate"
 			) {
 				result.insert(entry(
 					&format!("aidash.{operation}"),
@@ -155,10 +155,8 @@ impl ProviderCatalog for Providers {
 	}
 }
 fn agent_config() -> AgentBindings {
-	serde_json::from_value(
-		json!({"schema_version":1,"model":{"id":"model","version":"1.0.0"},"instructions":"Test"}),
-	)
-	.unwrap()
+	serde_json::from_value(json!({"model":{"id":"model","version":"1.0.0"},"instructions":"Test"}))
+		.unwrap()
 }
 fn agent_entry(config: &AgentBindings) -> Entry {
 	entry("agent", "agent", serde_json::to_value(config).unwrap())
@@ -271,6 +269,8 @@ async fn previously_normalized_agent_resolves_without_rewriting_its_builtin_bind
 				| "aidash.workspace_message"
 				| "aidash.memory_mutate"
 				| "aidash.subnode_task"
+				| "aidash.task_create"
+				| "aidash.task_delegate"
 				| "aidash.file_read"
 				| "aidash.file_search"
 				| "aidash.workspace_wait"
@@ -540,7 +540,7 @@ async fn alias_collisions_are_checked_after_expansion() {
 }
 #[test]
 fn memory_builtins_use_the_default_provider_without_an_explicit_provider() {
-	use crate::test_support::{agent, binding, entry, native_memory_entries, resolve, try_resolve};
+	use crate::test_support::{agent, binding, entry, resolve, try_resolve};
 	let node = "aidash://node-a";
 	let memory_tools = |saved: &BindingSnapshot| -> Vec<Option<String>> {
 		saved
@@ -561,62 +561,39 @@ fn memory_builtins_use_the_default_provider_without_an_explicit_provider() {
 			.map(|b| b.excluded_reason.clone())
 			.collect()
 	};
-	let mut entries = crate::test_support::builtin_entries(node);
+	let entries = crate::test_support::builtin_entries(node);
 	let saved = resolve(node, &agent("agent"), false, entries.clone());
 	let reasons = memory_tools(&saved);
 	assert_eq!(reasons, vec![None; 3]);
 	saved.operation("memory_recall").unwrap();
 
-	// Native memory sources are not providers; they coexist with the default.
+	let mut root = agent("agent");
+	root.config["bindings"] = json!([binding("tool", node, "aidash.memory_recall")]);
+	let saved = resolve(node, &root, false, entries.clone());
+	assert_eq!(
+		aidash_domain::registry::AgentConfig::from_snapshot(&saved)
+			.unwrap()
+			.memory
+			.unwrap()
+			.id,
+		"aidash.memory"
+	);
+	assert!(saved.operation("memory_recall").is_ok());
 	for adapter in ["semantic_memory", "conversation_memory"] {
 		let mut entries = entries.clone();
 		entries.push(entry(
 			adapter,
 			"memory",
-			serde_json::json!({"schema_version":1,"source":{"adapter":adapter}}),
+			json!({"schema_version":1,"source":{"adapter":adapter}}),
 		));
-		let mut root = agent("agent");
-		root.config["bindings"] = serde_json::json!([binding("memory", node, adapter)]);
-		let saved = resolve(node, &root, false, entries.clone());
-		assert_eq!(memory_tools(&saved), vec![None; 3], "{adapter}");
-		saved.operation("memory_recall").unwrap();
-		let settings = aidash_domain::registry::AgentConfig::from_snapshot(&saved).unwrap();
-		assert_eq!(settings.memory.unwrap().id, "aidash.memory", "{adapter}");
-
-		// Explicitly binding the tool still uses the default provider.
-		root.config["bindings"] = serde_json::json!([
-			binding("memory", node, adapter),
-			binding("tool", node, "aidash.memory_recall"),
-		]);
+		root.config["bindings"] = json!([binding("memory", node, adapter)]);
 		assert!(
-			try_resolve(node, &root, false, entries.clone()).is_ok(),
-			"{adapter}"
-		);
-
-		// A source declaration may name the now-available memory tools.
-		let mut declared = entries;
-		let source = declared.last_mut().unwrap();
-		let mut native: aidash_domain::registry::bindings::sources::NativeContext =
-			serde_json::from_value(source.config.clone()).unwrap();
-		native.context_source = Some(native.declaration(&QualifiedRef {
-			registry_deployment: node.into(),
-			id: adapter.into(),
-			version: "1.0.0".into(),
-		}));
-		source.config = serde_json::to_value(native).unwrap();
-		root.config["bindings"] = serde_json::json!([binding("memory", node, adapter)]);
-		assert!(
-			try_resolve(node, &root, false, declared).is_ok(),
-			"{adapter}"
+			try_resolve(node, &root, false, entries)
+				.unwrap_err()
+				.to_string()
+				.contains("built in")
 		);
 	}
-
-	entries.extend(native_memory_entries());
-	let mut root = agent("agent");
-	root.config["bindings"] = serde_json::json!([binding("memory", node, "native")]);
-	let saved = resolve(node, &root, false, entries);
-	assert_eq!(memory_tools(&saved), vec![None; 3]);
-	saved.operation("memory_recall").unwrap();
 }
 #[tokio::test]
 async fn remote_defaults_have_durable_exclusion_reasons_and_explicit_inputs_fail() {
@@ -907,9 +884,7 @@ async fn complete_snapshot_retains_delegation_dependencies_and_rejects_wrong_kin
 #[tokio::test]
 async fn context_recovery_uses_the_agents_pinned_model() {
 	let mut catalog = Catalog::new();
-	let mut config = agent_config();
-	config.context_policy =
-		Some(serde_json::from_value(json!({"version":"context-recovery/1","summary":{}})).unwrap());
+	let config = agent_config();
 	let graph = snapshot(&mut catalog, &config, false).await.unwrap();
 	graph.validate().unwrap();
 	assert!(
@@ -995,19 +970,13 @@ async fn native_context_is_explicit_and_skill_sources_cannot_omit_support() {
 		members: vec![],
 		exposure: None,
 	});
-	let bound = snapshot(&mut catalog, &config, false).await.unwrap();
 	assert!(
-		bound
-			.bindings
-			.iter()
-			.any(|b| b.identity == reference("memory"))
+		snapshot(&mut catalog, &config, false)
+			.await
+			.unwrap_err()
+			.to_string()
+			.contains("built in")
 	);
-	catalog
-		.entries
-		.get_mut(&reference("memory"))
-		.unwrap()
-		.config = json!({"schema_version":1,"source":{"adapter":"future_framework"}});
-	assert!(snapshot(&mut catalog, &config, false).await.is_err());
 	config.bindings.clear();
 	catalog.insert(entry(
 		"skills-root",
@@ -1167,7 +1136,7 @@ async fn deferred_agents_reject_explicit_legacy_skill_readers_at_admission_and_r
 
 #[rstest::rstest]
 #[tokio::test]
-async fn legacy_agents_reject_deferred_only_builtins_at_admission_and_recovery(
+async fn agents_without_deferred_exposure_reject_deferred_only_builtins(
 	#[values(
 		"capability_search",
 		"capability_describe",
@@ -1176,14 +1145,11 @@ async fn legacy_agents_reject_deferred_only_builtins_at_admission_and_recovery(
 		"skill_asset_read"
 	)]
 	operation: &str,
-	#[values(None, Some(aidash_domain::exposure::ExposurePolicy::Legacy))] legacy: Option<
-		aidash_domain::exposure::ExposurePolicy,
-	>,
 	#[values("admission", "recovery")] boundary: &str,
 ) {
 	// Arrange / Act: a deferred Agent binds the builtin.
 	let deferred = aidash_domain::exposure::ExposurePolicy::Deferred(Default::default());
-	let error = policy_rejection(operation, Some(deferred), legacy, boundary).await;
+	let error = policy_rejection(operation, Some(deferred), None, boundary).await;
 	// Assert
 	assert!(
 		error.contains(&format!(
@@ -1503,8 +1469,8 @@ async fn sent_tool_definitions(bindings: [&str; 3]) -> String {
 /// depend on the order an Agent declares its Bindings (ADR 0019).
 #[tokio::test]
 async fn tool_definitions_are_byte_identical_for_any_binding_order() {
-	let declared = sent_tool_definitions(["workspace_read", "file_read", "artifact_publish"]).await;
-	let reversed = sent_tool_definitions(["artifact_publish", "file_read", "workspace_read"]).await;
+	let declared = sent_tool_definitions(["workspace_read", "file_read", "deliverable_note"]).await;
+	let reversed = sent_tool_definitions(["deliverable_note", "file_read", "workspace_read"]).await;
 	assert_eq!(declared, reversed);
 }
 
@@ -1531,10 +1497,7 @@ async fn pinned_workspace_tool_validates_its_declared_arguments(
 	#[case] input: Value,
 	#[case] rejected: Option<&str>,
 ) {
-	let seed: Vec<Entry> = serde_json::from_str(include_str!(
-		"../../../../../tests/fixtures/builtin_seed_develop_7abdf5.json"
-	))
-	.unwrap();
+	let seed = crate::test_support::migrated_develop_seed();
 	let identity = QualifiedRef {
 		version: version.into(),
 		..QualifiedRef::builtin(NODE, operation)
@@ -1836,13 +1799,13 @@ async fn remote_registry_skill_reader_does_not_require_a_native_working_area() {
 	let mut catalog = Catalog::new();
 	let mut config = agent_config();
 	catalog.insert(entry(
-		"memory",
-		"memory",
-		json!({"schema_version":1,"source":{"adapter":"semantic_memory"}}),
+		"thread-retrieval",
+		"source",
+		json!({"schema_version":1,"source":{"adapter":"workspace_retrieval"}}),
 	));
 	config.bindings.push(Binding {
-		kind: BindingKind::Memory,
-		target: reference("memory"),
+		kind: BindingKind::Source,
+		target: reference("thread-retrieval"),
 		alias: None,
 		narrow: Default::default(),
 		members: vec![],
@@ -1851,7 +1814,7 @@ async fn remote_registry_skill_reader_does_not_require_a_native_working_area() {
 	let admitted = snapshot(&mut catalog, &config, true).await.unwrap();
 	assert!(admitted.operation("skill_read").is_ok());
 	let settings = aidash_domain::registry::AgentConfig::from_snapshot(&admitted).unwrap();
-	assert!(settings.semantic_memory);
+	assert!(settings.thread_context);
 	// File tools are candidates for a remote Run now; the receiver gives it a
 	// Working Area of its own (ADR 0139), so they need area authority there.
 	assert!(settings.needs_context_authority());
@@ -1969,145 +1932,42 @@ async fn aggregate_reference_mounts_require_files_and_unique_identities() {
 }
 
 #[test]
-fn native_memory_binding_preserves_removed_read_operations() {
-	let mut root = crate::test_support::agent("native-read-disabled");
-	root.config["bindings"] = json!([crate::test_support::binding("memory", NODE, "native")]);
+fn builtin_memory_respects_removed_read_operations() {
+	let mut root = crate::test_support::agent("memory-read-disabled");
 	root.config["remove_default"] = json!(["memory_recall", "memory_reflect"]);
 	let admitted = crate::test_support::resolve(
 		NODE,
 		&root,
 		true,
-		crate::test_support::native_memory_entries(),
+		crate::test_support::builtin_entries(NODE),
 	);
 	let settings = aidash_domain::registry::AgentConfig::from_snapshot(&admitted).unwrap();
-	assert_eq!(settings.memory.unwrap().id, "native");
-	assert_eq!(settings.allow_cross_conversation_memory, Some(false));
+	assert_eq!(
+		settings.memory.as_ref().unwrap().id,
+		aidash_domain::registry::bindings::memory_defaults::MEMORY_ID
+	);
+	assert!(!aidash_domain::tool::contract::AgentFlag::MemoryRead.permitted(&settings));
 	assert!(admitted.operation("memory_recall").is_err());
 	assert!(admitted.operation("memory_reflect").is_err());
 }
 
-fn decider_config() -> Value {
-	let mut entry = crate::registry::system::approval_decider().unwrap();
-	entry.config["routes"] = json!([{"provider_contract":"typesafe.jev/1","model":"typesafe/jev-1.13","threshold":"3fe0000000000000"}]);
-	entry.config["max_calls_per_run"] = json!(20);
-	entry.config
-}
-fn decider_binding(id: &str) -> Binding {
-	serde_json::from_value(json!({"kind":"decider","target":reference(id),"narrow":{"decision":{"threshold":"3fd0000000000000","preserve_recent":8}}})).unwrap()
-}
 #[tokio::test]
-async fn explicit_decider_snapshot_pins_provider_builder_model_and_narrowing() {
+async fn custom_decider_bindings_are_refused_for_local_and_remote_agents() {
 	let mut catalog = Catalog::new();
-	catalog.insert(entry("decider", "decider", decider_config()));
+	let mut custom = crate::registry::system::approval_decider().unwrap();
+	custom.id = "custom-decider".into();
+	catalog.insert(custom);
 	let mut config = agent_config();
-	config.bindings.push(decider_binding("decider"));
-	let saved = snapshot(&mut catalog, &config, false).await.unwrap();
-	saved.validate().unwrap();
-	let implementation = saved
-		.bindings
-		.iter()
-		.find(|b| b.definition.kind == "decider")
-		.unwrap()
-		.provider_implementation
-		.as_deref()
-		.unwrap();
-	assert_eq!(implementation, "node-a/decision-adapter-v2");
-	assert_ne!(implementation, aidash_domain::decision::PROVIDER);
-	let recovered: BindingSnapshot =
-		serde_json::from_value(serde_json::to_value(&saved).unwrap()).unwrap();
-	recovered.validate().unwrap();
-	assert_eq!(recovered, saved);
-	for implementation in [None, Some(""), Some(" \t ")] {
-		let mut corrupt = saved.clone();
-		corrupt
-			.bindings
-			.iter_mut()
-			.find(|b| b.definition.kind == "decider")
-			.unwrap()
-			.provider_implementation = implementation.map(str::to_owned);
-		assert!(corrupt.validate().is_err());
+	config.bindings.push(
+		serde_json::from_value(json!({"kind":"decider","target":reference("custom-decider")}))
+			.unwrap(),
+	);
+	for remote in [false, true] {
+		let error = snapshot(&mut catalog, &config, remote).await.unwrap_err();
+		assert!(error.to_string().contains("built in"), "{error}");
 	}
-	let bound = recovered
-		.decider(aidash_domain::decision::Hook::Approval)
-		.unwrap();
-	assert_eq!(bound.pin.identity, reference("decider"));
-	assert_eq!(
-		serde_json::to_value(&bound.pin).unwrap()["provider_implementation"],
-		implementation
-	);
-	assert_eq!(bound.config.routes[0].model, "typesafe/jev-1.13");
-	assert_eq!(bound.restrictions.preserve_recent, 8);
-	assert_eq!(bound.restrictions.threshold.value(), 0.25);
-	catalog
-		.entries
-		.get_mut(&reference("decider"))
-		.unwrap()
-		.config["routes"][0]["model"] = json!("typesafe/jev-1.14");
-	assert_eq!(
-		saved
-			.decider(aidash_domain::decision::Hook::Approval)
-			.unwrap()
-			.config
-			.routes[0]
-			.model,
-		"typesafe/jev-1.13"
-	);
-	let mut corrupt = saved.clone();
-	corrupt
-		.bindings
-		.iter_mut()
-		.find(|b| b.definition.kind == "decider")
-		.unwrap()
-		.provider_contract_digest = Some("a".repeat(64));
-	assert!(corrupt.validate().is_err());
-	corrupt = saved;
-	corrupt
-		.bindings
-		.iter_mut()
-		.find(|b| b.definition.kind == "decider")
-		.unwrap()
-		.narrow
-		.decision
-		.as_mut()
-		.unwrap()
-		.preserve_recent = 6;
-	assert!(corrupt.validate().is_err());
 }
-#[tokio::test]
-async fn duplicate_decider_hooks_and_unavailable_node_implementations_fail_admission() {
-	let mut catalog = Catalog::new();
-	catalog.insert(entry("decider", "decider", decider_config()));
-	catalog.insert(entry("other", "decider", decider_config()));
-	let mut config = agent_config();
-	config.bindings.push(decider_binding("decider"));
-	config.bindings.push(decider_binding("other"));
-	assert!(snapshot(&mut catalog, &config, false).await.is_err());
-	config.bindings.pop();
-	let unavailable = Providers {
-		unavailable: Some("decision".into()),
-	};
-	assert!(
-		resolve(
-			&mut catalog,
-			&unavailable,
-			reference("agent"),
-			&agent_entry(&config),
-			false
-		)
-		.await
-		.is_err()
-	);
-	let saved = snapshot(&mut catalog, &config, true).await.unwrap();
-	assert_eq!(
-		saved
-			.decider(aidash_domain::decision::Hook::Approval)
-			.unwrap()
-			.pin
-			.identity
-			.registry_deployment,
-		NODE
-	);
-}
+
 #[test]
 fn decider_bindings_reject_deletion_widening_and_tool_only_fields() {
 	for narrow in [
@@ -2369,50 +2229,26 @@ async fn shared_read_claim_above_a_sequential_provider_is_rejected(#[case] descr
 }
 
 #[rstest::rstest]
-#[case::one_opted_in(&["degrade"], false, true)]
-#[case::default_pause(&["pause"], false, false)]
-#[case::one_source_without_opt_in(&["degrade", "pause"], false, false)]
-#[case::semantic_memory_shares_the_slot(&["degrade"], true, false)]
-#[case::no_thread_source(&[], false, false)]
+#[case::one_opted_in(&["degrade"], true)]
+#[case::default_pause(&["pause"], false)]
+#[case::one_source_without_opt_in(&["degrade", "pause"], false)]
+#[case::no_thread_source(&[], false)]
 #[tokio::test]
 async fn the_thread_slot_degrades_only_when_every_source_feeding_it_opted_in(
 	#[case] policies: &[&str],
-	#[case] semantic_memory: bool,
 	#[case] degrades: bool,
 ) {
 	let mut catalog = Catalog::new();
 	let mut config = agent_config();
-	let mut bind = |kind, id: String, source: serde_json::Value| {
+	for (index, policy) in policies.iter().enumerate() {
+		let id = format!("thread-{index}");
 		catalog.insert(entry(
 			&id,
-			if kind == BindingKind::Memory {
-				"memory"
-			} else {
-				"source"
-			},
-			json!({"schema_version":1,"source":source}),
+			"source",
+			json!({"schema_version":1,"source":{"adapter":"workspace_retrieval","on_unavailable":policy}}),
 		));
-		config.bindings.push(Binding {
-			kind,
-			target: reference(&id),
-			alias: None,
-			narrow: Default::default(),
-			members: vec![],
-			exposure: None,
-		});
-	};
-	for (index, policy) in policies.iter().enumerate() {
-		bind(
-			BindingKind::Source,
-			format!("thread-{index}"),
-			json!({"adapter":"workspace_retrieval","on_unavailable":policy}),
-		);
-	}
-	if semantic_memory {
-		bind(
-			BindingKind::Memory,
-			"memory".into(),
-			json!({"adapter":"semantic_memory"}),
+		config.bindings.push(
+			serde_json::from_value(json!({"kind":"source","target":reference(&id)})).unwrap(),
 		);
 	}
 	let admitted = snapshot(&mut catalog, &config, false).await.unwrap();
@@ -2507,7 +2343,7 @@ async fn remote_home_receipt_obligation_rejects_on_demand_despite_false_declarat
 	None,
 	false
 )]
-#[case::thread_only_correction_first(
+#[case::second_source_correction_first(
 	None,
 	Some(aidash_domain::context::source::QueryPolicy::AcceptedInputsFirstV1),
 	false
@@ -2519,10 +2355,9 @@ async fn remote_home_receipt_obligation_rejects_on_demand_despite_false_declarat
 )]
 #[tokio::test]
 async fn semantic_query_policy_agrees_including_implicit_defaults(
-	#[case] memory_query: Option<aidash_domain::context::source::QueryPolicy>,
-	#[case] thread_query: Option<aidash_domain::context::source::QueryPolicy>,
+	#[case] first_query: Option<aidash_domain::context::source::QueryPolicy>,
+	#[case] second_query: Option<aidash_domain::context::source::QueryPolicy>,
 	#[case] accepted: bool,
-	#[values("semantic_memory", "conversation_memory")] memory_adapter: &str,
 ) {
 	use aidash_domain::registry::bindings::sources::{NativeContext, NativeSource, OnUnavailable};
 	let mut catalog = Catalog::new();
@@ -2530,104 +2365,37 @@ async fn semantic_query_policy_agrees_including_implicit_defaults(
 	config
 		.bindings
 		.push(Binding::tool(QualifiedRef::builtin(NODE, "workspace_read")));
-	for (id, kind, source, query) in [
-		(
-			"query-memory",
-			"memory",
-			serde_json::from_value(json!({"adapter": memory_adapter})).unwrap(),
-			memory_query,
-		),
-		(
-			"query-thread",
-			"source",
-			NativeSource::WorkspaceRetrieval {
-				on_unavailable: OnUnavailable::Pause,
-			},
-			thread_query,
-		),
+	for (id, query) in [
+		("first-query-source", first_query),
+		("second-query-source", second_query),
 	] {
 		let mut native = NativeContext {
 			schema_version: 1,
-			source,
+			source: NativeSource::WorkspaceRetrieval {
+				on_unavailable: OnUnavailable::Pause,
+			},
 			context_source: None,
 		};
 		if let Some(query) = query {
 			let mut declaration = native.declaration(&reference(id));
 			declaration.query = query;
-			if kind == "memory" {
-				// Without a memory provider the memory tools are excluded, so an
-				// explicit declaration may not name them (#617).
-				declaration.tools = Default::default();
-			}
 			native.context_source = Some(declaration);
 		}
-		catalog.insert(entry(id, kind, serde_json::to_value(native).unwrap()));
-		config.bindings.push(
-			serde_json::from_value(json!({"kind":kind,"target":reference(id),"narrow":{}}))
-				.unwrap(),
-		);
+		catalog.insert(entry(id, "source", serde_json::to_value(native).unwrap()));
+		config
+			.bindings
+			.push(serde_json::from_value(json!({"kind":"source","target":reference(id)})).unwrap());
 	}
 	let result = snapshot(&mut catalog, &config, false).await;
 	assert_eq!(result.is_ok(), accepted, "{result:?}");
-	if let Err(error) = result {
+	if let Ok(snapshot) = result {
+		assert_eq!(
+			aidash_domain::registry::bindings::sources::semantic_query_policy(&snapshot).unwrap(),
+			first_query.unwrap_or_default()
+		);
+	} else if let Err(error) = result {
 		assert!(error.to_string().contains("query policy"), "{error}");
 	}
-}
-
-#[tokio::test]
-async fn native_primary_memory_and_bank_source_pin_the_same_explicit_query_policy() {
-	use aidash_domain::{
-		context::source::QueryPolicy,
-		registry::bindings::sources::{NativeContext, NativeSource, semantic_query_policy},
-	};
-	let mut catalog = Catalog::new();
-	for declaration in crate::test_support::native_memory_entries() {
-		catalog.insert(declaration);
-	}
-	catalog.insert(entry("fixture-model", "model", json!({})));
-	let identity = reference("native");
-	let mut declaration = NativeContext {
-		schema_version: 1,
-		source: NativeSource::SemanticMemory {},
-		context_source: None,
-	}
-	.declaration(&identity);
-	declaration.query = QueryPolicy::AcceptedInputsFirstV1;
-	let provider = catalog.entries.get_mut(&identity).unwrap();
-	let original: aidash_domain::memory::ProviderConfig =
-		serde_json::from_value(provider.config.clone()).unwrap();
-	assert_eq!(
-		serde_json::to_value(&original).unwrap(),
-		provider.config,
-		"omitted source policy keeps existing ProviderConfig bytes"
-	);
-	provider.config["context_source"] = json!(declaration);
-	catalog.insert(entry("thread-bank-source","source",json!({"scope":"thread","memory":{"id":"native","version":"1.0.0"},"max_tokens":512,"context_source":declaration})));
-	let mut config = agent_config();
-	config.bindings.push(
-		serde_json::from_value(json!({"kind":"memory","target":identity,"narrow":{}})).unwrap(),
-	);
-	config.bindings.push(
-		serde_json::from_value(
-			json!({"kind":"source","target":reference("thread-bank-source"),"narrow":{}}),
-		)
-		.unwrap(),
-	);
-	let admitted = snapshot(&mut catalog, &config, false).await.unwrap();
-	assert_eq!(
-		semantic_query_policy(&admitted).unwrap(),
-		QueryPolicy::AcceptedInputsFirstV1
-	);
-	catalog
-		.entries
-		.get_mut(&reference("thread-bank-source"))
-		.unwrap()
-		.config
-		.as_object_mut()
-		.unwrap()
-		.remove("context_source");
-	let error = snapshot(&mut catalog, &config, false).await.unwrap_err();
-	assert!(error.to_string().contains("query policy"), "{error}");
 }
 
 #[tokio::test]

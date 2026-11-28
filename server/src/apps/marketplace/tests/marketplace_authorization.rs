@@ -530,7 +530,7 @@ async fn hidden_typed_dependency_and_denial_leave_no_installation(
 		)
 		.await
 		.unwrap();
-	let agent:Entry=serde_json::from_value(json!({"id":"agent","version":"1.0.0","kind":"agent","name":{"en":"Visible agent"},"description":{"en":"Public summary"},"config":{"model":reference("hidden-model"),"instructions":"hello","schema_version":1,"bindings":[],"remove_default":[]}})).unwrap();
+	let agent:Entry=serde_json::from_value(json!({"id":"agent","version":"1.0.0","kind":"agent","name":{"en":"Visible agent"},"description":{"en":"Public summary"},"config":{"model":reference("hidden-model"),"instructions":"hello","bindings":[],"remove_default":[]}})).unwrap();
 	f.registry
 		.register(
 			&aidash_domain::tenancy::TenantName::new("a").unwrap(),
@@ -1379,7 +1379,7 @@ async fn new_runs_select_active_revision_and_restarted_runs_keep_exact_old_refer
 		)
 		.await
 		.unwrap();
-	let agent:Entry=serde_json::from_value(json!({"id":"agent","version":"1.0.0","kind":"agent","name":{"en":"Agent"},"description":{"en":"fixture"},"config":{"model":reference("model"),"instructions":"Original instructions","schema_version":1,"bindings":[],"remove_default":[]}})).unwrap();
+	let agent:Entry=serde_json::from_value(json!({"id":"agent","version":"1.0.0","kind":"agent","name":{"en":"Agent"},"description":{"en":"fixture"},"config":{"model":reference("model"),"instructions":"Original instructions","bindings":[],"remove_default":[]}})).unwrap();
 	f.registry
 		.register(
 			&aidash_domain::tenancy::TenantName::new("a").unwrap(),
@@ -1744,7 +1744,7 @@ async fn readable_distribution_precedes_dependency_preparation_and_bindings_pin_
 		)
 		.await
 		.unwrap();
-	let agent: Entry = serde_json::from_value(json!({"id":"agent","version":"1.0.0","kind":"agent","name":{"en":"Agent"},"description":{"en":"fixture"},"config":{"model":reference("model"),"schema_version":1,"bindings":[{"kind":"tool","target":{"registry_deployment":f.config.deployment,"id":"dependency","version":"1.0.0"},"narrow":{}}],"remove_default":[],"instructions":"Use the exact tool"}})).unwrap();
+	let agent: Entry = serde_json::from_value(json!({"id":"agent","version":"1.0.0","kind":"agent","name":{"en":"Agent"},"description":{"en":"fixture"},"config":{"model":reference("model"),"bindings":[{"kind":"tool","target":{"registry_deployment":f.config.deployment,"id":"dependency","version":"1.0.0"},"narrow":{}}],"remove_default":[],"instructions":"Use the exact tool"}})).unwrap();
 	f.registry
 		.register(
 			&aidash_domain::tenancy::TenantName::new("a").unwrap(),
@@ -3400,7 +3400,7 @@ async fn transitive_bindings_cannot_claim_to_rewrite_immutable_dependencies(
 		)
 		.await
 		.unwrap();
-	let agent:Entry=serde_json::from_value(json!({"id":"nested","version":"1.0.0","kind":"agent","name":{"en":"Nested"},"description":{"en":"fixture"},"config":{"model":reference("model"),"instructions":"Nested agent","schema_version":1,"bindings":[],"remove_default":[]}})).unwrap();
+	let agent:Entry=serde_json::from_value(json!({"id":"nested","version":"1.0.0","kind":"agent","name":{"en":"Nested"},"description":{"en":"fixture"},"config":{"model":reference("model"),"instructions":"Nested agent","bindings":[],"remove_default":[]}})).unwrap();
 	f.registry
 		.register(
 			&aidash_domain::tenancy::TenantName::new("a").unwrap(),

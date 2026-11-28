@@ -31,8 +31,13 @@ pub(crate) const SEMANTIC_INDEX_MANAGE: &str = "semantic.index.manage";
 
 /// Validate an index specification against this node's runtime composition.
 pub(crate) fn validate_index(store: &Store, spec: &IndexingSpec) -> Result<()> {
-	native::IndexSpec::from(spec.clone())
-		.validate_with(&crate::bootstrap::registry_validation_for(store))?;
+	let mut validation = crate::bootstrap::registry_validation_for(store);
+	if spec.embedding == aidash_application::embedding::default_embedding_config() {
+		// A new Tenant can create Threads before an administrator connects an
+		// OpenRouter account. Calls still require an available credential.
+		validation = validation.with_provider_credentials(true);
+	}
+	native::IndexSpec::from(spec.clone()).validate_with(&validation)?;
 	// An address literal is refused when configured, as before any call; a
 	// host name is checked again at each connection.
 	if spec.embedding.provider_credential.is_none()
@@ -157,6 +162,17 @@ impl SemanticConfigurationSession for Configuration {
 		AuthorizationThread::tenant_in(self.tx()?, thread)
 			.await?
 			.ok_or(aidash_application::Error::Forbidden)
+	}
+	async fn lock_active_embedding(
+		&mut self,
+		tenant: &str,
+	) -> Result<aidash_domain::semantic::EmbeddingConfig> {
+		crate::apps::identity::repositories::embedding_settings::lock_active_config(
+			self.tx()?,
+			tenant,
+		)
+		.await
+		.map_err(Into::into)
 	}
 	async fn index(&mut self, thread: Uuid) -> Result<Option<Index>> {
 		Ok(SemanticIndexe::locked(self.tx()?, thread, true)
@@ -297,10 +313,7 @@ impl SemanticConfigurationSession for Configuration {
 			.lease
 			.as_mut()
 			.ok_or_else(|| Error::Conflict("semantic index configuration ended".into()))?;
-		// Posted images first take back their places in posting order, so the
-		// ledger rebuilds Working Area images into the room they leave.
 		super::attachment_images::relimit(lease, thread, max_images).await?;
-		super::image_publications::rebuild(lease, thread, max_images).await?;
 		// Images posted before the index existed or was enabled enter it now,
 		// under the authority of the person configuring it (#622).
 		super::attachment_images::backfill(lease, thread, max_images)
@@ -415,17 +428,12 @@ impl SemanticEntriesSession for Entries<'_, '_> {
 		self.lease.source(thread, source).await.map_err(Into::into)
 	}
 	async fn image_visible(&mut self, thread: Uuid, source: &Source) -> Result<bool> {
-		if matches!(source, Source::AttachmentImage { .. }) {
-			return super::attachment_images::visible(self.lease, thread, source)
-				.await
-				.map_err(Into::into);
-		}
-		let Some(access) = self.lease.access() else {
+		if !matches!(source, Source::AttachmentImage { .. }) {
 			return Ok(false);
-		};
-		Ok(super::image_files::current(access, thread, source)
-			.await?
-			.is_some())
+		}
+		super::attachment_images::visible(self.lease, thread, source)
+			.await
+			.map_err(Into::into)
 	}
 	async fn schedule(&mut self, entry: &Entry, collection: &str) -> Result<()> {
 		service::schedule_point(

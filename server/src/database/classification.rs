@@ -130,17 +130,23 @@ use Classification::{DeploymentWide, TenantOwned};
 /// Every table the Community migrations create, grouped by app.
 pub const TABLES: &[Table] = &[
 	// execution
+	table("execution", "drive_job_blobs", TenantOwned),
+	table("execution", "drive_run_reads", TenantOwned),
+	table("execution", "drive_jobs", TenantOwned),
+	table("execution", "drive_upload_parts", TenantOwned),
+	table("execution", "drive_uploads", TenantOwned),
+	table("execution", "drive_trash", TenantOwned),
+	table("execution", "drive_entries", TenantOwned),
+	table("execution", "drive_versions", TenantOwned),
+	table("execution", "drives", TenantOwned),
 	// undecodable activation messages, before any Tenant is known
 	table("execution", "activation_quarantine", DeploymentWide),
 	table("execution", "context_compaction_attempts", TenantOwned),
-	table("execution", "core_areas", TenantOwned),
+	table("execution", "core_execution_scopes", TenantOwned),
 	table("execution", "core_blobs", TenantOwned),
 	table("execution", "core_blob_uploads", TenantOwned),
-	table("execution", "core_manifest_revisions", TenantOwned),
 	table("execution", "core_blob_references", TenantOwned),
 	table("execution", "core_objects", TenantOwned),
-	table("execution", "core_retention_holds", TenantOwned),
-	table("execution", "core_retention_files", TenantOwned),
 	table("execution", "core_previews", TenantOwned),
 	table("execution", "core_preview_tickets", TenantOwned),
 	table("execution", "core_preview_sessions", TenantOwned),
@@ -343,6 +349,7 @@ pub const TABLES: &[Table] = &[
 	table("identity", "tenant_data_protection", TenantOwned),
 	table("identity", "tenant_instructions", TenantOwned),
 	table("identity", "tenant_execution_settings", TenantOwned),
+	table("identity", "tenant_embedding_settings", TenantOwned),
 	table("identity", "budgets", TenantOwned),
 	table("identity", "budget_notices", TenantOwned),
 	table("identity", "budget_spend", TenantOwned),
@@ -359,6 +366,8 @@ pub const TABLES: &[Table] = &[
 	// Tenant root records: the Deployment's list of Tenants (ADR 0050)
 	table("identity", "tenants", DeploymentWide),
 	// knowledge
+	table("knowledge", "drive_index_requests", TenantOwned),
+	table("knowledge", "drive_passages", TenantOwned),
 	table("knowledge", "memory_bank_decay", TenantOwned),
 	table("knowledge", "memory_bank_policy_changes", TenantOwned),
 	table("knowledge", "memory_bank_settings", TenantOwned),
@@ -435,7 +444,6 @@ pub const TABLES: &[Table] = &[
 	// the migration ledger
 	table("reinhardt", "reinhardt_migrations", DeploymentWide),
 	// workspaces
-	table("workspaces", "artifacts", TenantOwned),
 	table("workspaces", "channel_attachments", TenantOwned),
 	table("workspaces", "channel_message_context", TenantOwned),
 	table("workspaces", "conversations", TenantOwned),

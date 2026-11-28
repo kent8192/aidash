@@ -1,3 +1,4 @@
+use super::reference_set_tests::{add, file};
 use super::*;
 
 #[rstest::rstest]
@@ -6,7 +7,6 @@ async fn concurrent_same_digest_reservations_do_not_double_count_retained_capaci
 	#[future] capability_fixture: CoreFixture,
 ) {
 	let mut c = Box::pin(capability_fixture).await;
-	let run = admit(&c).await;
 	let used: i64 = sqlx::query_scalar("SELECT used_bytes FROM core_quotas WHERE tenant='acme'")
 		.fetch_optional(c.f.store.pool.fixture_driver())
 		.await
@@ -42,12 +42,12 @@ async fn concurrent_same_digest_reservations_do_not_double_count_retained_capaci
 		.execute(&mut *owner)
 		.await
 		.unwrap();
-	let (status, result) = request(&c.app, &c.token, "POST", &path_for_patch(run.id),
-        json!({"idempotency_key":Uuid::new_v4(),"expected_revision":1,"preconditions":{"same.txt":null},"patch":"*** Begin Patch\n*** Add File: same.txt\n+abc\n*** End Patch"})).await;
+	let (status, result) = add(&c, &c.token, vec![file("same.txt", "abc\n")]).await;
 	owner.rollback().await.unwrap();
 	c.close().await;
 	assert_eq!(
 		status, 200,
 		"identical in-flight content must fit retained capacity: {result}"
 	);
+	assert_eq!(result["references"].as_array().unwrap().len(), 1);
 }

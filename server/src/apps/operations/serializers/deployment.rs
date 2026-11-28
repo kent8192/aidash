@@ -55,9 +55,9 @@ pub struct DeploymentSettings {
 	/// Effective Scratch Space capacity ceiling, in bytes.
 	#[setting(default = "1099511627776")]
 	pub scratch_capacity_bytes: u64,
-	#[setting(default = "4000")]
+	#[setting(default = "8000")]
 	pub scratch_cpu_millis: u32,
-	#[setting(default = "17179869184")]
+	#[setting(default = "34359738368")]
 	pub scratch_memory_bytes: u64,
 	#[setting(default = "1099511627776")]
 	pub scratch_daily_sent_bytes: u64,
@@ -181,9 +181,9 @@ impl SettingsValidation for DeploymentSettings {
 	fn validate(&self, _profile: &Profile) -> ValidationResult {
 		ValidateRules::validate(self)
 			.map_err(|error| ValidationError::Constraint(error.to_string()))?;
-		if !(107374182400..=1099511627776).contains(&self.scratch_capacity_bytes)
-			|| self.scratch_cpu_millis < 4000
-			|| self.scratch_memory_bytes < 17179869184
+		if !(536870912000..=1099511627776).contains(&self.scratch_capacity_bytes)
+			|| self.scratch_cpu_millis < 8000
+			|| self.scratch_memory_bytes < 34359738368
 			|| self.scratch_daily_sent_bytes == 0
 			|| self.scratch_daily_received_bytes == 0
 		{

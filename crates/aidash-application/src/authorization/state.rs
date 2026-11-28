@@ -4,7 +4,7 @@ use crate::{
 	ports::authorization::state::{ThreadListingScope, ThreadStateScope},
 };
 use aidash_domain::{
-	Artifact, Conversation, Event, HumanRequest, RunInspection, RunState, RunSummary, Task, Thread,
+	Conversation, Event, HumanRequest, RunInspection, RunState, RunSummary, Task, Thread,
 	WaitingState,
 	registry::Entry,
 	threads::TaskPage,
@@ -17,7 +17,7 @@ pub struct ThreadState {
 	pub registry: Vec<Entry>,
 	pub threads: Vec<Thread>,
 	pub tasks: Vec<Task>,
-	pub artifacts: Vec<Artifact>,
+
 	pub runs: Vec<RunSummary>,
 	pub human_requests: Vec<HumanRequest>,
 	pub conversations: Vec<Conversation>,
@@ -37,7 +37,7 @@ pub struct NextCursors {
 	pub threads: Option<String>,
 	pub tasks: Option<String>,
 	pub runs: Option<String>,
-	pub artifacts: Option<String>,
+
 	pub human_requests: Option<String>,
 	pub conversations: Option<String>,
 }
@@ -98,22 +98,6 @@ pub async fn state(scope: &mut dyn ThreadStateScope, node: Option<&str>) -> Resu
 		if unconfirmed.settle(silence, Kind::Task, row.thread_id, allowed) {
 			thread_ids.push(row.thread_id);
 			tasks.push(row);
-		}
-	}
-	let mut artifacts = Vec::new();
-	let candidates = scope.artifact_candidates(node).await?;
-	cursors.artifacts = cursor(&candidates, |row| row.id);
-	scope.prepare_artifacts(&candidates).await?;
-	for row in candidates {
-		if !thread_ok(scope, &mut cache, row.thread_id).await? {
-			continue;
-		}
-		scope.begin_row();
-		let allowed = scope.artifact_visible(&row).await?;
-		let silence = scope.take_row_silence();
-		if unconfirmed.settle(silence, Kind::Artifact, row.thread_id, allowed) {
-			thread_ids.push(row.thread_id);
-			artifacts.push(row);
 		}
 	}
 	let mut runs = Vec::new();
@@ -213,7 +197,7 @@ pub async fn state(scope: &mut dyn ThreadStateScope, node: Option<&str>) -> Resu
 		registry: scope.registry().await?,
 		threads: scope.thread_rows(&thread_ids).await?,
 		tasks,
-		artifacts,
+
 		runs,
 		human_requests,
 		conversations,

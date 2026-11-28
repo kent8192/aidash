@@ -19,10 +19,7 @@ type ApprovalCopy = {
   modeTitle: string;
   modeHelp: string;
   modes: Record<ApprovalMode, { label: string; description: string }>;
-  /** Why a mode is unavailable, or not yet in effect, in plain words. `decider`
-   *  names the Tenant's approval Decider, or is empty before it is known. */
-  modeReason: Record<ApprovalModeReason, (decider: string) => string>;
-  reviewCatalogApproval: string;
+  modeReason: Record<ApprovalModeReason, string>;
   saved: string;
   saving: string;
   deadline: {
@@ -81,22 +78,6 @@ type ApprovalCopy = {
   refusedByOther: (person: string, by: "rule" | "dont_ask") => string;
   blockedByAuto: (reason: string | null) => string;
   blockReasons: Record<BlockReason, string>;
-  decider: {
-    title: string;
-    help: string;
-    chosen: string;
-    builtIn: string;
-    chosenByTenant: string;
-    catalogApproval: string;
-    approved: string;
-    notApproved: string;
-    notRegistered: string;
-    select: string;
-    builtInOption: string;
-    saving: string;
-    saved: string;
-    noChoices: string;
-  };
 };
 
 /** What an approval card says gave an approval in advance. */
@@ -146,7 +127,7 @@ export const approvalCopy: Record<"en-US" | "ja-JP", ApprovalCopy> = {
       auto: {
         label: "Auto",
         description:
-          "Your Tenant's approval Decider decides. A block refuses the call and the Run continues.",
+          "Aidash's built-in judge decides. A block refuses the call and the Run continues.",
       },
       dont_ask: {
         label: "Don't ask",
@@ -160,20 +141,17 @@ export const approvalCopy: Record<"en-US" | "ja-JP", ApprovalCopy> = {
       },
     },
     modeReason: {
-      policy: () => "Your Tenant's policy does not allow this mode.",
-      not_accepted: () =>
+      policy: "Your Tenant's policy does not allow this mode.",
+      not_accepted:
         "You accept the risk of Bypass when you first choose it as your default.",
-      decider_unapproved: (decider) =>
-        `Not available yet: the approval Decider your Tenant chose${decider && ` (${decider})`} has no Catalog Approval on this Node.`,
-      no_decider: (decider) =>
-        `Not available: the Decider your Tenant chose${decider && ` (${decider})`} is not registered as an approval Decider.`,
+      decider_unapproved: "The approval judge is unavailable.",
+      no_decider: "The approval judge is unavailable.",
     },
-    reviewCatalogApproval: "Review its Catalog Approval",
     saved: "Saved",
     saving: "Saving…",
     deadline: {
       title: "Answer Deadline",
-      help: "When the Agent asks you a question and you have not answered by then, the Run continues on its own judgment. It never applies to Completion Reviews or other requests.",
+      help: "When the Agent asks a question and the deadline passes, the Run continues on the Agent's judgment. A Run paused by Goal judgment waits for a reply.",
       none: "None",
       after: "After",
       amount: "Duration",
@@ -256,8 +234,8 @@ export const approvalCopy: Record<"en-US" | "ja-JP", ApprovalCopy> = {
     threadUnavailable: {
       policy: "not allowed by policy",
       not_accepted: "choose it as default first",
-      decider_unapproved: "Decider not approved",
-      no_decider: "no approval Decider",
+      decider_unapproved: "approval judge unavailable",
+      no_decider: "approval judge unavailable",
     },
     threadFailed: "The Approval Mode could not be changed.",
     threadLoadFailed: "Approval Mode unavailable",
@@ -285,25 +263,7 @@ export const approvalCopy: Record<"en-US" | "ja-JP", ApprovalCopy> = {
       beyond_request: "goes beyond your request",
       injected: "driven by content the Run read",
       boundary: "contradicts a boundary you stated",
-      unavailable: "the Decider was unavailable",
-    },
-    decider: {
-      title: "Approval Decider",
-      help: "The Decider that judges approvals in Auto for everyone in this Tenant. Approving its version in the Catalog approves sending the Run state it reads to the hosts below.",
-      chosen: "Chosen Decider",
-      builtIn: "Built-in, used until the Tenant names another",
-      chosenByTenant: "Chosen by this Tenant",
-      catalogApproval: "Catalog Approval on this Node",
-      approved: "Approved",
-      notApproved: "Not approved, so Auto is unavailable",
-      notRegistered:
-        "The Registry holds no Decider of hook approval under this name, so Auto is unavailable.",
-      select: "Approval Decider for Auto",
-      builtInOption: "Built-in",
-      saving: "Saving…",
-      saved: "Saved",
-      noChoices:
-        "Register a Decider of hook approval in the Registry to choose it here.",
+      unavailable: "the approval judge was unavailable",
     },
   },
   "ja-JP": {
@@ -323,7 +283,7 @@ export const approvalCopy: Record<"en-US" | "ja-JP", ApprovalCopy> = {
       auto: {
         label: "Auto",
         description:
-          "Tenant の承認 Decider が判断します。ブロックされた呼び出しは拒否され、Run は続行します。",
+          "Aidash の組み込み承認判定が適用されます。ブロックされた呼び出しは拒否され、Run は続行します。",
       },
       dont_ask: {
         label: "Don't ask",
@@ -337,20 +297,17 @@ export const approvalCopy: Record<"en-US" | "ja-JP", ApprovalCopy> = {
       },
     },
     modeReason: {
-      policy: () => "このモードは Tenant のポリシーで許可されていません。",
-      not_accepted: () =>
+      policy: "このモードは Tenant のポリシーで許可されていません。",
+      not_accepted:
         "Bypass のリスクは、初めて既定のモードとして選ぶときに受け入れます。",
-      decider_unapproved: (decider) =>
-        `まだ利用できません。Tenant が選んだ承認 Decider${decider && `（${decider}）`}は、この Node で Catalog Approval を受けていません。`,
-      no_decider: (decider) =>
-        `利用できません。Tenant が選んだ Decider${decider && `（${decider}）`}は、承認用 Decider として登録されていません。`,
+      decider_unapproved: "承認判定を利用できません。",
+      no_decider: "承認判定を利用できません。",
     },
-    reviewCatalogApproval: "Catalog Approval を確認する",
     saved: "保存しました",
     saving: "保存しています…",
     deadline: {
       title: "Answer Deadline",
-      help: "Agent があなたに質問し、この時間までに回答しなかった場合、Run は自身の判断で続行します。Completion Review やその他のリクエストには適用されません。",
+      help: "Agent 自身の質問に期限までに回答がなければ、Run は Agent の判断で続行します。ゴールの判定で一時停止した Run は、回答があるまで待機します。",
       none: "なし",
       after: "経過後",
       amount: "期間",
@@ -432,8 +389,8 @@ export const approvalCopy: Record<"en-US" | "ja-JP", ApprovalCopy> = {
     threadUnavailable: {
       policy: "ポリシーで不許可",
       not_accepted: "先に既定として選択",
-      decider_unapproved: "Decider 未承認",
-      no_decider: "承認 Decider なし",
+      decider_unapproved: "承認判定を利用できない",
+      no_decider: "承認判定を利用できない",
     },
     threadFailed: "Approval Mode を変更できませんでした。",
     threadLoadFailed: "Approval Mode を表示できません",
@@ -461,25 +418,7 @@ export const approvalCopy: Record<"en-US" | "ja-JP", ApprovalCopy> = {
       beyond_request: "依頼の範囲を超えている",
       injected: "Run が読んだ内容に動かされている",
       boundary: "あなたが示した境界に反している",
-      unavailable: "Decider が利用できなかった",
-    },
-    decider: {
-      title: "承認 Decider",
-      help: "この Tenant の全員について、Auto で承認を判断する Decider です。Catalog でそのバージョンを承認すると、Decider が読む Run の状態を下記のホストへ送ることを承認したことになります。",
-      chosen: "選択中の Decider",
-      builtIn: "組み込み（Tenant が別のものを指定するまで使用）",
-      chosenByTenant: "この Tenant が選択",
-      catalogApproval: "この Node での Catalog Approval",
-      approved: "承認済み",
-      notApproved: "未承認のため、Auto は利用できません",
-      notRegistered:
-        "この名前の hook approval の Decider が Registry にないため、Auto は利用できません。",
-      select: "Auto の承認 Decider",
-      builtInOption: "組み込み",
-      saving: "保存しています…",
-      saved: "保存しました",
-      noChoices:
-        "ここで選べるよう、hook が approval の Decider を Registry に登録してください。",
+      unavailable: "承認判定を利用できなかった",
     },
   },
 };

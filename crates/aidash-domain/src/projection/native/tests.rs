@@ -151,38 +151,6 @@ fn request_messages_unrecorded(context: &Context, pinned: &Value) -> Vec<Value> 
 	request.input_body()["messages"].as_array().unwrap().clone()
 }
 
-#[test]
-fn the_step_limit_notice_changes_only_at_80_and_90_percent() {
-	let notices = (0..20)
-		.map(|step| step_limit_notice(step, 20))
-		.collect::<Vec<_>>();
-	assert!(notices[..16].iter().all(Option::is_none));
-	assert!(
-		notices[16..18]
-			.iter()
-			.all(|notice| notice.is_some_and(|text| text.starts_with("80%")))
-	);
-	assert!(
-		notices[18..]
-			.iter()
-			.all(|notice| notice.is_some_and(|text| text.starts_with("90%")))
-	);
-	// The state changes, and so is recorded, exactly three times in 20 steps.
-	let mut run = context(vec![]);
-	let mut recorded = 0;
-	for step in 0..20 {
-		let mut state = json!({"phase": "thinking"});
-		if let Some(notice) = step_limit_notice(step, 20) {
-			state["step_limit"] = json!(notice);
-		}
-		recorded += usize::from(record_step_state(&mut run, &json!({"agent_state": state})));
-		run.push(assistant(i64::from(step), "", &["a"]));
-		run.push(tool("a"));
-	}
-	assert_eq!(recorded, 3);
-	assert_eq!(step_limit_notice(0, 0), None);
-}
-
 fn thread(tasks: &[&str]) -> Value {
 	json!({
 		"view": "workspace_observation_v1",
@@ -695,18 +663,11 @@ fn the_unassigned_notice_survives_turns_that_delegate_some_of_the_tasks() {
 }
 
 #[test]
-fn a_completion_repair_survives_turns_that_repair_the_files() {
+fn goal_feedback_survives_turns_with_tools() {
 	// Arrange: the refused candidate opened no Model Turn; the model edits
 	// files before it answers again.
-	let repair = ContextEvent::CompletionRepairRequired {
-		checks: vec![crate::completion::RepairNote {
-			check: "tests".into(),
-			outcome: crate::completion::CheckOutcome::Failed,
-			exit_code: Some(101),
-			diagnostics: "test result: FAILED".into(),
-		}],
+	let repair = ContextEvent::GoalFeedback {
 		instruction: "Repair the files, then answer again.".into(),
-		through_seq: 3,
 	};
 	let repairing = context(vec![
 		assistant(1, "", &["a"]),
@@ -1382,7 +1343,6 @@ fn thread_with_own_events(own: uuid::Uuid, own_events: u128) -> crate::ThreadSna
 			created_at: at,
 		},
 		tasks: vec![],
-		artifacts: vec![],
 		events,
 		messages: vec![],
 		unconfirmed: vec![],

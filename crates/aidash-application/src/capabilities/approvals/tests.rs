@@ -92,9 +92,6 @@ impl ApprovalScope for Fake {
 	async fn context_authority(&mut self) -> Result<()> {
 		Ok(())
 	}
-	async fn active_run(&mut self) -> Result<Option<Uuid>> {
-		Ok(Some(self.run.id))
-	}
 	async fn require(&mut self, target: &Resource, action: &str) -> Result<()> {
 		let evaluation = self.evaluation(&self.principal.clone(), target, action);
 		if self.bundle.evaluate(&evaluation).allowed {
@@ -2156,6 +2153,33 @@ fn outbound_input() -> aidash_domain::capabilities::approvals::Outbound {
 		idempotency_key: Uuid::new_v4(),
 		url: "https://example.com/page".into(),
 	}
+}
+
+#[tokio::test]
+async fn two_active_runs_can_request_outbound_reads_in_the_same_session() {
+	let mut scope = advising(empowered(), ApprovalMode::Manual, vec![]);
+	let session = Uuid::new_v4();
+	let first = scope.run.clone();
+	let first_view = prepare(&mut scope, &first, session, outbound_input())
+		.await
+		.unwrap();
+
+	let mut second = first.clone();
+	second.id = Uuid::new_v4();
+	scope.run = second.clone();
+	let second_view = prepare(&mut scope, &second, session, outbound_input())
+		.await
+		.unwrap();
+
+	assert_ne!(first_view["operation_id"], second_view["operation_id"]);
+	let admitted_runs: Vec<_> = scope
+		.records
+		.values()
+		.filter(|record| record.kind == "outbound" && record.area_id == Some(session))
+		.map(|record| record.data["run_id"].clone())
+		.collect();
+	assert!(admitted_runs.contains(&json!(first.id)));
+	assert!(admitted_runs.contains(&json!(second.id)));
 }
 
 #[tokio::test]

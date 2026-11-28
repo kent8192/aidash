@@ -1,11 +1,7 @@
 //! File adapters retain verified handles, pending-object guards and native publication statements.
-use super::capability_objects::SealedObject;
 use crate::apps::execution::capabilities::{
-	serializers::contracts::{
-		Area as NativeArea, FileEntry, FileScope as NativeFileScope,
-		Materialize as NativeMaterialize, MaterializeSource as NativeMaterializeSource,
-	},
-	services::{approvals, objects::PendingObject, operations, patch, sessions, sharing, skills},
+	serializers::contracts::{Area as NativeArea, FileEntry},
+	services::{approvals, operations, sessions, skills},
 };
 use crate::{
 	Error as NativeError, Result as NativeResult,
@@ -16,22 +12,16 @@ use crate::{
 };
 use aidash_application::{
 	Error, Result,
-	ports::capabilities::files::{
-		Action, FileScopePort, Limits, ScratchPublisher, ScratchStager, ScratchUpload, VerifiedFile,
-	},
+	ports::capabilities::files::{Action, FileScopePort, Limits, VerifiedFile},
 };
-use aidash_domain::capabilities::files::{Materialize, MaterializeSource};
 use aidash_domain::{
 	RunMetadata,
-	capabilities::{
-		operations::{FileScope, MountedFile},
-		sessions::Area,
-	},
+	capabilities::{operations::MountedFile, sessions::Area},
 	policy::Resource,
 };
 use async_trait::async_trait;
 use reinhardt::query::{
-	Alias, Expr, ExprTrait as _, IntoValue as _, OnConflict, PostgresQueryBuilder, Query,
+	Alias, Expr, ExprTrait as _, IntoValue as _, PostgresQueryBuilder, Query,
 	QueryStatementBuilder as _,
 };
 use serde_json::Value;
@@ -41,90 +31,7 @@ pub(crate) struct Scope<'a> {
 	pub(crate) store: Option<&'a Store>,
 	pub(crate) access: &'a mut Access,
 	pub(crate) run: Option<&'a Run>,
-	pub(crate) pending: Option<PendingObject>,
 }
-/// Holds upload ownership until publication commits. This transaction holds
-/// only object advisory locks, independent of the Run authority and Area.
-pub(crate) struct ScratchStaging<'a> {
-	store: &'a Store,
-	tenant: &'a str,
-	uploads: Option<(
-		crate::database::native::Transaction,
-		tokio::sync::SemaphorePermit<'a>,
-	)>,
-}
-
-impl<'a> ScratchStaging<'a> {
-	pub(crate) fn new(store: &'a Store, tenant: &'a str) -> Self {
-		Self {
-			store,
-			tenant,
-			uploads: None,
-		}
-	}
-}
-
-#[async_trait]
-impl ScratchStager for ScratchStaging<'_> {
-	type Upload = PendingObject;
-
-	async fn stage(&mut self, area: Uuid, size: u64) -> Result<Self::Upload> {
-		use aidash_application::tenancy::TenancyScope;
-		if self.uploads.is_none() {
-			let slot = self
-				.store
-				.scratch_upload_slots
-				.acquire()
-				.await
-				.map_err(|error| Error::External(error.to_string()))?;
-			let tx = self
-				.store
-				.scratch_upload_pool
-				.begin(&TenancyScope::tenant(self.tenant)?)
-				.await?;
-			self.uploads = Some((tx, slot));
-		}
-		Ok(self
-			.store
-			.capabilities
-			.begin_object_for(
-				&mut self.uploads.as_mut().expect("scratch upload batch open").0,
-				self.tenant,
-				Some(area),
-				"working",
-				size,
-				false,
-			)
-			.await?)
-	}
-}
-
-#[async_trait]
-impl ScratchUpload for PendingObject {
-	type Sealed = SealedObject;
-
-	async fn write_block(&mut self, bytes: &[u8]) -> Result<()> {
-		PendingObject::write_block(self, bytes)
-			.await
-			.map_err(Into::into)
-	}
-
-	async fn seal(self, digest: &str) -> Result<Self::Sealed> {
-		PendingObject::seal(self, Some(digest))
-			.await
-			.map_err(Into::into)
-	}
-}
-
-#[async_trait]
-impl ScratchPublisher for Scope<'_> {
-	type Upload = SealedObject;
-
-	async fn publish_scratch_upload(&mut self, upload: Self::Upload) -> Result<(Uuid, String)> {
-		upload.publish(self.access).await.map_err(Into::into)
-	}
-}
-
 struct Reader {
 	inner: Option<tokio::io::BufReader<aidash_application::ports::blob_store::BlobReader>>,
 	store: std::sync::Arc<dyn aidash_application::ports::blob_store::BlobStore>,
@@ -132,128 +39,10 @@ struct Reader {
 	digest: aidash_domain::capabilities::Digest,
 	size: u64,
 }
-/// Atomically retain one immutable revision and every logical object it names.
-pub(crate) async fn record_revision(
-	tx: &mut crate::database::native::Transaction,
-	tenant: &str,
-	area: &Area,
-	manifest: &Value,
-) -> NativeResult<()> {
-	let inserted = crate::database::native::query(
-		&Query::insert()
-			.into_table(Alias::new("core_manifest_revisions"))
-			.columns(["tenant", "area_id", "revision", "manifest"].map(Alias::new))
-			.values(vec![
-				tenant.to_owned().into(),
-				area.id.into(),
-				area.revision.into(),
-				manifest.clone().into_value(),
-			])
-			.map_err(NativeError::Invalid)?
-			.on_conflict(
-				OnConflict::columns(["tenant", "area_id", "revision"].map(Alias::new))
-					.do_nothing()
-					.to_owned(),
-			)
-			.to_string(PostgresQueryBuilder),
-	)
-	.execute(&mut **tx)
-	.await?
-	.rows_affected();
-	let stored: Value = crate::database::native::query_scalar(
-		&Query::select()
-			.column(Alias::new("manifest"))
-			.from(Alias::new("core_manifest_revisions"))
-			.and_where(Expr::col(Alias::new("tenant")).eq(Expr::value(tenant)))
-			.and_where(Expr::col(Alias::new("area_id")).eq(Expr::value(area.id)))
-			.and_where(Expr::col(Alias::new("revision")).eq(Expr::value(area.revision)))
-			.to_string(PostgresQueryBuilder),
-	)
-	.scalar_one(&mut **tx)
-	.await?;
-	if stored != *manifest {
-		return Err(NativeError::Conflict("AREA_REVISION_CHANGED".into()));
-	}
-	// Revision and references are inserted in the same transaction. An existing
-	// revision therefore already owns its references, including an empty one.
-	if inserted == 0 {
-		return Ok(());
-	}
-	let mut entries: Vec<FileEntry> = serde_json::from_value(manifest.clone())?;
-	entries.sort_by(|a, b| a.digest.cmp(&b.digest).then(a.file_id.cmp(&b.file_id)));
-	// Bound statement size independently of the maximum Working Area size.
-	const REFERENCE_BATCH_SIZE: usize = 256;
-	for batch in entries.chunks(REFERENCE_BATCH_SIZE) {
-		let mut insert = Query::insert();
-		insert
-			.into_table(Alias::new("core_blob_references"))
-			.columns(
-				[
-					"id",
-					"tenant",
-					"digest",
-					"holder_kind",
-					"holder_id",
-					"object_id",
-					"area_id",
-					"revision",
-				]
-				.map(Alias::new),
-			);
-		for file in batch {
-			let holder = format!("{}:{}:{}", area.id, area.revision, file.file_id);
-			insert
-				.values(vec![
-					Uuid::new_v4().into(),
-					tenant.to_owned().into(),
-					file.digest.clone().into(),
-					"revision".into(),
-					holder.into(),
-					file.file_id.into(),
-					area.id.into(),
-					area.revision.into(),
-				])
-				.map_err(NativeError::Invalid)?;
-		}
-		insert.on_conflict(
-			OnConflict::columns(["tenant", "digest", "holder_kind", "holder_id"].map(Alias::new))
-				.do_nothing()
-				.to_owned(),
-		);
-		crate::database::native::query(&insert.to_string(PostgresQueryBuilder))
-			.execute(&mut **tx)
-			.await?;
-	}
-	Ok(())
-}
-
 fn missing() -> Error {
 	Error::External("file repository scope invariant".into())
 }
-impl From<NativeMaterialize> for Materialize {
-	fn from(v: NativeMaterialize) -> Self {
-		Self {
-			idempotency_key: v.idempotency_key,
-			expected_revision: v.expected_revision,
-			path: v.path,
-			source: match v.source {
-				NativeMaterializeSource::File {
-					file_id,
-					expected_digest,
-				} => MaterializeSource::File {
-					file_id,
-					expected_digest,
-				},
-				NativeMaterializeSource::Message { message_id } => {
-					MaterializeSource::Message { message_id }
-				}
-				NativeMaterializeSource::ReferenceText { index } => {
-					MaterializeSource::ReferenceText { index }
-				}
-			},
-		}
-	}
-}
+
 #[async_trait]
 impl VerifiedFile for Reader {
 	async fn read_range(&mut self, offset: u64, limit: u64) -> Result<Vec<u8>> {
@@ -323,17 +112,12 @@ impl FileScopePort for Scope<'_> {
 	fn limits(&self) -> Result<Limits> {
 		let p = &self.store.ok_or_else(missing)?.capabilities.0;
 		Ok(Limits {
-			working_bytes: p.working_bytes,
+			patch_bytes: p.limits.patch_bytes,
 			read_bytes: p.limits.read_bytes,
 			search_matches: p.limits.search_matches,
 			search_bytes: p.limits.search_bytes,
 			search_seconds: p.limits.search_seconds,
 		})
-	}
-	async fn retained_bytes(&mut self, area: &Area) -> Result<u64> {
-		super::retention::retained_bytes_of(&mut *self.access, area.id)
-			.await
-			.map_err(Into::into)
 	}
 	fn policy_revision(&self) -> i64 {
 		self.access.snapshot.revision
@@ -371,50 +155,12 @@ impl FileScopePort for Scope<'_> {
 			.await
 			.map_err(Into::into)
 	}
-	async fn serialize_sharing(&mut self) -> Result<()> {
-		sharing::serialize(self.access).await.map_err(Into::into)
-	}
 	async fn for_run(&mut self, run: &RunMetadata) -> Result<Area> {
 		aidash_application::capabilities::sessions::for_run(
 			&mut crate::bootstrap::session_scope(None, self.access),
 			run,
 		)
 		.await
-	}
-	async fn subnode_area(&mut self, run: &RunMetadata, thread: Uuid, area: Uuid) -> Result<Area> {
-		use crate::apps::execution::models::subnodes::SubnodeRecord;
-		use reinhardt::db::orm::Model;
-		if self.access.read_run != Some(run.id) {
-			return Err(Error::Forbidden);
-		}
-		let matches = SubnodeRecord::objects()
-			.filter(SubnodeRecord::field_tenant().eq(self.access.identity.tenant.clone()))
-			.filter(SubnodeRecord::field_thread_id().eq(thread))
-			.filter(SubnodeRecord::field_creator_run_id().eq(run.id))
-			.all_with_executor(self.access.tx.native_mut())
-			.await
-			.map_err(reinhardt::core::exception::Error::from)
-			.map_err(NativeError::from)?;
-		if matches.is_empty() {
-			return Err(Error::Forbidden);
-		}
-		// Narrow the inherited Thread only for this read. Session authorization
-		// still checks file.read and every source constraint against the creator.
-		let previous = std::mem::replace(
-			&mut self.access.context,
-			serde_json::json!({"thread_id": thread}),
-		);
-		let result = aidash_application::capabilities::sessions::load(
-			&mut crate::bootstrap::session_scope(None, self.access),
-			area,
-		)
-		.await;
-		self.access.context = previous;
-		let area = result?;
-		if area.thread_id != thread {
-			return Err(Error::Forbidden);
-		}
-		Ok(area)
 	}
 	async fn pod(
 		&mut self,
@@ -435,22 +181,6 @@ impl FileScopePort for Scope<'_> {
 			&mut crate::bootstrap::session_scope(None, self.access),
 			area,
 			action,
-		)
-		.await
-	}
-	async fn current_run(&mut self, area: &Area) -> Result<Option<Uuid>> {
-		aidash_application::capabilities::sessions::status(
-			&mut crate::bootstrap::session_scope(None, self.access),
-			area,
-		)
-		.await
-		.map(|s| s.active_run_id)
-	}
-	async fn require_current(&mut self, area: &Area, run: &RunMetadata) -> Result<()> {
-		aidash_application::capabilities::sessions::require_current_run(
-			&mut crate::bootstrap::session_scope(None, self.access),
-			area,
-			run,
 		)
 		.await
 	}
@@ -497,42 +227,7 @@ impl FileScopePort for Scope<'_> {
 					)
 					.await?
 				}
-				Action::Share => {
-					sharing::share(
-						store,
-						self.access,
-						run,
-						&native,
-						serde_json::from_value(input)
-							.map_err(|e| NativeError::Invalid(e.to_string()))?,
-					)
-					.await?
-				}
 				Action::Skill(name) => skills::invoke(store, self.access, run, name, input).await?,
-				Action::Patch => {
-					patch::apply(
-						store,
-						self.access,
-						run,
-						&mut native,
-						serde_json::from_value(input)
-							.map_err(|e| NativeError::Invalid(e.to_string()))?,
-					)
-					.await?
-				}
-				Action::Verify => {
-					operations::prepare_kind(
-						store,
-						self.access,
-						run,
-						&mut native,
-						serde_json::from_value(input)
-							.map_err(|e| NativeError::Invalid(e.to_string()))?,
-						aidash_domain::capabilities::operations::VERIFICATION,
-						serde_json::json!({}),
-					)
-					.await?
-				}
 				Action::PodCommand {
 					kind,
 					scratch_space_id,
@@ -605,96 +300,18 @@ impl FileScopePort for Scope<'_> {
 		.await;
 		result.map_err(Into::into)
 	}
-	async fn previous_manifest(&mut self, area: &Area) -> Result<Value> {
-		let result: NativeResult<Value> = async {
-			let access = &mut *self.access;
-			let previous: Option<Value> = crate::database::native::query_scalar(
-				&Query::select()
-					.column(Alias::new("manifest"))
-					.from(Alias::new("core_manifest_revisions"))
-					.and_where(
-						Expr::col(Alias::new("tenant")).eq(Expr::value(&access.identity.tenant)),
-					)
-					.and_where(Expr::col(Alias::new("area_id")).eq(Expr::value(area.id)))
-					.and_where(Expr::col(Alias::new("revision")).eq(Expr::value(area.revision)))
-					.to_string(PostgresQueryBuilder),
-			)
-			.scalar_optional(&mut **access.tx)
-			.await?;
-			let previous = previous.unwrap_or_else(|| serde_json::json!([]));
-			let tenant = access.identity.tenant.clone();
-			record_revision(access.tx.native_mut(), &tenant, area, &previous).await?;
-			Ok(previous)
-		}
-		.await;
-		result.map_err(Into::into)
-	}
-
-	async fn previous_generation(&mut self, area: &Area) -> Result<i64> {
-		let result: NativeResult<i64> = crate::database::native::query_scalar(
-			&Query::select()
-				.column(Alias::new("generation"))
-				.from(Alias::new("core_areas"))
-				.and_where(Expr::col(Alias::new("id")).eq(Expr::value(area.id)))
-				.to_string(PostgresQueryBuilder),
+	async fn bound_references(
+		&mut self,
+		config: &aidash_domain::registry::AgentConfig,
+	) -> Result<Vec<MountedFile>> {
+		let store = self.store.ok_or_else(missing)?;
+		crate::apps::execution::capabilities::services::references::bound_files(
+			store,
+			self.access,
+			config,
 		)
-		.scalar_one(&mut **self.access.tx)
-		.await;
-		result.map_err(Into::into)
-	}
-	async fn supersede(&mut self, area: &Area, file: Uuid) -> Result<()> {
-		let result: NativeResult<_> = async {
-			let access = &mut *self.access;
-			{
-				let query_bind_1 = file;
-				let query_bind_2 = area.id;
-				crate::database::native::query(
-					&Query::update()
-						.table(Alias::new("core_objects"))
-						.value(Alias::new("kind"), "superseded_working")
-						.and_where(
-							Expr::col(Alias::new("id")).eq(Expr::value(query_bind_1.to_owned())),
-						)
-						.and_where(
-							Expr::col(Alias::new("area_id"))
-								.eq(Expr::value(query_bind_2.to_owned())),
-						)
-						.and_where(
-							Expr::col(Alias::new("kind"))
-								.eq(reinhardt::query::Expr::value("working")),
-						)
-						.to_string(PostgresQueryBuilder),
-				)
-				.execute(&mut **access.tx)
-				.await?
-			};
-			Ok(())
-		}
-		.await;
-		result.map_err(Into::into)
-	}
-	async fn persist_manifest(&mut self, area: &Area) -> Result<()> {
-		let result: NativeResult<()> = async {
-			let access = &mut *self.access;
-			let tenant = access.identity.tenant.clone();
-			record_revision(access.tx.native_mut(), &tenant, area, &area.manifest).await?;
-			crate::database::native::query(
-				&Query::update()
-					.table(Alias::new("core_areas"))
-					.value(Alias::new("constraints"), area.constraints.clone())
-					.value(Alias::new("revision"), area.revision)
-					.and_where(Expr::col(Alias::new("id")).eq(Expr::value(area.id)))
-					.and_where(
-						Expr::col(Alias::new("tenant")).eq(Expr::value(&access.identity.tenant)),
-					)
-					.to_string(PostgresQueryBuilder),
-			)
-			.execute(&mut **access.tx)
-			.await?;
-			Ok(())
-		}
-		.await;
-		result.map_err(Into::into)
+		.await
+		.map_err(Into::into)
 	}
 
 	async fn unusable_references(
@@ -785,141 +402,6 @@ impl FileScopePort for Scope<'_> {
 		if updated != 1 {
 			return Err(Error::Conflict("PATCH_CLAIM_CHANGED".into()));
 		}
-		Ok(())
-	}
-	async fn begin_pending(&mut self, area: Uuid, size: u64) -> Result<()> {
-		self.pending = Some(
-			self.store
-				.ok_or_else(missing)?
-				.capabilities
-				.begin_object(self.access, Some(area), "working", size)
-				.await?,
-		);
-		Ok(())
-	}
-	async fn read_chunk(&mut self, file: &MountedFile, offset: u64) -> Result<Vec<u8>> {
-		let row: FileEntry = file.clone().into();
-		self.store
-			.ok_or_else(missing)?
-			.capabilities
-			.read_chunk(self.access, &row, offset)
-			.await
-			.map_err(Into::into)
-	}
-	async fn write_pending(&mut self, bytes: &[u8]) -> Result<()> {
-		self.pending
-			.as_mut()
-			.ok_or_else(missing)?
-			.write_block(bytes)
-			.await
-			.map_err(Into::into)
-	}
-	async fn finish_pending(&mut self, expected: &str) -> Result<(Uuid, String)> {
-		self.pending
-			.take()
-			.ok_or_else(missing)?
-			.finish(self.access, Some(expected))
-			.await
-			.map_err(Into::into)
-	}
-	async fn message(&mut self, thread: Uuid, id: Uuid) -> Result<Value> {
-		self.access
-			.thread_record(thread, "message", id)
-			.await
-			.map_err(Into::into)
-	}
-	async fn documents(&mut self, entry: &Entry) -> Result<Value> {
-		let store = self.store.ok_or_else(missing)?;
-		let registry = crate::registry::Registry::new(store.pool.clone(), &store.deployment)?;
-		let tenant = aidash_domain::tenancy::TenantName::new(self.access.identity.tenant.clone())?;
-		crate::knowledge::load(&registry, &tenant, entry)
-			.await
-			.map_err(Into::into)
-	}
-	async fn text_file(
-		&mut self,
-		area: Uuid,
-		path: String,
-		text: &str,
-		scope: FileScope,
-		provenance: Value,
-	) -> Result<MountedFile> {
-		let scope = match scope {
-			FileScope::Working => NativeFileScope::Working,
-			FileScope::References => NativeFileScope::References,
-			FileScope::Received => NativeFileScope::Received,
-		};
-		self.store
-			.ok_or_else(missing)?
-			.capabilities
-			.text_file(self.access, area, path, text, scope, provenance)
-			.await
-			.map(Into::into)
-			.map_err(Into::into)
-	}
-	async fn event(&mut self, thread: Uuid, kind: &str, data: Value) -> Result<()> {
-		let store = self.store.ok_or_else(missing)?;
-		store
-			.event(
-				&mut self.access.tx,
-				store.event_thread(self.run, thread),
-				kind,
-				data,
-			)
-			.await
-			.map(|_| ())
-			.map_err(Into::into)
-	}
-	async fn image_publication(
-		&mut self,
-		area: &Area,
-		changes: &[aidash_domain::semantic::indexing::ImageChange],
-	) -> Result<()> {
-		let access = &mut *self.access;
-		if area.tenant != access.identity.tenant {
-			return Err(Error::Forbidden);
-		}
-		crate::apps::knowledge::repositories::image_publications::lock_thread(
-			&mut **access.tx,
-			area.thread_id,
-		)
-		.await?;
-		let authority = if access.identity.subject == area.owner {
-			serde_json::json!({"credential":access.identity.credential_id,"tenant":access.identity.tenant,"subject":access.identity.subject,"subjects":access.subjects})
-		} else {
-			// Do not use another actor's credential to index the owner's Area.
-			serde_json::json!({"credential":null,"tenant":area.tenant,"subject":area.owner,"subjects":[]})
-		};
-		let changes = serde_json::to_value(changes)?;
-		// The Thread lock assigns publication sequence in commit order.
-		let statement = Query::insert()
-			.into_table(Alias::new("semantic_image_publications"))
-			.columns(
-				[
-					"tenant",
-					"thread_id",
-					"area_id",
-					"generation",
-					"changes",
-					"authority",
-				]
-				.map(Alias::new),
-			)
-			.from_subquery(
-				Query::select()
-					.expr(Expr::value(area.tenant.clone()))
-					.expr(Expr::value(area.thread_id))
-					.expr(Expr::value(area.id))
-					.expr(Expr::value(area.generation))
-					.expr(Expr::value(changes))
-					.expr(Expr::value(authority))
-					.to_owned(),
-			)
-			.to_string(PostgresQueryBuilder);
-		crate::database::native::query(&statement)
-			.execute(&mut **access.tx)
-			.await
-			.map_err(Error::from)?;
 		Ok(())
 	}
 }

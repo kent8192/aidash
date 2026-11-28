@@ -12,6 +12,7 @@ use uuid::Uuid;
 #[schemars(rename = "ModelCallPurpose")]
 pub enum Purpose {
 	CompactionSummary,
+	GoalJudge,
 	MemoryRole,
 	WorkbenchTest,
 	McpSampling,
@@ -27,6 +28,7 @@ impl Purpose {
 
 	pub const fn as_str(self) -> &'static str {
 		match self {
+			Self::GoalJudge => "goal_judge",
 			Self::CompactionSummary => "compaction_summary",
 			Self::MemoryRole => "memory_role",
 			Self::WorkbenchTest => "workbench_test",

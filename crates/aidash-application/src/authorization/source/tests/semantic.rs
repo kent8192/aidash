@@ -147,14 +147,14 @@ fn remote_inspection() -> Inspection {
 	let mut agent = crate::test_support::agent("agent");
 	agent.config["model"] = json!({"id":"model","version":"1.0.0"});
 	agent.config["bindings"] = json!([crate::test_support::binding(
-		"memory",
+		"source",
 		"aidash://receiver",
-		"semantic-memory"
+		"thread-retrieval"
 	)]);
 	let source = crate::test_support::entry(
-		"semantic-memory",
-		"memory",
-		json!({"schema_version":1,"source":{"adapter":"semantic_memory"}}),
+		"thread-retrieval",
+		"source",
+		json!({"schema_version":1,"source":{"adapter":"workspace_retrieval"}}),
 	);
 	value.binding_snapshot =
 		crate::test_support::resolve("aidash://receiver", &agent, true, vec![source]);
@@ -172,30 +172,9 @@ fn request() -> Request {
 	}
 }
 
-#[rstest]
-#[case::enabled(false, true)]
-#[case::disabled(false, false)]
-#[case::generic_enabled(true, true)]
 #[tokio::test]
-async fn explicit_native_home_selection_is_independent_of_generic_auto_context(
-	#[case] auto_context: bool,
-	#[case] enabled: bool,
-) {
+async fn a_custom_native_memory_request_is_rejected_before_source_reads() {
 	let mut scope = BindingScope::new();
-	scope.spec.auto_context = auto_context;
-	scope.spec.enabled = enabled;
-	scope.index.spec = serde_json::to_value(&scope.spec).unwrap();
-	let mut inspection = remote_inspection();
-	inspection.binding_snapshot =
-		crate::test_support::native_memory_snapshot("aidash://receiver", "agent");
-	inspection.agent = inspection
-		.binding_snapshot
-		.definitions
-		.iter()
-		.find(|d| d.identity == inspection.binding_snapshot.agent)
-		.unwrap()
-		.definition
-		.clone();
 	let mut input = request();
 	if let Request::RequiredHome { native, .. } = &mut input {
 		*native = Some(Box::new(aidash_domain::semantic::remote::NativeRequest {
@@ -207,72 +186,20 @@ async fn explicit_native_home_selection_is_independent_of_generic_auto_context(
 			},
 		}));
 	}
-	let result = use_case::binding(
-		&mut scope,
-		&task(),
-		"aidash://receiver",
-		&inspection,
-		&input,
-	)
-	.await;
-	if enabled {
-		let Binding::RequiredHome {
-			native,
-			index_revision,
-			..
-		} = result.unwrap()
-		else {
-			panic!("native binding required")
-		};
-		assert_eq!(index_revision, 0);
-		assert_eq!(native.unwrap().participant.participant_revision, 3);
-		assert!(scope.reads.contains(&"native"));
-	} else {
-		assert!(matches!(
-			result,
-			Err(Error::RemoteSemantic(Failure::Configuration))
-		));
-		assert_eq!(scope.reads, vec!["index"]);
-	}
-}
-#[rstest]
-#[case(false)]
-#[case(true)]
-#[tokio::test]
-async fn native_memory_cannot_be_silently_disabled_or_mapped_by_name(#[case] required: bool) {
-	let mut scope = BindingScope::new();
-	let mut inspection = remote_inspection();
-	inspection.binding_snapshot =
-		crate::test_support::native_memory_snapshot("aidash://receiver", "agent");
-	inspection.agent = inspection
-		.binding_snapshot
-		.definitions
-		.iter()
-		.find(|d| d.identity == inspection.binding_snapshot.agent)
-		.unwrap()
-		.definition
-		.clone();
-	let input = if required {
-		request()
-	} else {
-		Request::Disabled {}
-	};
 	assert!(matches!(
 		use_case::binding(
 			&mut scope,
 			&task(),
 			"aidash://receiver",
-			&inspection,
+			&remote_inspection(),
 			&input
 		)
 		.await,
 		Err(Error::RemoteSemantic(Failure::Configuration))
 	));
-	assert!(
-		scope.reads.is_empty(),
-		"reject before touching Home index or provider"
-	);
+	assert!(scope.reads.is_empty());
 }
+
 #[rstest]
 #[tokio::test]
 async fn disabled_binding_does_not_read_or_disclose_home_state() {
@@ -441,20 +368,16 @@ async fn required_home_binding_pins_the_exact_index_document_and_provider_metada
 	assert_eq!(scope.reads, vec!["index", "entry", "lineage"]);
 }
 #[rstest]
-#[case::native(true)]
-#[case::without_native(false)]
-fn selection_requirements_use_the_remote_closure_without_a_home_catalog(#[case] native: bool) {
+#[case::thread_retrieval(true)]
+#[case::builtin_memory_only(false)]
+fn selection_requirements_use_the_remote_closure_without_a_home_catalog(#[case] retrieval: bool) {
 	let mut inspection = remote_inspection();
-	inspection.binding_snapshot = if native {
-		crate::test_support::native_memory_snapshot("aidash://receiver", "agent")
-	} else {
-		crate::test_support::snapshot("aidash://receiver", "agent")
-	};
-	let requirements = use_case::requirements(&inspection).unwrap();
-	assert_eq!(requirements.native_required, native);
-	if native {
-		assert!(requirements.memory_available);
+	if !retrieval {
+		inspection.binding_snapshot = crate::test_support::snapshot("aidash://receiver", "agent");
 	}
+	let requirements = use_case::requirements(&inspection).unwrap();
+	assert!(!requirements.native_required);
+	assert_eq!(requirements.memory_available, retrieval);
 }
 
 #[rstest]

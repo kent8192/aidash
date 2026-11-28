@@ -36,7 +36,6 @@ fn content_hash_preserves_the_persisted_hex_format() {
 }
 #[rstest]
 #[case::memory(r#"{"kind":"memory","text":"bytes"}"#)]
-#[case::artifact(r#"{"kind":"artifact","id":"00000000-0000-0000-0000-000000000001"}"#)]
 #[case::message(r#"{"kind":"message","id":"00000000-0000-0000-0000-000000000001"}"#)]
 fn source_contracts_round_trip_without_added_fields(#[case] encoded: &str) {
 	let value: Value = serde_json::from_str(encoded).unwrap();

@@ -53,7 +53,6 @@ fn agent(model: &str, dependencies: &[(&str, &str)]) -> Entry {
 		"agent",
 		"writer",
 		json!({
-			"schema_version": 1,
 			"model": {"id": model, "version": "1.0.0"},
 			"instructions": "Write",
 			"bindings": dependencies.iter().map(|(kind, id)| json!({

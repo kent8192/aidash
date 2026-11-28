@@ -272,6 +272,7 @@ async fn manual_retry_renews_only_the_retry_ledger_and_preserves_durable_budgets
 			&NewTask {
 				title: "Tokyo transport".into(),
 				description: "Find the way around".into(),
+				goal: None,
 				requirements: json!({}),
 				dependencies: vec![],
 				parent_id: None,

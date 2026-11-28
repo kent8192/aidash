@@ -248,9 +248,16 @@ pub(crate) async fn thread_attachment(
 				_ => return Err(crate::Error::Forbidden),
 			}
 		}
-		let (attachment, bytes) = crate::collaboration::attachments::download(
-			&f.store,
-			&mut lease,
+		if record["size_bytes"]
+			.as_u64()
+			.is_none_or(|size| size > 8 * 1024 * 1024)
+		{
+			return Err(crate::Error::Invalid(
+				"Attachment exceeds the bounded peer read limit".into(),
+			));
+		}
+		let (attachment, bytes) = aidash_application::threads::channels::download(
+			&mut crate::bootstrap::channel_scope(&f.store, &mut lease),
 			thread,
 			input.attachment_id,
 		)

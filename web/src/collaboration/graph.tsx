@@ -469,7 +469,7 @@ export function Graph({
               {
                 mesh: "agent",
                 collaboration: "thread",
-                knowledge: "artifact",
+                knowledge: "thread",
                 execution: "task",
                 topology: "cluster",
               }[graphMode] &&
@@ -562,9 +562,8 @@ export function Graph({
       const target = full.nodes.find(
         (node) =>
           node.nodeId === data.node.id &&
-          ((node.kind === "task" && node.resourceId === references.task_id) ||
-            (node.kind === "artifact" &&
-              node.resourceId === references.artifact_id)),
+          node.kind === "task" &&
+          node.resourceId === references.task_id,
       );
       return {
         id: event.id,
@@ -791,13 +790,6 @@ export function Graph({
       {data.next_cursors.runs && (
         <p className="text-xs text-faint">
           {locale === "ja-JP" ? "以前の実行があります" : "Older runs exist"}
-        </p>
-      )}
-      {data.next_cursors.artifacts && (
-        <p className="text-xs text-faint">
-          {locale === "ja-JP"
-            ? "以前の成果物があります"
-            : "Older artifacts exist"}
         </p>
       )}
       {mode === "neighborhood" ? (

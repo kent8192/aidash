@@ -10,6 +10,7 @@ fn task() -> NewTask {
 	NewTask {
 		title: "Task".into(),
 		description: "Graph test".into(),
+		goal: None,
 		requirements: json!({}),
 		dependencies: vec![],
 		parent_id: None,

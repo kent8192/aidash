@@ -27,6 +27,7 @@ pub enum PinPolicy {
 	#[default]
 	Always,
 	OnDemand,
+	#[schemars(skip)]
 	Scored {
 		mode: Mode,
 		decider: QualifiedRef,
@@ -110,13 +111,10 @@ impl SourceDeclaration {
 				"required-Home source must contribute Always or Scored Shadow".into(),
 			));
 		}
-		if let PinPolicy::Scored { mode: _, decider } = &self.pin {
-			decider.validate()?;
-			if !self.disclosure.previews || !self.disclosure.query {
-				return Err(Error::Invalid(
-					"Scored source requires explicit preview and query disclosure".into(),
-				));
-			}
+		if matches!(self.pin, PinPolicy::Scored { .. }) {
+			return Err(Error::Invalid(
+				"Scored context pins have been retired".into(),
+			));
 		}
 		Ok(())
 	}

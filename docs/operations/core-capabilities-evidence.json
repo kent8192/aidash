@@ -656,24 +656,24 @@
   },
   "browser_tests": [
     {
-      "name": "queue, steer and stop remain usable; stale Python requires explicit acknowledgement",
+      "name": "starting work, steering and stopping remain usable; stale Python requires explicit acknowledgement",
       "source": "web/tests/core-capabilities.spec.ts",
       "acceptance": ["AT03", "AT05", "AT29"]
     },
     {
-      "name": "located search, progressive Skills, denied approval and uncertain transfer show actionable state",
+      "name": "progressive Skills and denied approval show actionable state",
       "source": "web/tests/core-capabilities.spec.ts",
-      "acceptance": ["AT10", "AT13", "AT15", "AT22"]
+      "acceptance": ["AT10", "AT13"]
     },
     {
-      "name": "narrow keyboard cleanup keeps default, separates confirmation and restores retained files",
-      "source": "web/tests/core-capabilities.spec.ts",
-      "acceptance": ["AT07", "AT08", "AT09"]
-    },
-    {
-      "name": "deleting a thread requires its file retention choice before controls disappear",
+      "name": "clearing and deleting a Thread uses its Scratch folder workflow",
       "source": "web/tests/core-capabilities.spec.ts",
       "acceptance": ["AT07", "AT09"]
+    },
+    {
+      "name": "failed-extraction originals stay private and downloadable",
+      "source": "web/tests/core-capabilities.spec.ts",
+      "acceptance": ["AT23", "AT24"]
     },
     {
       "name": "Binding setup saves explicit Sources, Memory and Host packages in a new immutable version",
@@ -681,17 +681,17 @@
       "acceptance": ["AT02", "AT13", "AT23", "AT24"]
     },
     {
-      "name": "generated image and outbound downloads use the authenticated file endpoint",
+      "name": "a generated image uses its Run and command download endpoint",
       "source": "web/tests/core-capabilities.spec.ts",
       "acceptance": ["AT05", "AT18"]
     },
     {
-      "name": "thread deletion waits for every working-area page before submitting choices",
+      "name": "thread run retries reuse an ambiguous idempotency key and changed prompts get a new key",
       "source": "web/tests/core-capabilities.spec.ts",
-      "acceptance": ["AT07", "AT09"]
+      "acceptance": ["AT03", "AT28"]
     },
     {
-      "name": "outbound retries reuse an ambiguous request key and a new fetch uses a fresh key",
+      "name": "a Tool call approval shows the exact call and is allowed once, for this Run or denied",
       "source": "web/tests/core-capabilities.spec.ts",
       "acceptance": ["AT10", "AT11"]
     }

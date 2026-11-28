@@ -3,11 +3,10 @@ pub(crate) mod access;
 pub(crate) mod attachment_images;
 pub(crate) mod bindings;
 pub(crate) mod candidates;
-pub(crate) mod image_files;
-pub(crate) mod image_publications;
 pub(crate) mod indexing;
 pub(crate) mod memory_decay;
 pub(crate) mod memory_graph;
+pub(crate) mod reembedding;
 #[cfg(test)]
 use crate::apps::execution::test_database::DatabaseFixture;
 /// One copy of the native-memory fixture for every repository test module.

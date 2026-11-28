@@ -78,6 +78,7 @@ impl GenerationVisibility for Scope {
 			title: "Task".into(),
 			description: String::new(),
 			status: TaskStatus::Open,
+			goal: None,
 			requirements: json!({}),
 			owner: None,
 			created_by: "alice".into(),

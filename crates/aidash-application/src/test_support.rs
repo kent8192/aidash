@@ -25,7 +25,7 @@ pub(crate) fn agent(id: &str) -> Entry {
 	entry(
 		id,
 		"agent",
-		json!({"schema_version":1,"model":{"id":"fixture-model","version":"1.0.0"},"instructions":"Do the task.","bindings":[],"remove_default":[]}),
+		json!({"model":{"id":"fixture-model","version":"1.0.0"},"instructions":"Do the task.","bindings":[],"remove_default":[]}),
 	)
 }
 pub(crate) const PLUGIN_SOURCE: &str =
@@ -287,10 +287,30 @@ pub(crate) fn native_memory_entries() -> Vec<Entry> {
 		),
 	]
 }
-pub(crate) fn native_memory_snapshot(node: &str, id: &str) -> BindingSnapshot {
-	let mut root = agent(id);
-	root.config["bindings"] = json!([binding("memory", node, "native")]);
-	resolve(node, &root, true, native_memory_entries())
+pub(crate) fn migrated_develop_seed() -> Vec<Entry> {
+	let rows: Vec<serde_json::Value> = serde_json::from_str(include_str!(
+		"../../../tests/fixtures/builtin_seed_develop_7abdf5.json"
+	))
+	.unwrap();
+	rows.into_iter()
+		.map(|mut row| {
+			let metadata = row.as_object_mut().unwrap();
+			let skills = metadata.remove("skills").unwrap_or_default();
+			let mut tags = metadata
+				.remove("tags")
+				.unwrap_or_default()
+				.as_array()
+				.cloned()
+				.unwrap_or_default();
+			for skill in skills.as_array().into_iter().flatten() {
+				if !tags.contains(skill) {
+					tags.push(skill.clone());
+				}
+			}
+			metadata.insert("tags".into(), json!(tags));
+			serde_json::from_value(row).unwrap()
+		})
+		.collect()
 }
 
 pub(crate) const PLUGIN_NODE: &str = "aidash://test";

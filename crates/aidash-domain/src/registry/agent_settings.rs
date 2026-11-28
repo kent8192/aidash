@@ -7,20 +7,15 @@ use sources::{NativeContext, NativeSource, OnUnavailable};
 impl AgentConfig {
 	pub fn definition(&self) -> AgentBindings {
 		AgentBindings {
-			schema_version: self.schema_version,
 			model: self.model.clone(),
 			reference_embedding: self.reference_embedding.clone(),
 			instructions: self.instructions.clone(),
 			bindings: self.bindings.clone(),
 			remove_default: self.remove_default.clone(),
-			max_steps: self.max_steps,
-			context_policy: self.context_policy.clone(),
-			tool_parallelism: self.tool_parallelism,
 			exposure: self.exposure,
 			projection_version: self.projection_version,
 			harness_contract: self.harness_contract,
 			prompt_cache: self.prompt_cache,
-			completion: self.completion.clone(),
 			agent_plugins: self.agent_plugins.clone(),
 			agent_plugin_settings: self.agent_plugin_settings.clone(),
 		}
@@ -38,20 +33,15 @@ impl AgentConfig {
 			semantic_memory: false,
 			thread_context: false,
 			thread_degrades: false,
-			schema_version: input.schema_version,
 			bindings: input.bindings,
 			remove_default: input.remove_default,
 			model: input.model,
 			reference_embedding: input.reference_embedding,
 			instructions: input.instructions,
-			max_steps: input.max_steps,
-			context_policy: input.context_policy,
-			tool_parallelism: input.tool_parallelism,
 			exposure: input.exposure,
 			projection_version: input.projection_version,
 			harness_contract: input.harness_contract,
 			prompt_cache: input.prompt_cache,
-			completion: input.completion,
 			agent_plugins: input.agent_plugins,
 			agent_plugin_settings: input.agent_plugin_settings,
 			core_capabilities: Default::default(),
@@ -60,12 +50,8 @@ impl AgentConfig {
 			reference_attachments: vec![],
 			knowledge_digest: None,
 			tools: vec![],
+			operations: Default::default(),
 			skills: vec![],
-			allow_task_creation: Some(false),
-			allow_task_delegation: Some(false),
-			allow_memory_write: Some(false),
-			allow_workspace_retrieval: Some(true),
-			allow_cross_conversation_memory: Some(false),
 		};
 		for name in policy
 			.required_tools()
@@ -105,11 +91,9 @@ impl AgentConfig {
 		let input: AgentBindings = serde_json::from_value(definition.definition.config.clone())?;
 		let mut result = Self::from_definition(input);
 		result.core_capabilities = Default::default();
-		result.allow_task_creation = Some(false);
-		result.allow_task_delegation = Some(false);
-		result.allow_memory_write = Some(false);
-		result.allow_workspace_retrieval = Some(false);
+
 		result.skills.clear();
+		result.operations.clear();
 		result.memory = None;
 		result.sources.clear();
 		let mut thread_policies = vec![];
@@ -121,7 +105,9 @@ impl AgentConfig {
 				"tool" => {
 					let descriptor: ToolDescriptor =
 						serde_json::from_value(binding.definition.config.clone())?;
-					result.operation(&descriptor.operation);
+					if descriptor.transport.is_none() {
+						result.operation(&descriptor.operation);
+					}
 					result.tools.push(binding.identity.local());
 				}
 				"skill" => result.skills.push(binding.identity.local()),
@@ -214,6 +200,8 @@ impl AgentConfig {
 		Ok(result)
 	}
 	fn operation(&mut self, name: &str) {
+		let name = crate::tool::thread_tools::current(name);
+		self.operations.insert(name.to_owned());
 		match name {
 			"file_search" | "file_read" => self.core_capabilities.files = true,
 			"shell" | "shell_poll" | "shell_cancel" => self.core_capabilities.shell = true,
@@ -222,12 +210,7 @@ impl AgentConfig {
 			}
 			"apply_patch" => self.core_capabilities.patch = true,
 			"file_share" => self.core_capabilities.sharing = true,
-			"task_create" => self.allow_task_creation = Some(true),
-			"task_delegate" | "task_assign" => self.allow_task_delegation = Some(true),
-			"memory_mutate" => self.allow_memory_write = Some(true),
-			"memory_recall" | "memory_reflect" => self.allow_cross_conversation_memory = Some(true),
 			"outbound_get" => self.core_capabilities.outbound = true,
-			"workspace_read" | "thread_read" => self.allow_workspace_retrieval = Some(true),
 			_ => {}
 		}
 	}
@@ -236,7 +219,7 @@ impl AgentConfig {
 		// reads retain their own resource authority without requiring a local area.
 		self.core_capabilities.enabled()
 	}
-	/// The resolved Exposure policy; absent means `legacy@1`.
+	/// The resolved Exposure policy; omitted uses immediate exposure.
 	pub fn exposure_policy(&self) -> crate::exposure::ExposurePolicy {
 		self.exposure.unwrap_or_default()
 	}

@@ -23,7 +23,7 @@ fn validation() -> DefinitionValidation {
 fn inspection() -> Inspection {
 	let agent: Entry = serde_json::from_value(
 		json!({"id":"a","version":"1.0.0","kind":"agent","name":{"en":"A"},"description":{"en":""},
-        "config":{"schema_version":1,"bindings":[],"remove_default":[],"model":{"id":"m","version":"1.0.0"},"instructions":"Do work."}}),
+        "config":{"bindings":[],"remove_default":[],"model":{"id":"m","version":"1.0.0"},"instructions":"Do work."}}),
 	)
 	.unwrap();
 	let model: Entry = serde_json::from_value(

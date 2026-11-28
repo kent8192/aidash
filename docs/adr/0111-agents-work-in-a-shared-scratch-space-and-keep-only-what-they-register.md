@@ -44,3 +44,7 @@ ADR 0137: the External services of a Scratch Space are reached through the Execu
 ## Amendment (2026-11-17)
 
 A Run that a Remote Grant started works in the receiving Node's Delegated Run Scratch Space and keeps files in a Working Area of its own on that Node, one per Home person, Agent and Home Workspace thread, kept while the Node Registration with that Home lasts (ADR 0139). Its commands reach only the hosts that both the Space's settings and the Home's Federation Tool Request allow, and the Space has no External services.
+
+## Amendment (2026-11-26, #1020)
+
+[ADR 0162](0162-each-node-has-a-shared-scratch-space.md) defines the Node's shared default space, access, work directories and explicit clearing. It replaces the dedicated Thread and Delegated Run space model.

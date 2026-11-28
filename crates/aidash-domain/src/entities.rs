@@ -190,6 +190,9 @@ pub struct Task {
 	pub thread_id: Uuid,
 	pub title: String,
 	pub description: String,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	#[schemars(length(max = 4000))]
+	pub goal: Option<String>,
 	pub status: TaskStatus,
 
 	pub requirements: Value,
@@ -288,54 +291,14 @@ impl ChildTaskSummary {
 pub struct NewTask {
 	pub title: String,
 	pub description: String,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	#[schemars(length(max = 4000))]
+	pub goal: Option<String>,
 	#[serde(default = "empty_object")]
 	pub requirements: Value,
 	#[serde(default)]
 	pub dependencies: Vec<Uuid>,
 	pub parent_id: Option<Uuid>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
-pub struct Artifact {
-	pub id: Uuid,
-	pub thread_id: Uuid,
-	pub task_id: Uuid,
-	pub kind: String,
-	pub name: String,
-	pub content: Value,
-	pub created_by: String,
-	pub idempotency_key: String,
-	pub created_at: DateTime<Utc>,
-	/// The Run that published this Artifact on this Node. Only the Run's own
-	/// publication writes it; Artifacts that people or other Nodes deliver have
-	/// none.
-	#[serde(default, skip_serializing_if = "Option::is_none")]
-	pub run_id: Option<Uuid>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
-pub struct ArtifactInput {
-	pub kind: String,
-	pub name: String,
-	pub content: Value,
-}
-
-impl ArtifactInput {
-	pub fn validate(&self) -> Result<()> {
-		nonempty(&self.name, "artifact name")?;
-		if !matches!(
-			self.kind.as_str(),
-			"text" | "json" | "file_reference" | "code" | "structured_result"
-		) {
-			return Err(Error::Invalid("unsupported artifact kind".into()));
-		}
-		if matches!(self.kind.as_str(), "text" | "code" | "file_reference")
-			&& !self.content.is_string()
-		{
-			return Err(Error::Invalid("artifact content must be a string".into()));
-		}
-		Ok(())
-	}
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
@@ -374,6 +337,8 @@ pub struct Conversation {
 	pub id: Uuid,
 	pub thread_id: Uuid,
 	pub target: String,
+	#[serde(deserialize_with = "crate::threads::ThreadTargetKind::deserialize_name")]
+	#[schemars(with = "crate::threads::ThreadTargetKind")]
 	pub target_kind: String,
 	pub created_at: DateTime<Utc>,
 }
@@ -433,7 +398,6 @@ pub struct Run {
 pub struct ThreadSnapshot {
 	pub thread: Thread,
 	pub tasks: Vec<Task>,
-	pub artifacts: Vec<Artifact>,
 	pub events: Vec<Event>,
 	pub messages: Vec<Message>,
 	/// Rows this read scanned and could not confirm because a Node did not
@@ -494,6 +458,8 @@ mod tests {
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Message {
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub completion: Option<crate::deliverable::CompletionDetails>,
 	pub id: Uuid,
 	pub thread_id: Uuid,
 	pub sender: String,

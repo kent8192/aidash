@@ -471,8 +471,6 @@ impl PreparedDispatch for FixtureDispatch<'_> {
 	}
 }
 
-mod source_selection_tests;
-
 /// A resume cycle is part of the decision identity, so a person's resume starts
 /// a new decision instead of meeting an attempt whose result is unknown.
 #[test]

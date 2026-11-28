@@ -184,7 +184,6 @@ impl HarnessManagement {
 			human_requests: Vec::new(),
 			conversations: Vec::new(),
 			events: Vec::new(),
-			artifacts: Vec::new(),
 			unconfirmed: Vec::new(),
 			next_cursors: Default::default(),
 		};

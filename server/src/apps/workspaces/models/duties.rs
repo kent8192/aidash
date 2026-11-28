@@ -31,6 +31,8 @@ pub struct DutyRecord {
 	/// The checklist its Agent follows on every Task.
 	#[field(field_type = "text")]
 	pub procedure: String,
+	#[field(field_type = "text", null = true)]
+	pub goal: Option<String>,
 	#[field(field_type = "text")]
 	pub agent_id: String,
 	#[field(field_type = "text")]

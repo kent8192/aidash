@@ -28,16 +28,14 @@ use uuid::Uuid;
 pub mod files;
 pub mod previews;
 pub mod processes;
-pub mod save;
 
 pub const SHELL: &str = "shell";
 pub const PYTHON: &str = "code_interpreter";
 /// Leads a cell's output when its interpreter was started afresh.
 const SESSION_RESET_NOTICE: &str = "[The Python session restarted because the Execution Pod was replaced; earlier variables and imports are gone.]\n";
 
-/// Admit a command or Python cell for the Execution Pod. The Working Area is
-/// neither checked nor held: the command writes the Scratch Space, so
-/// `expected_revision` is accepted but not compared (#745).
+/// Admit a command or Python cell in the Run’s Scratch Space directory.
+/// Timed Background processes use the Deployment’s separate time ceiling.
 pub async fn accept<O: Send>(
 	scope: &mut dyn OperationAdmissionScope<O>,
 	run: &RunMetadata,
@@ -45,12 +43,13 @@ pub async fn accept<O: Send>(
 	expected_session_id: Option<Uuid>,
 	kind: &str,
 	scratch_space_id: &str,
+	working_directory: &str,
 ) -> Result<Value> {
 	let mut limits = scope.limits();
 	if input.background && kind != SHELL || input.notify_on_exit && !input.background {
 		return Err(Error::Invalid("INVALID_BACKGROUND_OPTIONS".into()));
 	}
-	let mut extra = json!({"runtime": POD_RUNTIME, "scratch_space_id": scratch_space_id});
+	let mut extra = json!({"runtime": POD_RUNTIME, "scratch_space_id": scratch_space_id, "working_directory": working_directory});
 	if let Some(session_id) = expected_session_id {
 		extra["expected_session_id"] = json!(session_id);
 	}
@@ -79,7 +78,7 @@ pub async fn accept<O: Send>(
 	if !limits.admission {
 		return Err(Error::Conflict("CAPABILITIES_DISABLED".into()));
 	}
-	if scope.active_run().await? != Some(run.id) || run.phase.is_terminal() {
+	if run.phase.is_terminal() || run.control != aidash_domain::RunControl::Active {
 		return Err(Error::Conflict("RUN_NOT_ACTIVE".into()));
 	}
 	scope.require_write().await?;
@@ -132,7 +131,9 @@ pub fn command_request(operation: &PodOperation, context: &PodContext) -> Result
 		expected_session_id: serde_json::from_value(
 			operation.input["expected_session_id"].clone(),
 		)?,
-		cwd: None,
+		cwd: operation.input["working_directory"]
+			.as_str()
+			.map(str::to_owned),
 		timeout_seconds: Some(u32::try_from(seconds).unwrap_or(u32::MAX)),
 		background: operation.input["background"] == true,
 		notify_on_exit: operation.input["notify_on_exit"] == true,

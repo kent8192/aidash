@@ -31,9 +31,6 @@ pub fn project(snapshot: &ThreadSnapshot, offset: usize, limit: usize) -> Value 
 			"dependencies":t.dependencies.iter().take(MAX_LIMIT).collect::<Vec<_>>(),
 			"dependency_count":t.dependencies.len()
 		})).collect::<Vec<_>>(),
-		"artifacts":snapshot.artifacts.iter().skip(offset).take(limit).map(|a| json!({
-			"id":a.id,"task_id":a.task_id,"kind":a.kind,"name":preview(&a.name,256),"created_at":a.created_at
-		})).collect::<Vec<_>>(),
 		"events":snapshot.events.iter().rev().skip(offset).take(limit).map(|e| json!({
 			"id":e.id,"sequence":e.sequence,"kind":preview(&e.kind,128),"created_at":e.created_at
 		})).collect::<Vec<_>>(),
@@ -46,7 +43,6 @@ pub fn project(snapshot: &ThreadSnapshot, offset: usize, limit: usize) -> Value 
 	crate::unconfirmed::attach(&mut value, snapshot.unconfirmed.clone());
 	for (name, count) in [
 		("tasks", snapshot.tasks.len()),
-		("artifacts", snapshot.artifacts.len()),
 		("events", snapshot.events.len()),
 		("messages", snapshot.messages.len()),
 	] {

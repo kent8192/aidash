@@ -3,6 +3,11 @@
 //! Tenant needs before its first policy, as the API's creation steps would.
 use aidash_server::federation::Federation;
 
+// Some isolated test binaries use just this fixture and others use both.
+#[allow(clippy::duplicate_mod)]
+#[path = "default_scratch.rs"]
+mod default_scratch;
+
 /// The default Node name fixtures give `tenant`. It is derived from the Tenant
 /// name so a test can name the Node's address before the Tenant exists.
 #[allow(dead_code)]
@@ -73,7 +78,10 @@ pub async fn default_node_in(pool: &sqlx::PgPool, tenant: &str) -> aidash_domain
 			.await
 			.expect("the default Node is read");
 	if let Some(name) = existing {
-		return aidash_domain::nodes::NodeName::parse(&name).unwrap();
+		let name = aidash_domain::nodes::NodeName::parse(&name).unwrap();
+		default_scratch::seed(&mut tx, tenant, &name).await;
+		tx.commit().await.expect("the default Node fixtures commit");
+		return name;
 	}
 	let name = fixture_node_name(tenant);
 	sqlx::query(
@@ -95,6 +103,7 @@ pub async fn default_node_in(pool: &sqlx::PgPool, tenant: &str) -> aidash_domain
 	.execute(&mut *tx)
 	.await
 	.expect("the default Node is written");
+	default_scratch::seed(&mut tx, tenant, &name).await;
 	tx.commit().await.expect("the default Node commits");
 	name
 }
@@ -103,13 +112,16 @@ pub async fn default_node_in(pool: &sqlx::PgPool, tenant: &str) -> aidash_domain
 /// test-fixture Deployment Scope.
 #[allow(dead_code)]
 pub async fn second_node_in(pool: &sqlx::PgPool, tenant: &str) -> aidash_domain::nodes::NodeName {
+	let mut tx = aidash_server::database::scope::begin_fixture_deployment(pool)
+		.await
+		.expect("the fixture Deployment Scope is entered");
 	let name = aidash_domain::nodes::NodeName::derived(&format!("{tenant}-second"));
 	sqlx::query(
 		"INSERT INTO node_names (name, tenant, created_at) VALUES ($1, $2, clock_timestamp())",
 	)
 	.bind(name.as_str())
 	.bind(tenant)
-	.execute(pool)
+	.execute(&mut *tx)
 	.await
 	.expect("the Node name is claimed");
 	sqlx::query(
@@ -118,9 +130,11 @@ pub async fn second_node_in(pool: &sqlx::PgPool, tenant: &str) -> aidash_domain:
 	)
 	.bind(tenant)
 	.bind(name.as_str())
-	.execute(pool)
+	.execute(&mut *tx)
 	.await
 	.expect("the second Node is written");
+	default_scratch::seed(&mut tx, tenant, &name).await;
+	tx.commit().await.expect("the second Node commits");
 	name
 }
 

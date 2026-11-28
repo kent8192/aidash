@@ -184,6 +184,7 @@ impl TransactionAuthorityScope for Scope {
 			title: String::new(),
 			description: String::new(),
 			status: aidash_domain::TaskStatus::Claimed,
+			goal: None,
 			requirements: json!({}),
 			owner: Some("agent".into()),
 			created_by: "root".into(),
@@ -197,11 +198,6 @@ impl TransactionAuthorityScope for Scope {
 	async fn task_resource(&mut self, task: &Task) -> Result<Resource> {
 		self.call("task_resource".into())?;
 		Ok(self.resource("task", task.id, json!({})))
-	}
-	async fn artifact_creation_resource(&mut self, task: Uuid, owner: &str) -> Result<Resource> {
-		assert_eq!(owner, "agent");
-		self.call("artifact_resource".into())?;
-		Ok(self.resource("artifact", task, json!({})))
 	}
 }
 #[rstest]
@@ -232,8 +228,6 @@ async fn all_origins_precede_mutation_checks_without_disclosure(
 			"task",
 			"task_resource",
 			"task.complete",
-			"artifact_resource",
-			"artifact.create",
 			"run",
 			"run.read",
 			"run.finish"
@@ -273,7 +267,7 @@ async fn read_checks_inherit_authority_without_mutation_or_disclosure_permission
 #[case::run("run")]
 #[case::inherit("inherit_local_run")]
 #[case::thread("thread.update")]
-#[case::artifact("artifact.create")]
+#[case::completion("task.complete")]
 #[tokio::test]
 async fn errors_stop_authority_checks_before_later_targets_and_preserve_error_identity(
 	mut scope: Scope,

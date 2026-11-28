@@ -17,7 +17,6 @@ import {
   multiSelectClass,
   pairClass,
 } from "./components/patterns";
-import { MemoryRegistryFields, memoryConfiguration } from "./memory-registry";
 import {
   ApiError,
   apiFetch,
@@ -106,41 +105,6 @@ const ref = (s: string): EntityRef => {
 // when Jev is unavailable (ADR 0066). Its threshold 0.2 (as binary64
 // bits) comes from docs/decisions/decider-route-thresholds.md, and only Jev
 // has a long-context mode.
-const CLEF_ROUTE = {
-  provider_contract: "openrouter.decisions/1",
-  model: "cloudflare/clef",
-  hosts: ["cloudflare", "deepinfra", "primeintellect"],
-  threshold: "3fc999999999999a",
-  state_budget: {
-    default_request_bytes: 32000,
-    default_state_bytes: 24000,
-    long_context_request_bytes: null,
-    long_context_state_bytes: null,
-    input_stages: [null, 200, 60],
-  },
-};
-const deciderContracts: Record<
-  string,
-  { builder: string; option_source: string; rule: string }
-> = {
-  approval_observation: {
-    builder: "aidash.approval-observation/1",
-    option_source: "pending_action/1",
-    rule: "approval.observe/1",
-  },
-  context_selection: {
-    builder: "aidash.context-selection/1",
-    option_source: "source_candidate/1",
-    rule: "context-source.keep/1",
-  },
-};
-function probabilityBits(value: number): string {
-  if (!Number.isFinite(value) || value <= 0 || value > 0.5)
-    throw new Error("Enter a Route threshold above 0 and at most 0.5");
-  const view = new DataView(new ArrayBuffer(8));
-  view.setFloat64(0, value);
-  return view.getBigUint64(0).toString(16).padStart(16, "0");
-}
 export function RequestForm({ data, submit }: { data: State; submit: Submit }) {
   const { t } = useI18n();
   const where = useNodeChoice();
@@ -160,22 +124,24 @@ export function RequestForm({ data, submit }: { data: State; submit: Submit }) {
     queryFn: () => scratchList({ node: where.node ?? "" }),
   });
   const entityLabel = useEntityLabel(data.registry);
-  const targets = data.registry.filter((e) =>
-    ["agent", "cluster"].includes(e.kind),
-  );
+  const targets = data.registry.filter((e) => e.kind === "agent");
   const form = useForm({
-    defaultValues: { title: "", request: "", target: "" },
+    defaultValues: { title: "", request: "", goal: "", target: "" },
     onSubmit: async ({ value }) => {
       const target = targets.find(
         (e) => `${e.id}@${e.version}` === value.target,
       );
-      if (!target) throw new Error(t("choose"));
+      const nodeTarget = value.target === "node" && where.node;
+      if (!target && !nodeTarget) throw new Error(t("choose"));
       if (
         await submit(() =>
           threadCreate({
             ...value,
-            target: ref(value.target),
-            target_kind: target.kind,
+            goal: value.goal.trim() || undefined,
+            target: nodeTarget
+              ? { id: nodeTarget, version: "" }
+              : ref(value.target),
+            target_kind: nodeTarget ? "node" : "agent",
             node: where.node,
             scratch_space_id: scratchId || undefined,
           }),
@@ -217,6 +183,18 @@ export function RequestForm({ data, submit }: { data: State; submit: Submit }) {
           </Field>
         )}
       </form.Field>
+      <form.Field name="goal">
+        {(field) => (
+          <Field label={t("taskGoal")}>
+            <Textarea
+              value={field.state.value}
+              onChange={(event) => field.handleChange(event.target.value)}
+              maxLength={4000}
+              rows={3}
+            />
+          </Field>
+        )}
+      </form.Field>
       <form.Field name="target">
         {(f) => (
           <Field label={t("target")}>
@@ -226,6 +204,11 @@ export function RequestForm({ data, submit }: { data: State; submit: Submit }) {
               onChange={(e) => f.handleChange(e.target.value)}
             >
               <option value="">{t("choose")}</option>
+              {where.node && (
+                <option value="node">
+                  {t("node")} · {where.node}
+                </option>
+              )}
               {targets.map((e) => (
                 <option
                   key={`${e.id}@${e.version}`}
@@ -247,21 +230,23 @@ export function RequestForm({ data, submit }: { data: State; submit: Submit }) {
             setScratchChoice({ node: where.node, id: event.target.value })
           }
         >
-          <option value="">{t("scratchNewConversation")}</option>
-          {spaces.data?.map((space) => (
-            <option key={space.id} value={space.id}>
-              {space.name} · {space.id.slice(0, 8)}
-              {space.expired ? ` · ${t("scratchExpired")}` : ""}
-            </option>
-          ))}
+          <option value="">{t("scratchNodeDefault")}</option>
+          {spaces.data
+            ?.filter((space) => !space.is_default)
+            .map((space) => (
+              <option key={space.id} value={space.id}>
+                {space.name} · {space.id.slice(0, 8)}
+              </option>
+            ))}
         </NativeSelect>
       </Field>
+      {!scratchId && <Hint>{t("scratchNodeVisibility")}</Hint>}
       {spaces.isLoading && <Hint>{t("scratchLoading")}</Hint>}
       {spaces.isError && <Notice role="alert">{t("scratchLoadError")}</Notice>}
       <form.Subscribe selector={(s) => s.isSubmitting}>
         {(pending) => (
           <Button
-            disabled={pending || targets.length === 0}
+            disabled={pending || (targets.length === 0 && !where.node)}
             className="justify-self-end"
             type="submit"
           >
@@ -338,6 +323,7 @@ export function TaskForm({
           taskCreate(String(d.get("thread")), {
             title: String(d.get("title")),
             description: String(d.get("description")),
+            goal: String(d.get("goal") ?? "").trim() || undefined,
             requirements,
             dependencies: d.getAll("dependencies").map(String),
             parent_id: parent || null,
@@ -416,6 +402,9 @@ export function TaskForm({
             : "Unable to load tasks."}
         </p>
       )}
+      <Field label={t("taskGoal")}>
+        <Textarea name="goal" maxLength={4000} rows={3} />
+      </Field>
       <Field label={t("requirements")}>
         <Textarea
           name="requirements"
@@ -474,7 +463,6 @@ export function EntityForm({
   const [core, setCore] = useState(emptyCore);
   const [pluginConfig, setPluginConfig] = useState<Record<string, unknown>>({});
   const [coordinator, setCoordinator] = useState(false);
-  const [deciderHook, setDeciderHook] = useState("approval_observation");
   const [readingDocuments, setReadingDocuments] = useState(false);
   return (
     <form
@@ -493,7 +481,6 @@ export function EntityForm({
               ? {
                   model: ref(s("model")),
                   instructions: s("instructions"),
-                  schema_version: 1,
                   ...(s("reference_embedding")
                     ? { reference_embedding: ref(s("reference_embedding")) }
                     : {}),
@@ -534,12 +521,6 @@ export function EntityForm({
                     modalities: JSON.parse(s("modalities")),
                     media_routes: JSON.parse(s("media_routes") || "[]"),
                     cost: JSON.parse(s("cost")),
-                    // New versions count requests with the Token Encoding
-                    // chosen for them, or size them from observed usage;
-                    // versions that omit it keep the byte estimate (ADR 0017).
-                    request_estimator: s("token_encoding")
-                      ? { tokenized: s("token_encoding") }
-                      : "calibrated",
                   }
                 : kind === "embedding"
                   ? {
@@ -557,40 +538,9 @@ export function EntityForm({
                         ? ["text", "image"]
                         : ["text"],
                     }
-                  : kind === "decider"
-                    ? {
-                        hook: deciderHook,
-                        answer_type: "noul",
-                        description: s("description_en"),
-                        provider_credential: "openrouter",
-                        routes: [
-                          {
-                            provider_contract: "typesafe.jev/1",
-                            model: s("model_id"),
-                            hosts: [],
-                            threshold: probabilityBits(
-                              Number(s("route_threshold")),
-                            ),
-                          },
-                          ...(d.has("clef_route") ? [CLEF_ROUTE] : []),
-                        ],
-                        ...deciderContracts[deciderHook],
-                        mode:
-                          deciderHook === "approval_observation"
-                            ? "shadow"
-                            : s("decider_mode"),
-                        max_calls_per_run: Number(s("max_calls_per_run")),
-                        state_retention: {
-                          enabled: false,
-                          days: 7,
-                        },
-                      }
-                    : (memoryConfiguration(kind, d) ?? JSON.parse(s("config")));
+                  : JSON.parse(s("config"));
           const declaration =
-            kind === "source" ||
-            (kind === "memory" && s("context_adapter") === "native_memory")
-              ? contextSourceConfiguration(d)
-              : undefined;
+            kind === "source" ? contextSourceConfiguration(d) : undefined;
           if (declaration) config.context_source = declaration;
           const entry = {
             id: "",
@@ -603,7 +553,6 @@ export function EntityForm({
             capabilities: split(s("capabilities")),
             languages: split(s("languages")),
             tags: split(s("tags")),
-            skills: [],
             schema: kind === "tool" ? JSON.parse(s("schema")) : {},
             config,
           };
@@ -654,17 +603,9 @@ export function EntityForm({
               "tool",
               "external_service",
               "skill",
-              "memory",
               "source",
               "bundle",
-              "cluster",
-              "node",
-              "decider",
               "embedding",
-              "memory",
-              "source",
-              "reranker",
-              "tokenizer",
             ].map((k) => (
               <option key={k}>{k}</option>
             ))}
@@ -942,89 +883,6 @@ export function EntityForm({
               {ja ? "画像入力に対応" : "Accept image input"}
             </Check>
           </>
-        ) : kind === "decider" ? (
-          <>
-            <Hint>
-              {ja
-                ? "Jev の正確なリリースを選び、この不変バージョンを Node の Tenant Catalog で承認してください。Tenant の OpenRouter 接続を使います。Shadow は観測や提案を記録し、保護された操作やリクエストを変更しません。"
-                : "Select an exact Jev release and approve this immutable version in the Node's Tenant Catalog. It uses the Tenant's OpenRouter connection. Shadow records observations or proposals without changing the protected action or request."}
-            </Hint>
-            <Field label={ja ? "判断の用途" : "Decision hook"}>
-              <NativeSelect
-                value={deciderHook}
-                onChange={(event) => setDeciderHook(event.target.value)}
-              >
-                <option value="approval_observation">
-                  {ja
-                    ? "独立した Shadow 承認の観測"
-                    : "Independent Shadow approval observation"}
-                </option>
-                <option value="context_selection">
-                  {ja
-                    ? "コンテキスト候補の選択"
-                    : "Context candidate selection"}
-                </option>
-              </NativeSelect>
-            </Field>
-            <Hint>
-              {ja
-                ? "契約と質問は用途ごとにバージョンで固定されます。しきい値を変更するには新しい不変バージョンと Catalog Approval が必要です。承認の観測は Auto の強制判断を変更しません。"
-                : "Each hook pins its versioned contract and questions. A threshold change requires a new immutable version and Catalog Approval. Observation does not change Auto enforcement."}
-            </Hint>
-            <Field label={ja ? "Jev Route のしきい値" : "Jev Route threshold"}>
-              <Input
-                name="route_threshold"
-                type="number"
-                min={0.000001}
-                max={0.5}
-                step="any"
-                required
-                defaultValue={0.5}
-              />
-            </Field>
-            <Field label={t("model")}>
-              <Input
-                name="model_id"
-                required
-                maxLength={128}
-                pattern="typesafe/jev-(0|[1-9][0-9]*)[.](0|[1-9][0-9]*)"
-                defaultValue="typesafe/jev-1.14"
-              />
-            </Field>
-            <div className="grid min-w-0 gap-4 sm:grid-cols-3">
-              <Field label={t("deciderMode")}>
-                <NativeSelect
-                  key={deciderHook}
-                  name="decider_mode"
-                  defaultValue={
-                    deciderHook === "approval_observation"
-                      ? "shadow"
-                      : "enforce"
-                  }
-                  disabled={deciderHook === "approval_observation"}
-                >
-                  <option value="enforce">{t("deciderModeEnforce")}</option>
-                  <option value="shadow">{t("deciderModeShadow")}</option>
-                </NativeSelect>
-              </Field>
-              <Field label={t("deciderCalls")}>
-                <Input
-                  name="max_calls_per_run"
-                  type="number"
-                  required
-                  min={1}
-                  max={1000}
-                  defaultValue={20}
-                />
-              </Field>
-            </div>
-            <label className="flex items-center gap-2 text-sm">
-              <input type="checkbox" name="clef_route" />
-              {t("deciderClefRoute")}
-            </label>
-          </>
-        ) : ["reranker", "tokenizer"].includes(kind) ? (
-          <MemoryRegistryFields kind={kind} entries={data.registry} />
         ) : (
           <EntityConfiguration kind={kind} data={data} />
         )}

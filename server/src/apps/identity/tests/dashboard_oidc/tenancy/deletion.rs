@@ -93,6 +93,7 @@ async fn deletion_removes_administrator_data_access_but_keeps_restore_available(
 			&aidash_domain::NewTask {
 				title: "Private task".into(),
 				description: "Deleted Tenant data".into(),
+				goal: None,
 				requirements: json!({}),
 				dependencies: vec![],
 				parent_id: None,
@@ -1138,7 +1139,7 @@ async fn a_schedule_runs_on_the_registrants_mapping_and_outlives_the_token_it_wa
 		(
 			"agent",
 			"reporter",
-			json!({"schema_version":1,"model":{"id":"reporter-model","version":"1.0.0"},"instructions":"Report","bindings":[],"remove_default":[]}),
+			json!({"model":{"id":"reporter-model","version":"1.0.0"},"instructions":"Report","bindings":[],"remove_default":[]}),
 		),
 	] {
 		let entry: aidash_server::registry::Entry = serde_json::from_value(json!({"id":key,"version":"1.0.0","kind":kind,"name":{"en":key},"description":{"en":"Schedule fixture"},"schema":{},"config":config})).unwrap();

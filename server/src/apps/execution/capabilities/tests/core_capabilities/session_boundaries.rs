@@ -2,44 +2,19 @@ use super::*;
 
 #[rstest::rstest]
 #[tokio::test]
-async fn same_agent_child_cannot_deadlock_parent_and_another_thread_remains_runnable(
+async fn same_agent_child_and_a_separate_thread_can_run_alongside_the_parent(
 	#[future] capability_fixture: CoreFixture,
 ) {
 	let c = Box::pin(capability_fixture).await;
 	let parent = admit(&c).await;
-	let (status,patch)=common::post(&c.app, &c.token, &path_for_patch(parent.id), json!({"idempotency_key":Uuid::new_v4(),"expected_revision":1,"preconditions":{"private.txt":null},"patch":"*** Begin Patch\n*** Add File: private.txt\n+parent-only\n*** End Patch"})).await;
-	assert_eq!(status, 200, "{patch}");
-	let (_, area) = common::get(
-		&c.app,
-		&c.token,
-		&format!("/api/executions/{}/working-area", parent.id),
-	)
-	.await;
-	let (_, child) = common::post(
+	let (status, child) = common::post(
 		&c.app,
 		&c.token,
 		&format!("/api/threads/{}/tasks", parent.thread_id),
-		json!({"title":"Child","description":"Dependent work","parent_id":parent.task_id}),
+		json!({"title":"Child","description":"Child work","parent_id":parent.task_id}),
 	)
 	.await;
-	let (status, denied) = common::post(
-		&c.app,
-		&c.token,
-		&format!("/api/tasks/{}/delegate", child["id"].as_str().unwrap()),
-		json!({"node_id":c.f.config.deployment,"agent":{"id":"research","version":"1.1.0"}}),
-	)
-	.await;
-	assert_eq!(status, 409, "{denied}");
-	assert!(denied.to_string().contains("SESSION_DEPENDENCY_CYCLE"));
-	let first =
-		c.f.store
-			.lease_run(Uuid::new_v4(), 30)
-			.await
-			.unwrap()
-			.unwrap();
-	assert_eq!(first.id, parent.id);
-	// A Working Area is keyed by Thread (#1008): a separate conversation is
-	// another Thread, and its Run gets its own Area.
+	assert_eq!(status, 200, "{child}");
 	let (status, independent) = common::post(
 		&c.app,
 		&c.token,
@@ -48,117 +23,37 @@ async fn same_agent_child_cannot_deadlock_parent_and_another_thread_remains_runn
 	)
 	.await;
 	assert_eq!(status, 200, "{independent}");
-	let (_, other) = common::post(
+	let (status, other) = common::post(
 		&c.app,
 		&c.token,
 		&format!("/api/threads/{}/tasks", independent["id"].as_str().unwrap()),
-		json!({"title":"Independent","description":"A separate conversation"}),
+		json!({"title":"Independent","description":"A separate Thread"}),
 	)
 	.await;
-	let (status, result) = common::post(
-		&c.app,
-		&c.token,
-		&format!("/api/tasks/{}/delegate", other["id"].as_str().unwrap()),
-		json!({"node_id":c.f.config.deployment,"agent":{"id":"research","version":"1.1.0"}}),
-	)
-	.await;
-	assert_eq!(status, 200, "{result}");
-	let second =
-		c.f.store
-			.lease_run(Uuid::new_v4(), 30)
-			.await
-			.unwrap()
-			.unwrap();
-	assert_eq!(second.task_id.to_string(), other["id"].as_str().unwrap());
-	assert_ne!(second.id, parent.id);
-	let (_, own) = common::get(
-		&c.app,
-		&c.token,
-		&format!("/api/executions/{}/working-area", second.id),
-	)
-	.await;
-	assert_ne!(own["id"], area["id"]);
-	assert_eq!(own["manifest"], json!([]));
-	let (status, denied) = common::post(
-		&c.app,
-		&c.token,
-		&format!("/api/executions/{}/files/read", second.id),
-		json!({"file_id":area["manifest"][0]["file_id"],"representation":"text"}),
-	)
-	.await;
-	assert_eq!(status, 404, "{denied}");
-	assert!(!denied.to_string().contains("parent-only"));
-	c.close().await;
-}
-
-#[rstest::rstest]
-#[tokio::test]
-async fn predecessor_run_cannot_read_files_after_its_successor_becomes_active(
-	#[future] capability_fixture: CoreFixture,
-) {
-	use reinhardt::query::{Alias, Expr, PostgresQueryBuilder, Query};
-	let c = Box::pin(capability_fixture).await;
-	let predecessor = admit(&c).await;
-	let message = source(&c, predecessor.thread_id, "Successor-only current file\n").await;
-	let (status, materialized) = common::post(&c.app, &c.token, &format!("/api/executions/{}/files/materialize", predecessor.id), json!({"idempotency_key":Uuid::new_v4(),"expected_revision":1,"path":"current.txt","source":{"kind":"message","message_id":message}}))
-	.await;
-	assert_eq!(status, 200, "{materialized}");
-	let (_, area) = common::get(
-		&c.app,
-		&c.token,
-		&format!("/api/executions/{}/working-area", predecessor.id),
-	)
-	.await;
-	let file_id = area["manifest"][0]["file_id"].clone();
-	{
-		let query_bind_1 = predecessor.id;
-		sqlx::query(
-			&Query::update()
-				.table(Alias::new("task_executions"))
-				.value(Alias::new("phase"), "COMPLETED")
-				.and_where(Expr::col(Alias::new("id")).eq(Expr::value(query_bind_1.to_owned())))
-				.to_string(PostgresQueryBuilder),
+	assert_eq!(status, 200, "{other}");
+	let child: Uuid = serde_json::from_value(child["id"].clone()).unwrap();
+	let other: Uuid = serde_json::from_value(other["id"].clone()).unwrap();
+	for id in [child, other] {
+		let (status, result) = common::post(
+			&c.app,
+			&c.token,
+			&format!("/api/tasks/{id}/delegate"),
+			json!({"node_id":c.f.config.deployment,"agent":{"id":"research","version":"1.1.0"}}),
 		)
-		.execute(c.f.store.pool.fixture_driver())
-		.await
+		.await;
+		assert_eq!(status, 200, "{result}");
 	}
-	.unwrap();
-	let input = json!({"file_id":file_id,"representation":"text"});
-	let (status, latest) = common::post(
-		&c.app,
-		&c.token,
-		&format!("/api/executions/{}/files/read", predecessor.id),
-		input.clone(),
-	)
-	.await;
-	assert_eq!(
-		status, 200,
-		"the latest completed run remains readable: {latest}"
-	);
-	let (status, queued) = common::post(&c.app, &c.token, &format!("/api/working-areas/{}/queue", area["id"].as_str().unwrap()), json!({"idempotency_key":Uuid::new_v4(),"agent_version":"1.1.0","title":"Successor","description":"Read the current session"}))
-	.await;
-	assert_eq!(status, 200, "{queued}");
-	let successor: Uuid = serde_json::from_value(
-		queued["queue"].as_array().unwrap().last().unwrap()["run_id"].clone(),
-	)
-	.unwrap();
-	let (status, denied) = common::post(
-		&c.app,
-		&c.token,
-		&format!("/api/executions/{}/files/read", predecessor.id),
-		input.clone(),
-	)
-	.await;
-	assert_eq!(status, 404, "{denied}");
-	let (status, current) = common::post(
-		&c.app,
-		&c.token,
-		&format!("/api/executions/{successor}/files/read"),
-		input,
-	)
-	.await;
-	assert_eq!(status, 200, "{current}");
-	assert_eq!(current["content"], "Successor-only current file\n");
+	let mut leased = std::collections::BTreeSet::new();
+	for _ in 0..3 {
+		let run =
+			c.f.store
+				.lease_run(Uuid::new_v4(), 30)
+				.await
+				.unwrap()
+				.unwrap();
+		leased.insert(run.task_id);
+	}
+	assert_eq!(leased, [parent.task_id, child, other].into_iter().collect());
 	c.close().await;
 }
 
@@ -344,8 +239,6 @@ async fn approval_list_and_decision_restore_the_request_thread_context(
 	assert_eq!(decision["state"], "approved");
 	c.close().await;
 }
-
-use reinhardt::query::{ExprTrait as _, QueryStatementBuilder as _};
 
 #[rstest::rstest]
 #[tokio::test]

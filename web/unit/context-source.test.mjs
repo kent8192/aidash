@@ -12,9 +12,7 @@ const form = () => {
     source_declaration: "on",
     source_provider: "thread",
     source_operation: "retrieve",
-    source_pin: "scored",
-    source_mode: "shadow",
-    source_decider: JSON.stringify(ref("select")),
+    source_pin: "always",
     source_volatility: "step",
     source_query: "accepted-inputs-first@1",
     source_disclose_previews: "on",
@@ -33,9 +31,7 @@ test("source policy submits exact qualified dependencies and versioned query sel
   input.set("source_detail", JSON.stringify(ref("detail")));
   const value = contextSourceConfiguration(input);
   assert.deepEqual(value.pin, {
-    policy: "scored",
-    mode: "shadow",
-    decider: ref("select"),
+    policy: "always",
   });
   assert.deepEqual(value.tools, {
     read: [ref("read")],
@@ -45,38 +41,25 @@ test("source policy submits exact qualified dependencies and versioned query sel
   assert.equal(value.query, "accepted-inputs-first@1");
   assert.equal(value.refresh, "revision-bound@1");
 });
-test("required Home retains Always or Shadow and rejects OnDemand or Enforce", () => {
-  for (const { policy, mode, allowed } of [
-    { policy: "always", mode: "shadow", allowed: true },
-    { policy: "scored", mode: "shadow", allowed: true },
-    { policy: "on_demand", mode: "shadow", allowed: false },
-    { policy: "scored", mode: "enforce", allowed: false },
-  ]) {
-    const input = form();
-    input.set("source_required_home", "on");
-    input.set("source_pin", policy);
-    input.set("source_mode", mode);
-    if (allowed)
-      assert.equal(contextSourceConfiguration(input).required_home, true);
-    else
-      assert.throws(
-        () => contextSourceConfiguration(input),
-        /Required-Home sources cannot/,
-      );
-  }
-});
-test("Scored requires declared preview and query disclosure and a complete exact reference", () => {
+test("Required-Home keeps Always delivery and rejects OnDemand", () => {
   const input = form();
-  input.delete("source_disclose_query");
+  input.set("source_required_home", "on");
+  assert.equal(contextSourceConfiguration(input).required_home, true);
+  input.set("source_pin", "on_demand");
   assert.throws(
     () => contextSourceConfiguration(input),
-    /explicit preview and query disclosure/,
+    /Required-Home sources use Always delivery/,
   );
-  input.set("source_disclose_query", "on");
-  input.set(
-    "source_decider",
-    JSON.stringify({ id: "select", version: "2.0.0" }),
+});
+test("Scored pins are rejected and Tool references must be exact", () => {
+  const input = form();
+  input.set("source_pin", "scored");
+  assert.throws(
+    () => contextSourceConfiguration(input),
+    /Choose a source pin policy/,
   );
+  input.set("source_pin", "always");
+  input.append("source_read", JSON.stringify({ id: "read", version: "2.0.0" }));
   assert.throws(
     () => contextSourceConfiguration(input),
     /exact Registry version/,

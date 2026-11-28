@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 
 pub struct MigrationSeeds;
 
-fn assets() -> [(&'static str, String); 37] {
+fn assets() -> [(&'static str, String); 46] {
 	use crate::apps::{
 		federation::services::migration_seed as federation,
 		marketplace::services::migration_seed as marketplace,
@@ -169,12 +169,48 @@ fn assets() -> [(&'static str, String); 37] {
 			crate::apps::execution::services::area_queue_sleep_backfill::forward(),
 		),
 		(
+			"execution/sql/forward/0172_goal_backfill.sql",
+			crate::apps::execution::services::goal_backfill::execution(),
+		),
+		(
+			"federation/sql/forward/0033_retire_artifact_reads.sql",
+			crate::apps::execution::services::goal_backfill::federated_reads(),
+		),
+		(
+			"federation/sql/forward/0034_completion_settlement_v2.sql",
+			crate::apps::execution::services::goal_backfill::federation_settlement(),
+		),
+		(
+			"execution/sql/backward/0181_unordered_run_bindings.sql",
+			crate::apps::execution::services::run_binding_backfill::backward(),
+		),
+		(
+			"execution/sql/backward/0182_unpin_live_previews.sql",
+			crate::apps::execution::services::live_preview_backfill::backward(),
+		),
+		(
+			"execution/sql/forward/0183_detach_run_area_bindings.sql",
+			crate::apps::execution::services::area_association_backfill::forward(),
+		),
+		(
+			"execution/sql/backward/0183_detach_run_area_bindings.sql",
+			crate::apps::execution::services::area_association_backfill::backward(),
+		),
+		(
+			"execution/sql/forward/0184_retire_area_manifests.sql",
+			crate::apps::execution::services::area_manifest_cleanup::forward(),
+		),
+		(
 			"workspaces/sql/forward/0067_task_duty_start.sql",
 			crate::apps::workspaces::services::duty_start_backfill::forward(),
 		),
 		(
 			"workspaces/sql/backward/0067_task_duty_start.sql",
 			crate::apps::workspaces::services::duty_start_backfill::backward(),
+		),
+		(
+			"workspaces/sql/forward/0072_node_scratch_spaces.sql",
+			crate::apps::workspaces::services::node_scratch_backfill::forward(),
 		),
 	]
 }

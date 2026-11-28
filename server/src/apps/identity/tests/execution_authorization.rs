@@ -611,7 +611,10 @@ async fn scoped_worker_preserves_pending_tool_across_revocation_and_resumes_with
 			.snapshot(&TEST_FIXTURE, run.thread_id)
 			.await
 			.unwrap()
-			.artifacts
+			.messages
+			.into_iter()
+			.filter(|message| message.completion.is_some())
+			.collect::<Vec<_>>()
 			.len(),
 		1
 	);
@@ -5763,7 +5766,7 @@ async fn approval_review_creates_root_agent_with_selected_groups(
 	.await;
 	assert_eq!(status, 200, "{body}");
 	let node = aidash_domain::nodes::NodeName::derived("acme");
-	let entry = json!({"id":"review-groups","version":"1.0.0","kind":"agent","name":{"en":"Review groups"},"description":{"en":"fixture"},"config":{"schema_version":1,"model":{"id":"model","version":"1.0.0"},"instructions":"Write","bindings":[],"remove_default":[]}});
+	let entry = json!({"id":"review-groups","version":"1.0.0","kind":"agent","name":{"en":"Review groups"},"description":{"en":"fixture"},"config":{"model":{"id":"model","version":"1.0.0"},"instructions":"Write","bindings":[],"remove_default":[]}});
 	let (status, body) = request(&app, &alice, "POST", "/api/registry", entry).await;
 	assert_eq!(status, 200, "{body}");
 	let path = format!(
@@ -5813,9 +5816,9 @@ async fn approval_review_approves_a_delegated_model_first_and_the_delegator_then
 	// delegator → agent tool `delegation` → delegate → delegated-model.
 	let definitions = [
 		json!({"id":"delegated-model","version":"1.0.0","kind":"model","name":{"en":"Delegated model"},"description":{"en":"fixture"},"config":{"provider":"openrouter","model_id":"fixture","endpoint":"http://127.0.0.1:9/v1","context_window":128000,"max_output_tokens":4096,"modalities":["text"],"cost":{}}}),
-		json!({"id":"delegate","version":"1.0.0","kind":"agent","name":{"en":"Delegate"},"description":{"en":"fixture"},"config":{"schema_version":1,"model":{"id":"delegated-model","version":"1.0.0"},"instructions":"Answer","bindings":[],"remove_default":["file_search","file_read"]}}),
+		json!({"id":"delegate","version":"1.0.0","kind":"agent","name":{"en":"Delegate"},"description":{"en":"fixture"},"config":{"model":{"id":"delegated-model","version":"1.0.0"},"instructions":"Answer","bindings":[],"remove_default":["file_search","file_read"]}}),
 		json!({"id":"delegation","version":"1.0.0","kind":"tool","name":{"en":"Delegation"},"description":{"en":"fixture"},"config":{"registry_deployment":deployment,"provider":"integration.agent@1","operation":"invoke","default_alias":"delegate_peer","tier":"integration","narrow":{},"transport":{"transport":"agent","node_id":deployment,"agent":{"id":"delegate","version":"1.0.0"}}}}),
-		json!({"id":"delegator","version":"1.0.0","kind":"agent","name":{"en":"Delegator"},"description":{"en":"fixture"},"config":{"schema_version":1,"model":{"id":"model","version":"1.0.0"},"instructions":"Delegate","bindings":[{"kind":"tool","target":{"registry_deployment":deployment,"id":"delegation","version":"1.0.0"},"alias":"delegate_peer","narrow":{}}],"remove_default":["file_search","file_read"]}}),
+		json!({"id":"delegator","version":"1.0.0","kind":"agent","name":{"en":"Delegator"},"description":{"en":"fixture"},"config":{"model":{"id":"model","version":"1.0.0"},"instructions":"Delegate","bindings":[{"kind":"tool","target":{"registry_deployment":deployment,"id":"delegation","version":"1.0.0"},"alias":"delegate_peer","narrow":{}}],"remove_default":["file_search","file_read"]}}),
 	];
 	for definition in definitions {
 		let (status, body) = request(&app, &alice, "POST", "/api/registry", definition).await;
@@ -6183,7 +6186,7 @@ async fn approval_review_approves_local_items_and_activates_marketplace_on_a_non
 	// A new agent version depends on the local model and the installed copy.
 	let agent = json!({"id":"research","version":"2.0.0","kind":"agent",
 		"name":{"en":"Research"},"description":{"en":"Review root"},
-		"config":{"schema_version":1,"model":{"id":"model","version":"1.0.0"},
+		"config":{"model":{"id":"model","version":"1.0.0"},
 			"instructions":"Use the installed tool",
 			"bindings":[{"kind":"tool","target":{"registry_deployment":deployment,
 				"id":installed_id,"version":"1.0.0"},"narrow":{}}],"remove_default":[]}});
@@ -6914,7 +6917,7 @@ async fn catalog_request_fulfilled_by_an_ordinary_approval_stays_final(
 		"id":"later","version":"1.0.0"},"narrow":{}});
 	let unreviewable = json!({"id":"unreviewable","version":"1.0.0","kind":"agent",
 		"name":{"en":"Unreviewable"},"description":{"en":"Invalid bindings"},
-		"config":{"schema_version":1,"model":{"id":"model","version":"1.0.0"},
+		"config":{"model":{"id":"model","version":"1.0.0"},
 			"instructions":"Wait","bindings":[twice.clone(),twice],"remove_default":[]}});
 	{
 		use reinhardt::query::{Alias, IntoValue, PostgresQueryBuilder, Query};
@@ -6998,7 +7001,7 @@ async fn catalog_request_turns_stale_after_a_missing_dependency_is_registered(
 	// A root that names a dependency the Tenant has not registered yet.
 	let broken = json!({"id":"broken","version":"1.0.0","kind":"agent",
 		"name":{"en":"Broken"},"description":{"en":"Missing dependency"},
-		"config":{"schema_version":1,"model":{"id":"model","version":"1.0.0"},
+		"config":{"model":{"id":"model","version":"1.0.0"},
 			"instructions":"Wait","bindings":[{"kind":"tool","target":{
 				"registry_deployment":deployment,"id":"later","version":"1.0.0"},
 				"narrow":{}}],"remove_default":[]}});
@@ -8449,7 +8452,7 @@ const SUBNODE_TOOLS: [&str; 6] = [
 	"thread_read",
 	"thread_observe",
 	"task_wait",
-	"artifact_publish",
+	"deliverable_note",
 	"human_request",
 	"connection_request",
 ];
@@ -8881,7 +8884,7 @@ const SUBNODE_FILE_TOOLS: [&str; 9] = [
 	"thread_read",
 	"thread_observe",
 	"task_wait",
-	"artifact_publish",
+	"deliverable_note",
 	"human_request",
 	"connection_request",
 	"file_read",
@@ -9004,7 +9007,7 @@ impl LateFiles {
 			&rig.app,
 			&rig.token,
 			"GET",
-			&format!("/api/executions/{}/working-area", late.member.id),
+			&format!("/api/executions/{}/execution-scope", late.member.id),
 			Value::Null,
 		)
 		.await;
@@ -9019,7 +9022,7 @@ impl LateFiles {
 	}
 
 	async fn area_revision(&self, rig: &SubnodeRig) -> i64 {
-		sqlx::query_scalar("SELECT revision FROM core_areas WHERE id = $1")
+		sqlx::query_scalar("SELECT revision FROM core_execution_scopes WHERE id = $1")
 			.bind(self.area)
 			.fetch_one(rig.f.store.pool.fixture_driver())
 			.await
@@ -9107,7 +9110,7 @@ async fn hold_area(
 	area: Uuid,
 ) -> (sqlx::Transaction<'static, sqlx::Postgres>, i32) {
 	let mut tx = rig.f.store.pool.fixture_driver().begin().await.unwrap();
-	sqlx::query("SELECT id FROM core_areas WHERE id = $1 FOR UPDATE")
+	sqlx::query("SELECT id FROM core_execution_scopes WHERE id = $1 FOR UPDATE")
 		.bind(area)
 		.fetch_one(&mut *tx)
 		.await

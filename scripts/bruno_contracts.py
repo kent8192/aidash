@@ -915,6 +915,30 @@ def render():
                 add(endpoint, "Malformed JSON cannot reach the use case", 400,
                     path=uri, body="{", headers=SUBJECT, node_unchanged=True)
             continue
+        if path.startswith("/api/nodes/{node}/drive"):
+            uri = path.replace("{node}", "{{tenant_node}}")
+            name = route["name"]
+            if name == "drive-download":
+                uri += "?path=bruno-missing-file.txt"
+            valid_body = {
+                "drive-update": {"action": "close", "closed": True},
+                "drive-upload-start": {"path": "bruno.txt", "size": 0, "digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "idempotency_key": "00000000-0000-0000-0000-000000000001", "base_version": "new", "index": True},
+                "drive-upload-part": {"offset": 0, "data": "YnJ1bm8="},
+            }.get(name)
+            body = json.dumps(valid_body) if valid_body is not None else None
+            add(endpoint, "Anonymous request is rejected", 401, path=uri, body=body)
+            add(endpoint, "Deployment Administrator cannot access a Node Drive", 403,
+                path=uri, headers=DEPLOYMENT_ADMINISTRATOR, body=body)
+            if name == "drive-browse":
+                add(endpoint, "Tenant member can browse an open Drive", 200, path=uri,
+                    headers=SUBJECT, checks='expect(res.getBody().files).to.be.an("array");expect(res.getBody().drive.node).to.equal(bru.getEnvVar("tenant_node"));')
+            elif name in {"drive-download", "drive-upload-part", "drive-upload-commit"}:
+                add(endpoint, "Unknown file or upload returns not found", 404, path=uri,
+                    headers=SUBJECT, body=body)
+            else:
+                add(endpoint, "Mutation requires its typed Drive input", 422, path=uri,
+                    headers=SUBJECT, body="{}")
+            continue
         if endpoint == "POST /hooks/duties/{trigger}":
             # A webhook authenticates by the HMAC signature of its body, not a
             # session (#1011): a missing or wrong signature and an unknown
@@ -1555,7 +1579,7 @@ def render():
             checks = ""
             label = "Missing scoped authority cannot disclose application data"
         if route["name"] == "state":
-            checks += 'const c=res.getBody().next_cursors;for(const key of ["threads","tasks","runs","artifacts","human_requests","conversations"])expect(c[key]).to.equal(null);'
+            checks += 'const c=res.getBody().next_cursors;for(const key of ["threads","tasks","runs","human_requests","conversations"])expect(c[key]).to.equal(null);'
         if route["name"] in {"human-requests", "thread-list"}:
             checks += 'expect(res.getBody().items).to.be.an("array");'
         if route["name"] == "file_recipient_list":

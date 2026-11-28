@@ -64,15 +64,6 @@ export function modeReason(
   return choices.find((choice) => choice.mode === mode)?.reason ?? null;
 }
 
-/** The reasons that name the Tenant's approval Decider. */
-export function needsApprovalDecider(
-  choices: readonly ApprovalModeChoice[],
-): boolean {
-  return choices.some(
-    ({ reason }) => reason === "decider_unapproved" || reason === "no_decider",
-  );
-}
-
 type Acceptance = { bypass_accepted_at: string | null };
 
 /** Choosing Bypass before the person has accepted its risk asks them first. */

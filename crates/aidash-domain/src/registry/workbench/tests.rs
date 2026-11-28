@@ -2,13 +2,13 @@ use super::*;
 use rstest::{fixture, rstest};
 #[fixture]
 fn entry() -> Entry {
-	serde_json::from_value(json!({"id":"managed","version":"1.0.0","kind":"agent","name":{},"description":{},"config":{"model":{"id":"model","version":"1.0.0"},"schema_version":1,"instructions":"","bindings":[],"remove_default":[]}})).unwrap()
+	serde_json::from_value(json!({"id":"managed","version":"1.0.0","kind":"agent","name":{},"description":{},"config":{"model":{"id":"model","version":"1.0.0"},"instructions":"","bindings":[],"remove_default":[]}})).unwrap()
 }
 #[rstest]
-fn new_drafts_record_the_binding_schema_without_legacy_flags(mut entry: Entry) {
+fn new_drafts_fill_bindings_without_retired_agent_fields(mut entry: Entry) {
 	entry.config = json!({"model":{"id":"model","version":"1.0.0"}});
 	new_draft_defaults(&mut entry).unwrap();
-	assert_eq!(entry.config["schema_version"], 1);
+	assert!(entry.config.get("schema_version").is_none());
 	assert_eq!(entry.config["bindings"], json!([]));
 	assert_eq!(entry.config["remove_default"], json!([]));
 	assert!(entry.config.get("allow_task_creation").is_none());
@@ -21,7 +21,7 @@ fn authored_bindings_and_removed_defaults_survive_draft_defaults(mut entry: Entr
 	assert_eq!(entry.config, before);
 }
 #[rstest]
-fn unsupported_binding_schema_is_rejected(mut entry: Entry) {
+fn retired_binding_schema_version_is_rejected(mut entry: Entry) {
 	entry.config["schema_version"] = json!(2);
 	assert!(new_draft_defaults(&mut entry).is_err());
 }

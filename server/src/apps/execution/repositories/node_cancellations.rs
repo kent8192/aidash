@@ -582,30 +582,27 @@ async fn settle_saved_run(
 	}
 	let mut run = raw.decode()?;
 	let home = crate::federation::Home::new(f.clone(), run.clone());
-	let task = home.task().await?;
-	// The saved continuation chose its outcome, including which Unassigned
-	// Tasks it abandons and the sentence that says so.
 	let saved = run.state.tool()?;
 	let abandon: Vec<Uuid> = saved.abandoning.iter().map(|task| task.id).collect();
-	let artifact = aidash_domain::ArtifactInput {
-		kind: "text".into(),
-		name: aidash_application::execution::result_artifact_name(&task.title),
-		content: serde_json::json!(aidash_domain::unassigned::completion_answer(
-			&saved.response.text,
-			&run.recovery.early_abandoned_tasks,
-			&saved.abandoning
-		)),
+	let completion = run
+		.context
+		.final_completion
+		.as_ref()
+		.ok_or_else(|| Error::Conflict("saved Completion Message is missing".into()))?;
+	let message = home
+		.complete(&run.completion_key(), completion, &abandon)
+		.await?;
+	let event = if message
+		.verdict
+		.is_some_and(|verdict| verdict.verdict == aidash_domain::goal::Verdict::Impossible)
+	{
+		run.state = RunState::Failed(TerminalState {});
+		"execution.failed"
+	} else {
+		run.state = RunState::Completed(TerminalState {});
+		"execution.completed"
 	};
-	let task = home
-		.complete(&format!("{}:complete", run.id), &artifact, &abandon)
-		.await?;
-	if task.status != TaskStatus::Completed {
-		return Err(Error::Conflict("saved completion is not settled".into()));
-	}
-	run.state = RunState::Completed(TerminalState {});
-	f.store
-		.save_run(scope, &run, token, "execution.completed")
-		.await?;
+	f.store.save_run(scope, &run, token, event).await?;
 	Ok(true)
 }
 async fn stop_task(f: &Federation, job: &NodeCancellationJob) -> Result<bool> {

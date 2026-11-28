@@ -2685,6 +2685,7 @@ async fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own
 			&NewTask {
 				title: "Tokyo transport".into(),
 				description: "移動方法を確認する".into(),
+				goal: None,
 				requirements: json!({}),
 				dependencies: vec![],
 				parent_id: None,
@@ -3737,6 +3738,7 @@ async fn learning_rejects_uncertain_effects_and_reads_complete_canonical_results
 			&aidash_domain::NewTask {
 				title: "Canonical learning".into(),
 				description: "Read complete results".into(),
+				goal: None,
 				requirements: json!({}),
 				dependencies: vec![],
 				parent_id: None,
@@ -5340,6 +5342,7 @@ async fn memory_mutate_after_the_subnode_ended_is_refused(
 			&NewTask {
 				title: "Remember".into(),
 				description: "Remember something".into(),
+				goal: None,
 				requirements: json!({}),
 				dependencies: vec![],
 				parent_id: None,

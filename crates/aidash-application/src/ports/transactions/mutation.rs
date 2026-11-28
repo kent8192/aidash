@@ -1,6 +1,6 @@
 //! All mutation reads, writes and events borrow one caller-owned transaction.
 use crate::Result;
-use aidash_domain::{Artifact, ArtifactInput, Task, Thread, run_state::RawRun};
+use aidash_domain::{Message, Task, Thread, run_state::RawRun};
 use async_trait::async_trait;
 use serde_json::Value;
 use uuid::Uuid;
@@ -16,9 +16,9 @@ pub trait MutationScope: Send {
 	async fn complete_task(
 		&mut self,
 		task: &Task,
-		artifact: &ArtifactInput,
+		text: &str,
 		key: &str,
-	) -> Result<(Task, Artifact)>;
+	) -> Result<(Task, Message)>;
 	async fn source_run(&mut self, task: Uuid) -> Result<Option<Uuid>>;
 	async fn record_output(&mut self, run: Uuid, thread: Uuid, kind: &str, id: Uuid) -> Result<()>;
 	/// Return undecoded state and the database-clock lease result under the row lock.

@@ -36,6 +36,7 @@ async fn run_invocations_page_in_hundreds_and_keep_durable_payloads(
 				&NewTask {
 					title: home.into(),
 					description: "Journal fixture".into(),
+					goal: None,
 					requirements: json!({}),
 					dependencies: vec![],
 					parent_id: None,

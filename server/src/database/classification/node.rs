@@ -23,13 +23,15 @@ pub enum Root {
 	RemoteUsage,
 	Observation,
 	Message,
-	RetentionHold,
 	Preview,
 	LivePreview,
 	Subnode,
 	ScratchSpace,
 	Record,
 	Duty,
+	Drive,
+	DriveUpload,
+	DriveJob,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Ownership {
@@ -81,10 +83,17 @@ pub fn ownership(name: &str) -> Result<Ownership> {
 		| "egress_scope_connections"
 		| "egress_scope_events"
 		| "egress_scope_refusals" => Node("node"),
+		"drives" => Node("node"),
+		"drive_entries" | "drive_versions" | "drive_trash" | "drive_uploads"
+		| "drive_jobs" | "drive_index_requests" => Link("drive_id", Drive),
+		"drive_upload_parts" => Link("upload_id", DriveUpload),
+		"drive_job_blobs" => Link("job_id", DriveJob),
+		"drive_run_reads" => Link("run_id", Run),
+		"drive_passages" => Shared,
 		"nodes" => Audit,
 		"authorization_remote_terminal_receipts" => Recovery,
 		"node_registrations" => Registrations,
-		"core_areas" => Areas,
+		"core_execution_scopes" => Areas,
 		"core_records" => Records,
 		"core_objects" => Objects,
 		"task_dependencies" => CascadeTasks,
@@ -111,7 +120,6 @@ pub fn ownership(name: &str) -> Result<Ownership> {
 		| "duty_triggers"
 		| "duty_events"
 		| "duty_bookings"
-		| "artifacts"
 		| "messages"
 		| "conversations"
 		| "channel_attachments"
@@ -204,15 +212,11 @@ pub fn ownership(name: &str) -> Result<Ownership> {
 		// Every Egress request names its Run; the operation it once named is
 		// historical (#738).
 		"egress_requests" => Link("run_id", Run),
-		"core_manifest_revisions" => Link("area_id", Area),
-		// Each reference is a revision of an Area or a receipt of a record.
-		"core_blob_references" => Either("area_id", Area, "record_id", Record),
-		"core_retention_holds" => Link("area_id", Area),
-		"core_retention_files" => Link("hold_id", RetentionHold),
+		"core_blob_references" => Link("record_id", Record),
 		"message_file_versions" => Link("message_id", Message),
 		"core_previews" => Either("area_id", Area, "live_preview_id", LivePreview),
 		"core_preview_tickets" | "core_preview_sessions" => Link("preview_id", Preview),
-		"core_live_previews" => Either("run_id", Run, "area_id", Area),
+		"core_live_previews" => Link("run_id", Run),
 		"events" => Event,
 		"atomic_authority_attempts"
 		| "atomic_coordinators"
@@ -289,6 +293,7 @@ pub fn ownership(name: &str) -> Result<Ownership> {
 		| "tenant_data_protection"
 		| "tenant_instructions"
 		| "tenant_execution_settings"
+		| "tenant_embedding_settings"
 		// A Node's Budget stays until a person removes it, and spend stays with
 		// the Tenant so purging a Node gives no money back (#1012); so does
 		// the lineage that carves a created Node's spend out of its creator's.

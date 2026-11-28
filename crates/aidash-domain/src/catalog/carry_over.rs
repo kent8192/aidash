@@ -273,19 +273,8 @@ pub fn compare(old: &Entry, new: &Entry) -> Result<Vec<String>> {
 				"core capabilities",
 			);
 			add(
-				[
-					(ac.allow_task_creation, bc.allow_task_creation),
-					(ac.allow_task_delegation, bc.allow_task_delegation),
-					(ac.allow_memory_write, bc.allow_memory_write),
-					(ac.allow_workspace_retrieval, bc.allow_workspace_retrieval),
-					(
-						ac.allow_cross_conversation_memory,
-						bc.allow_cross_conversation_memory,
-					),
-				]
-				.iter()
-				.any(|(x, y)| *y == Some(true) && *x != Some(true)),
-				"allow flags",
+				!bc.operations.is_subset(&ac.operations),
+				"builtin operations",
 			);
 			add(
 				b.agent_plugins

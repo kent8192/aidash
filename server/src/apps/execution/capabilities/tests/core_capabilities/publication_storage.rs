@@ -1,3 +1,4 @@
+use super::reference_set_tests::file;
 use super::*;
 use reinhardt::query::{Alias, Expr, PostgresQueryBuilder, Query};
 
@@ -9,126 +10,17 @@ fn storage_fixture(
 	async move {
 		let c = runtime_fixture.await;
 		let run = admit(&c).await;
-		let (status,patch)=request(&c.app,&c.token,"POST",&path_for_patch(run.id),json!({"idempotency_key":Uuid::new_v4(),"expected_revision":1,"preconditions":{"kept.txt":null},"patch":format!("*** Begin Patch\n*** Add File: kept.txt\n+{}\n*** End Patch","x".repeat(4096))})).await;
-		assert_eq!(status, 200, "{patch}");
-		let (_, area) = request(
+		let (status, area) = request(
 			&c.app,
 			&c.token,
 			"GET",
-			&format!("/api/executions/{}/working-area", run.id),
+			&format!("/api/executions/{}/execution-scope", run.id),
 			Value::Null,
 		)
 		.await;
+		assert_eq!(status, 200, "{area}");
 		(c, run.id, area)
 	}
-}
-
-#[rstest::rstest]
-#[tokio::test]
-async fn unchanged_exports_reuse_objects_and_sweep_reclaims_superseded_bytes(
-	#[future] storage_fixture: (CoreFixture, Uuid, Value),
-	#[from(worker_control)] control_1: WorkerControl,
-) {
-	let (c, run, initial) = Box::pin(storage_fixture).await;
-	let old: Uuid = serde_json::from_value(initial["manifest"][0]["file_id"].clone()).unwrap();
-	let baseline: i64 = sqlx::query_scalar(
-		&Query::select()
-			.column(Alias::new("used_bytes"))
-			.from(Alias::new("core_quotas"))
-			.and_where(Expr::col(Alias::new("tenant")).eq("acme"))
-			.to_string(PostgresQueryBuilder),
-	)
-	.fetch_one(c.f.store.pool.fixture_driver())
-	.await
-	.unwrap();
-	let WorkerControl { stop, receiver: rx } = control_1;
-	// Act: start collection after capturing the persisted quota baseline.
-	let worker = tokio::spawn(aidash_server::capabilities::operations::run(
-		c.f.store.clone(),
-		rx,
-	));
-	let mut revision = initial["revision"].clone();
-	for command in [":", ":", "printf replacement > kept.txt"] {
-		let (status, operation) = request(
-			&c.app,
-			&c.token,
-			"POST",
-			&format!("/api/executions/{run}/shell"),
-			json!({"idempotency_key":Uuid::new_v4(),"expected_revision":revision,"command":command}),
-		)
-		.await;
-		assert_eq!(status, 200, "{operation}");
-		let done =
-			operation_until(&c, run, "shell", &operation["operation_id"], &["completed"]).await;
-		revision = done["revision"].clone();
-		let (_, area) = request(
-			&c.app,
-			&c.token,
-			"GET",
-			&format!("/api/executions/{run}/working-area"),
-			Value::Null,
-		)
-		.await;
-		if command == ":" {
-			assert_eq!(area["manifest"], initial["manifest"]);
-		} else {
-			assert_ne!(
-				area["manifest"][0]["file_id"],
-				initial["manifest"][0]["file_id"]
-			);
-		}
-	}
-
-	let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(15);
-	loop {
-		let count: i64 = {
-			let query_bind_1 = old;
-			sqlx::query_scalar(
-				&Query::select()
-					.expr(reinhardt::query::Func::count(
-						Expr::col(Alias::new("id")).into(),
-					))
-					.from(Alias::new("core_objects"))
-					.and_where(
-						reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("id"))).eq(
-							SimpleExpr::CustomWithExpr(
-								"(?)".to_owned(),
-								vec![Expr::value(query_bind_1.to_owned()).into()],
-							),
-						),
-					)
-					.to_string(PostgresQueryBuilder),
-			)
-			.fetch_one(c.f.store.pool.fixture_driver())
-			.await
-		}
-		.unwrap();
-		if count == 0 {
-			break;
-		}
-		assert!(
-			tokio::time::Instant::now() < deadline,
-			"old working object not reclaimed"
-		);
-		tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-	}
-	let used: i64 = sqlx::query_scalar(
-		&Query::select()
-			.column(Alias::new("used_bytes"))
-			.from(Alias::new("core_quotas"))
-			.and_where(Expr::col(Alias::new("tenant")).eq("acme"))
-			.to_string(PostgresQueryBuilder),
-	)
-	.fetch_one(c.f.store.pool.fixture_driver())
-	.await
-	.unwrap();
-	assert_eq!(
-		used,
-		baseline - initial["manifest"][0]["size"].as_i64().unwrap() + b"replacement".len() as i64
-	);
-	stop.send(true).unwrap();
-	worker.await.unwrap().unwrap();
-	c.close().await;
 }
 
 async fn seed_receipt(c: &CoreFixture, template: Uuid, id: Uuid, instance: &str, digest: &str) {
@@ -312,8 +204,6 @@ async fn stale_and_rejected_receipts_cannot_starve_new_terminal_payload_acknowle
 
 use reinhardt::query::{ExprTrait as _, QueryStatementBuilder as _};
 
-use reinhardt::query::SimpleExpr;
-
 #[rstest::fixture]
 async fn running_storage_fixture(
 	#[future] storage_fixture: (CoreFixture, Uuid, Value),
@@ -387,7 +277,6 @@ async fn a_blocked_upload_does_not_lock_tenant_quota_and_failure_releases_reserv
 	#[future] capability_fixture: CoreFixture,
 ) {
 	let mut c = capability_fixture.await;
-	let run = admit(&c).await;
 	let paused = Arc::new(PausedBlobStore {
 		inner: aidash_integrations::blob_store::LocalBlobStore::new(&c.root).unwrap(),
 		entered: tokio::sync::Notify::new(),
@@ -401,7 +290,14 @@ async fn a_blocked_upload_does_not_lock_tenant_quota_and_failure_releases_reserv
 	let app = c.app.clone();
 	let token = c.token.clone();
 	let task = tokio::spawn(async move {
-		request(&app, &token, "POST", &path_for_patch(run.id), json!({"idempotency_key":Uuid::new_v4(),"expected_revision":1,"preconditions":{"blocked.txt":null},"patch":"*** Begin Patch\n*** Add File: blocked.txt\n+unique blocked bytes\n*** End Patch"})).await
+		request(
+			&app,
+			&token,
+			"POST",
+			"/api/references/batch",
+			json!({"files":[file("blocked.txt", "unique blocked bytes\n")]}),
+		)
+		.await
 	});
 	tokio::time::timeout(
 		std::time::Duration::from_secs(10),

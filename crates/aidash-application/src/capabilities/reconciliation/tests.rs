@@ -9,6 +9,7 @@ use aidash_domain::{
 };
 use async_trait::async_trait;
 use rstest::{fixture, rstest};
+use serde_json::Value;
 use std::sync::{Arc, Mutex};
 struct Trace {
 	operation: Snapshot,
@@ -30,7 +31,6 @@ struct Trace {
 	failure: Option<(String, bool)>,
 	/// Request bodies sent to the runner.
 	bodies: Vec<Value>,
-	reusable: Option<Uuid>,
 }
 #[derive(Clone)]
 struct Repository(Arc<Mutex<Trace>>);
@@ -111,7 +111,6 @@ fn repository() -> Repository {
 		commit: false,
 		failure: None,
 		bodies: vec![],
-		reusable: None,
 	})))
 }
 impl Repository {
@@ -227,35 +226,6 @@ impl OperationReconciliationScope for Scope {
 		} else {
 			trace.chunks.remove(0)
 		})
-	}
-	async fn verified(&mut self, _: &MountedFile) -> Result<()> {
-		self.0.call("verified")
-	}
-	async fn reuse_output(&mut self, digest: &str, size: u64) -> Result<Option<Uuid>> {
-		self.0.call("reuse_output")?;
-		assert_eq!(
-			digest,
-			"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
-		);
-		assert_eq!(size, 3);
-		Ok(self.0.0.lock().unwrap().reusable)
-	}
-	async fn begin_output(&mut self, _: u64) -> Result<()> {
-		self.0.call("begin_output")
-	}
-	async fn write_output(&mut self, _: &[u8]) -> Result<()> {
-		self.0.call("write_output")
-	}
-	async fn finish_output(&mut self, expected: &str) -> Result<(Uuid, String)> {
-		self.0.call("finish_output")?;
-		Ok((Uuid::from_u128(11), expected.into()))
-	}
-	async fn put(&mut self, kind: &str, bytes: &[u8]) -> Result<(Uuid, String)> {
-		self.0.call(&format!("put:{kind}"))?;
-		if kind == "output" {
-			assert_eq!(bytes, b"stdout");
-		}
-		Ok((Uuid::from_u128(12), "saved-digest".into()))
 	}
 	async fn event(&mut self, data: Value) -> Result<()> {
 		self.0.call("event")?;
@@ -641,7 +611,6 @@ async fn a_resent_operation_the_runner_already_refused_ends_without_effects(
 }
 #[rstest]
 #[case::shell("shell", None)]
-#[case::check(VERIFICATION, None)]
 #[tokio::test]
 async fn every_kind_of_pending_operation_ends_the_same_way(
 	repository: Repository,
@@ -749,87 +718,6 @@ async fn oversized_previews_fail_without_publishing_or_journaling_a_result(repos
 	assert!(trace.saved.is_empty());
 	assert!(!trace.commit);
 }
-#[rstest]
-#[tokio::test]
-async fn a_completion_check_dispatches_the_verify_kind_under_shell_authority(
-	repository: Repository,
-) {
-	{
-		let mut trace = repository.0.lock().unwrap();
-		trace.operation.kind = VERIFICATION.into();
-		trace.operation.result = json!({"dispatch_pending":true});
-		trace.observed = json!({"status":"accepted","stdout":""});
-	}
-	run(&repository).await.unwrap();
-	let trace = repository.0.lock().unwrap();
-	assert!(trace.calls.contains(&"require:shell".into()));
-	assert_eq!(trace.bodies[0]["kind"], "verify");
-	assert_eq!(trace.bodies[0]["code"], "echo fixture");
-	assert!(trace.commit);
-}
-/// The runner's runtime is kept in milliseconds, so a Check that fails in
-/// under a second still spends verification time. It ends when the runner saw
-/// the command stop; harvesting its output is not charged.
-#[rstest]
-#[case::fractional(1000.25, None, 1004.75, 4500, None)]
-#[case::sub_second(1000.0, None, 1000.4, 400, None)]
-#[case::instant(1000.0, None, 1000.0, 0, None)]
-#[case::slow_harvest(1000.0, Some(1000.4), 1045.0, 400, Some(false))]
-#[case::deadline(1000.0, Some(1003.0), 1003.2, 3000, Some(true))]
-#[tokio::test]
-async fn a_finished_completion_check_keeps_its_output_tail_and_never_publishes(
-	repository: Repository,
-	#[case] started_at: f64,
-	#[case] terminated_at: Option<f64>,
-	#[case] finished_at: f64,
-	#[case] runtime_millis: u64,
-	#[case] deadline_expired: Option<bool>,
-) {
-	let output = format!("{}test result: FAILED", "x".repeat(MAX_DIAGNOSTIC_BYTES));
-	{
-		let mut trace = repository.0.lock().unwrap();
-		trace.operation.kind = VERIFICATION.into();
-		trace.operation.state = "running".into();
-		trace.observed = json!({"status":"failed","termination_confirmed":true,"executed":true,
-			"exit_code":101,"truncated":false,"error":null,"stdout":STANDARD.encode(&output),
-			"started_at":started_at,"finished_at":finished_at,
-			"files":[{"path":"target/debug/app","object_id":"build","digest":"d","size":1}]});
-		if let Some(terminated_at) = terminated_at {
-			trace.observed["terminated_at"] = json!(terminated_at);
-		}
-		if let Some(expired) = deadline_expired {
-			trace.observed["deadline_expired"] = json!(expired);
-		}
-	}
-	run(&repository).await.unwrap();
-	let trace = repository.0.lock().unwrap();
-	assert!(
-		!trace
-			.calls
-			.iter()
-			.any(|call| call == "publish" || call.starts_with("put:"))
-	);
-	assert!(trace.calls.contains(&"area:active".into()));
-	let saved = &trace.saved[0];
-	assert_eq!(saved.state, "failed");
-	assert_eq!(saved.revision, 7, "a Check never changes the Area revision");
-	assert_eq!(saved.result["exit_code"], 101);
-	assert_eq!(
-		saved.result["runtime_millis"], runtime_millis,
-		"the runner's own runtime"
-	);
-	assert_eq!(
-		saved.result["deadline_expired"].as_bool(),
-		deadline_expired,
-		"the runner's word on the deadline"
-	);
-	let preview = saved.result["preview"].as_str().unwrap();
-	assert_eq!(preview.len(), MAX_DIAGNOSTIC_BYTES);
-	assert!(preview.ends_with("test result: FAILED"));
-	assert!(trace.published.is_empty());
-	assert_eq!(trace.events.len(), 1);
-	assert!(trace.commit);
-}
 /// What the runner reports when a command's Time Limit passed while it ran.
 fn past_its_limit(status: &str, exit_code: i64) -> Value {
 	json!({"status":status,"termination_confirmed":true,"executed":true,"files":[],
@@ -841,117 +729,7 @@ fn past_its_limit(status: &str, exit_code: i64) -> Value {
 /// A command that ended before its limit keeps the runner's own word, and its
 /// result does not grow a field that says nothing happened.
 /// Nothing was saved, so the refusal stays the error and the limit is added to it.
-/// A Check saves nothing and has its own timed-out outcome, so it never gets
-/// the time-out error, which would say that files were saved.
-#[rstest]
-#[tokio::test]
-async fn a_completion_check_past_its_limit_gets_no_time_out_error(repository: Repository) {
-	{
-		let mut trace = repository.0.lock().unwrap();
-		trace.operation.kind = VERIFICATION.into();
-		trace.observed = past_its_limit("failed", 143);
-	}
-	run(&repository).await.unwrap();
-	let trace = repository.0.lock().unwrap();
-	let saved = &trace.saved[0];
-	assert_eq!(saved.result["deadline_expired"], true);
-	assert!(saved.result["error"].is_null());
-}
-/// A Check never exports `/work`, so losing its journal leaves the Area's files
-/// as they were: the Check's result is unknown, but the Area stays usable for
-/// the next Check or tool call.
-#[rstest]
-#[case::identity_changed(json!({"instance":"replacement"}), json!({"status":"running","stdout":""}))]
-#[case::absent(json!({"instance":"runner"}), json!({"status":"absent"}))]
-#[case::runner_uncertain(json!({"instance":"runner"}), json!({"status":"uncertain","error":"sandbox lost","termination_confirmed":true}))]
-#[tokio::test]
-async fn a_lost_completion_check_leaves_the_area_usable(
-	repository: Repository,
-	#[case] health: Value,
-	#[case] observed: Value,
-) {
-	{
-		let mut trace = repository.0.lock().unwrap();
-		trace.operation.kind = VERIFICATION.into();
-		trace.health = health;
-		trace.observed = observed;
-	}
-	run(&repository).await.unwrap();
-	let trace = repository.0.lock().unwrap();
-	assert_eq!(trace.saved[0].state, "uncertain");
-	assert!(trace.calls.contains(&"area:active".into()));
-	assert!(!trace.calls.contains(&"area:uncertain".into()));
-	assert!(trace.published.is_empty());
-}
-/// A lost Check whose writer the runner has not confirmed stopped keeps the
-/// Area fenced: the runner would refuse the next Check while it holds that
-/// writer, so a retry must not be offered an Area it can never run in. The
-/// Check stays cancelling, so reconciliation keeps asking the runner to prove
-/// the writer stopped instead of leaving the Area fenced for good.
-#[rstest]
-#[case::unconfirmed(json!({"status":"uncertain","error":"sandbox lost","termination_confirmed":false}))]
-#[case::unreported(json!({"status":"uncertain","error":"sandbox lost"}))]
-#[tokio::test]
-async fn a_lost_completion_check_with_a_live_writer_keeps_the_area_fenced(
-	repository: Repository,
-	#[case] observed: Value,
-) {
-	{
-		let mut trace = repository.0.lock().unwrap();
-		trace.operation.kind = VERIFICATION.into();
-		trace.health = json!({"instance":"runner"});
-		trace.observed = observed;
-	}
-	run(&repository).await.unwrap();
-	let trace = repository.0.lock().unwrap();
-	assert_eq!(trace.saved[0].state, "cancelling");
-	assert!(trace.saved[0].active(), "the held Check must stay polled");
-	assert!(trace.calls.contains(&"area:uncertain".into()));
-	assert!(!trace.calls.contains(&"area:active".into()));
-	assert!(trace.published.is_empty());
-}
-/// The passes after a held Check: the runner retries the stop proof while it
-/// reports `cancelling`, and once it proves the writer stopped the Area opens
-/// again without publishing anything.
-#[rstest]
-#[tokio::test]
-async fn a_held_completion_check_reopens_the_area_once_its_writer_is_proven_stopped(
-	repository: Repository,
-) {
-	{
-		let mut trace = repository.0.lock().unwrap();
-		trace.operation.kind = VERIFICATION.into();
-		trace.operation.state = "cancelling".into();
-		trace.health = json!({"instance":"runner"});
-		trace.observed = json!({"status":"cancelling","stdout":"","termination_confirmed":false});
-	}
-	run(&repository).await.unwrap();
-	{
-		let mut trace = repository.0.lock().unwrap();
-		assert!(
-			trace
-				.calls
-				.iter()
-				.any(|call| call.starts_with("request:POST:") && call.ends_with("/cancel"))
-		);
-		assert_eq!(trace.saved[0].state, "cancelling");
-		assert!(!trace.calls.contains(&"area:active".into()));
-		trace.operation = trace.saved[0].clone();
-		trace.saved.clear();
-		trace.calls.clear();
-		trace.observed = json!({"status":"failed","termination_confirmed":true,"executed":true,
-			"exit_code":137,"truncated":true,"stdout":"",
-			"error":{"code":"SANDBOX_LOST","message":"Sandbox stopped"}});
-	}
-	run(&repository).await.unwrap();
-	let trace = repository.0.lock().unwrap();
-	assert_eq!(trace.saved[0].state, "failed");
-	assert_eq!(trace.saved[0].result["error"]["code"], "SANDBOX_LOST");
-	assert!(trace.calls.contains(&"area:active".into()));
-	assert!(trace.published.is_empty());
-}
-/// Only a Check is kept polling: a shell writer may have changed `/work`, so
-/// its lost outcome still fences the Area until a person resolves it.
+/// A lost shell writer may still hold the Area.
 #[rstest]
 #[tokio::test]
 async fn a_lost_shell_operation_with_a_live_writer_stays_uncertain(repository: Repository) {

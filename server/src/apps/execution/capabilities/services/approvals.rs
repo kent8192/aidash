@@ -12,7 +12,7 @@ pub(crate) async fn can_allow_always(
 	access: &mut Access,
 	record: &Record,
 ) -> Result<bool> {
-	let mut scope = crate::bootstrap::approval_scope(Some(store), access, None);
+	let mut scope = crate::bootstrap::approval_scope(Some(store), access);
 	let run = scope
 		.run_context(serde_json::from_value(record.data["run_id"].clone())?)
 		.await?;
@@ -31,7 +31,7 @@ pub(crate) async fn reader(
 	access: &mut Access,
 	record: &Record,
 ) -> Result<aidash_application::capabilities::approvals::Reader> {
-	let mut scope = crate::bootstrap::approval_scope(None, access, None);
+	let mut scope = crate::bootstrap::approval_scope(None, access);
 	aidash_application::capabilities::approvals::reader(
 		&mut scope,
 		&crate::apps::execution::repositories::capability_records::domain(record.clone()),
@@ -46,7 +46,7 @@ pub(crate) async fn prepare(
 	area: &Area,
 	input: Outbound,
 ) -> Result<Value> {
-	let mut scope = crate::bootstrap::approval_scope(Some(store), access, Some(area));
+	let mut scope = crate::bootstrap::approval_scope(Some(store), access);
 	scope.run = Some(Box::new(run.clone()));
 	aidash_application::capabilities::approvals::prepare(
 		&mut scope,
@@ -63,7 +63,7 @@ pub(crate) async fn view(
 	run: &Run,
 	record: &Record,
 ) -> Result<Value> {
-	let mut scope = crate::bootstrap::approval_scope(Some(store), access, None);
+	let mut scope = crate::bootstrap::approval_scope(Some(store), access);
 	aidash_application::capabilities::approvals::view(
 		&mut scope,
 		&run.metadata(),
@@ -78,24 +78,9 @@ pub(crate) async fn decide(
 	id: Uuid,
 	input: ApprovalDecision,
 ) -> Result<Value> {
-	let human = match input.choice {
-		crate::apps::execution::capabilities::serializers::approvals::ApprovalChoice::Deny => {
-			aidash_domain::decision::observation::HumanLabel::Deny
-		}
-		_ => aidash_domain::decision::observation::HumanLabel::Allow,
-	};
-	let mut scope = crate::bootstrap::approval_scope(Some(store), access, None);
+	let mut scope = crate::bootstrap::approval_scope(Some(store), access);
 	let result =
 		aidash_application::capabilities::approvals::decide(&mut scope, id, input.into()).await?;
-	if result["state"] == "approved" || result["state"] == "denied" {
-		crate::apps::execution::observation::label(
-			&mut *access.tx,
-			&access.identity.tenant,
-			id,
-			human,
-		)
-		.await?;
-	}
 	Ok(result)
 }
 /// The kind of the approval record `id` names, among those a revocation can
@@ -120,7 +105,7 @@ pub(crate) async fn revoke(
 	kind: &str,
 	input: Revoke,
 ) -> Result<Value> {
-	let mut scope = crate::bootstrap::approval_scope(None, access, None);
+	let mut scope = crate::bootstrap::approval_scope(None, access);
 	aidash_application::capabilities::approvals::revoke(&mut scope, id, kind, input.into())
 		.await
 		.map_err(Into::into)
@@ -130,7 +115,7 @@ pub(crate) async fn authorize(
 	access: &mut Access,
 	record: &Record,
 ) -> Result<aidash_domain::RunMetadata> {
-	let mut scope = crate::bootstrap::approval_scope(Some(store), access, None);
+	let mut scope = crate::bootstrap::approval_scope(Some(store), access);
 	aidash_application::capabilities::approvals::authorize(
 		&mut scope,
 		&crate::apps::execution::repositories::capability_records::domain(record.clone()),

@@ -9,7 +9,7 @@ use crate::apps::knowledge::{
 use crate::{Error, store::Store, transactions::gate::ReadLease};
 use aidash_application::tenancy::{DeploymentScopeReason, TenancyScope};
 use aidash_application::{Result, ports::semantic::*};
-use aidash_domain::semantic::indexing::{IndexingEntry, IndexingPlan};
+use aidash_domain::semantic::indexing::{IndexingEntry, IndexingPlan, IndexingSpec};
 use async_trait::async_trait;
 use reinhardt::db::backends::TransactionExecutor;
 use reinhardt::query::{
@@ -73,7 +73,6 @@ impl SemanticIndexingRepository for NativeIndexing {
 		super::purge::sweep(&self.store).await?;
 		super::engine_jobs::sweep(&self.store).await?;
 		super::memory_decay::sweep(&self.store).await?;
-		super::image_publications::sweep(&self.store).await?;
 		Ok(())
 	}
 	async fn begin_visibility(&self) -> Result<Box<dyn SemanticVisibility>> {
@@ -301,31 +300,12 @@ impl SemanticIndexingSession for Session {
 		source: &Source,
 		max_bytes: usize,
 	) -> Result<Option<IndexImageRead>> {
-		let store = self.store.clone();
-		if matches!(source, Source::AttachmentImage { .. }) {
-			return super::attachment_images::read(
-				&store,
-				&mut self.lease,
-				thread,
-				source,
-				max_bytes,
-			)
-			.await
-			.map_err(Into::into);
-		}
-		let access = self.lease.access().ok_or(Error::Forbidden)?;
-		let Some(file) = super::image_files::current(access, thread, source).await? else {
+		if !matches!(source, Source::AttachmentImage { .. }) {
 			return Ok(None);
-		};
-		if file.size > max_bytes as u64 {
-			return Ok(Some(IndexImageRead::TooLarge));
 		}
-		let bytes = store.capabilities.read(access, &file).await?;
-		Ok(Some(IndexImageRead::Image(IndexImage {
-			media_type: file.media_type,
-			bytes,
-			description: None,
-		})))
+		super::attachment_images::read(&self.store, &mut self.lease, thread, source, max_bytes)
+			.await
+			.map_err(Into::into)
 	}
 	async fn embed_image(
 		&mut self,
@@ -780,4 +760,96 @@ impl SemanticCleanupSession for Cleanup {
 		self.transaction.commit().await.map_err(Error::from)?;
 		Ok(())
 	}
+}
+
+type ReplacementPoint = (Vec<f32>, String);
+
+/// Prepare a replacement for a Ready source without changing its live point.
+pub(super) fn reembed<'a>(
+	store: &'a Store,
+	tenant: &'a str,
+	entry: &'a Entry,
+	spec: &'a IndexingSpec,
+) -> futures_util::future::BoxFuture<'a, crate::Result<Option<ReplacementPoint>>> {
+	Box::pin(reembed_source(store, tenant, entry, spec))
+}
+
+async fn reembed_source(
+	store: &Store,
+	tenant: &str,
+	entry: &Entry,
+	spec: &IndexingSpec,
+) -> crate::Result<Option<ReplacementPoint>> {
+	let sql = Query::select()
+		.column(Alias::new("authority"))
+		.from(Alias::new("semantic_entries"))
+		.and_where(Expr::col("id").eq(Expr::value(entry.id)))
+		.and_where(Expr::col("revision").eq(entry.revision))
+		.and_where(Expr::col("point_id").eq(Expr::value(entry.point_id)))
+		.and_where(Expr::col("deleted").eq(false))
+		.to_string(PostgresQueryBuilder);
+	let tenancy = TenancyScope::tenant(tenant)?;
+	let authority: Value = crate::database::native::query_scalar(&sql)
+		.scalar_optional(store.pool.in_scope(&tenancy))
+		.await?
+		.ok_or_else(|| Error::Conflict("embedding source changed".into()))?;
+	let lease = match Lease::restore(store, authority, entry.thread_id).await {
+		Ok(lease) => lease,
+		Err(Error::Forbidden | Error::NotFound(_) | Error::Unauthorized) => return Ok(None),
+		Err(error) => return Err(error),
+	};
+	let mut scope = Session {
+		store: store.clone(),
+		lease,
+		entry: Some(entry.clone()),
+	};
+	scope.durable();
+	let result: Result<_> = async {
+		scope.thread_write(entry.thread_id).await?;
+		scope.plan(entry.thread_id).await?;
+		if !scope.permits("semantic.write").await? || !scope.permits("semantic.read").await? {
+			return Ok(None);
+		}
+		let source: Source = serde_json::from_value(entry.source.clone())?;
+		if source.is_image() {
+			if !spec
+				.embedding
+				.inputs
+				.contains(&aidash_domain::semantic::EmbeddingInputKind::Image)
+			{
+				return Ok(None);
+			}
+			let Some(IndexImageRead::Image(image)) = scope
+				.image(entry.thread_id, &source, spec.max_image_bytes)
+				.await?
+			else {
+				return Ok(None);
+			};
+			let digest = image.digest();
+			let data = scope
+				.embed_image(entry.thread_id, &spec.embedding, &image, entry.id)
+				.await?;
+			Ok(Some((data, digest)))
+		} else {
+			let Some(text) = scope.source(entry.thread_id, &source).await? else {
+				return Ok(None);
+			};
+			aidash_domain::semantic::indexing::validate_text(&text, spec.max_input_bytes)?;
+			let digest = aidash_domain::semantic::indexing::content_digest(&text);
+			let data = scope
+				.embed(entry.thread_id, &spec.embedding, &text, entry.id)
+				.await?;
+			Ok(Some((data, digest)))
+		}
+	}
+	.await;
+	let result = match result {
+		Err(
+			aidash_application::Error::Forbidden
+			| aidash_application::Error::Unauthorized
+			| aidash_application::Error::NotFound(_),
+		) => Ok(None),
+		result => result,
+	};
+	scope.lease.finish(result.map_err(Into::into)).await
 }

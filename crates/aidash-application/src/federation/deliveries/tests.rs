@@ -22,6 +22,7 @@ fn scope() -> Scope {
 			title: String::new(),
 			description: String::new(),
 			status: TaskStatus::Claimed,
+			goal: None,
 			requirements: json!({}),
 			owner: Some(aidash_domain::agent_subject("aidash://peer", "agent", "1")),
 			created_by: "root".into(),
@@ -51,7 +52,7 @@ impl RemoteCommandScope for Scope {
 		panic!("a delivery has its own replay: the delivery id")
 	}
 	async fn task_resource(&mut self, _: &Task) -> Result<Resource> {
-		panic!("a delivery acts on the Area and the Thread, not the task resource")
+		panic!("the Thread is the destination")
 	}
 	async fn require_builtin(&mut self, tool: &str) -> Result<()> {
 		self.calls.push(format!("builtin:{tool}"));
@@ -78,23 +79,16 @@ fn message() -> Purpose {
 #[rstest]
 #[tokio::test]
 async fn an_admitted_delivery_checks_the_binding_then_the_tool_then_the_task(mut scope: Scope) {
-	let task = verify(&mut scope, &who(1), "file_share").await.unwrap();
+	let task = verify(&mut scope, &who(1), "thread_message").await.unwrap();
 	assert_eq!(task.id, Uuid::from_u128(2));
-	assert_eq!(scope.calls, ["binding", "builtin:file_share", "task"]);
-}
-#[rstest]
-#[tokio::test]
-async fn a_message_with_files_is_checked_as_the_message_tool(mut scope: Scope) {
-	verify(&mut scope, &who(1), message().tool()).await.unwrap();
-	assert!(scope.calls.contains(&"builtin:thread_message".to_string()));
-	assert!(!scope.calls.contains(&"builtin:file_share".to_string()));
+	assert_eq!(scope.calls, ["binding", "builtin:thread_message", "task"]);
 }
 #[rstest]
 #[tokio::test]
 async fn a_grant_without_a_live_binding_is_refused_before_anything_else(mut scope: Scope) {
 	scope.binding = None;
 	assert!(matches!(
-		verify(&mut scope, &who(1), "file_share").await,
+		verify(&mut scope, &who(1), "thread_message").await,
 		Err(Error::Forbidden)
 	));
 	assert_eq!(scope.calls, ["binding"]);
@@ -103,7 +97,7 @@ async fn a_grant_without_a_live_binding_is_refused_before_anything_else(mut scop
 #[tokio::test]
 async fn another_runs_admission_is_refused(mut scope: Scope) {
 	assert!(matches!(
-		verify(&mut scope, &who(9), "file_share").await,
+		verify(&mut scope, &who(9), "thread_message").await,
 		Err(Error::Forbidden)
 	));
 	assert_eq!(
@@ -117,7 +111,7 @@ async fn another_runs_admission_is_refused(mut scope: Scope) {
 async fn a_task_another_agent_owns_is_refused(mut scope: Scope) {
 	scope.task.owner = Some(aidash_domain::agent_subject("aidash://peer", "other", "1"));
 	assert!(matches!(
-		verify(&mut scope, &who(1), "file_share").await,
+		verify(&mut scope, &who(1), "thread_message").await,
 		Err(Error::Forbidden)
 	));
 }
@@ -130,7 +124,7 @@ async fn a_task_another_agent_owns_is_refused(mut scope: Scope) {
 async fn a_finished_task_takes_no_delivery(mut scope: Scope, #[case] status: TaskStatus) {
 	scope.task.status = status;
 	assert!(matches!(
-		verify(&mut scope, &who(1), "file_share").await,
+		verify(&mut scope, &who(1), "thread_message").await,
 		Err(Error::Conflict(_))
 	));
 }
@@ -148,14 +142,14 @@ fn the_manifest_is_held_to_the_deployments_budgets() {
 		media_type: "text/plain".into(),
 	};
 	assert_eq!(
-		check_manifest(&Purpose::FileShare, &[file("a", 10), file("b", 5)], share).unwrap(),
+		check_manifest(&message(), &[file("a", 10), file("b", 5)], share).unwrap(),
 		15
 	);
-	assert!(check_manifest(&Purpose::FileShare, &[file("a", 11)], share).is_err());
-	assert!(check_manifest(&Purpose::FileShare, &[file("a", 10), file("b", 10)], share).is_err());
+	assert!(check_manifest(&message(), &[file("a", 11)], share).is_err());
+	assert!(check_manifest(&message(), &[file("a", 10), file("b", 10)], share).is_err());
 	assert!(
 		check_manifest(
-			&Purpose::FileShare,
+			&message(),
 			&[file("a", 1), file("b", 1), file("c", 1)],
 			share
 		)
@@ -182,18 +176,15 @@ fn requesting(tools: &[&str]) -> FederationToolRequest {
 	}
 }
 #[rstest]
-#[case::share("file_share")]
-#[case::message("thread_message")]
 #[tokio::test]
 async fn a_delivery_the_homes_own_request_does_not_name_is_refused_before_the_binding(
 	mut scope: Scope,
-	#[case] tool: &str,
 ) {
 	let request = requesting(&["task_create"]);
 	let mut identity = who(1);
 	identity.request = Some(&request);
 	assert!(matches!(
-		verify(&mut scope, &identity, tool).await,
+		verify(&mut scope, &identity, "thread_message").await,
 		Err(Error::Invalid(message)) if message == aidash_domain::federation::tool_lists::UNAVAILABLE_TOOL
 	));
 	assert_eq!(scope.calls, ["binding"], "neither Binding nor task is read");
@@ -202,14 +193,20 @@ async fn a_delivery_the_homes_own_request_does_not_name_is_refused_before_the_bi
 #[tokio::test]
 async fn a_delivery_a_run_only_answer_allows_is_admitted(mut scope: Scope) {
 	use aidash_domain::federation::tool_lists::{ToolList, ToolPattern};
-	let run_only = ToolList::new([ToolPattern::new("file_share").unwrap()]).unwrap();
-	let request = requesting(&["thread_message"])
+	let run_only = ToolList::new([
+		ToolPattern::new("thread_message").unwrap(),
+		ToolPattern::new("thread_message:files").unwrap(),
+	])
+	.unwrap();
+	let request = requesting(&["task_create"])
 		.with_run_tools(&run_only)
 		.unwrap();
 	let mut identity = who(1);
 	identity.request = Some(&request);
-	verify(&mut scope, &identity, "file_share").await.unwrap();
-	assert_eq!(scope.calls, ["binding", "builtin:file_share", "task"]);
+	verify(&mut scope, &identity, "thread_message")
+		.await
+		.unwrap();
+	assert_eq!(scope.calls, ["binding", "builtin:thread_message", "task"]);
 }
 #[rstest]
 #[case::plain_key_only(&["thread_message"], false)]
@@ -250,4 +247,14 @@ async fn a_delivery_named_by_a_pinned_workspace_tool_is_checked_as_its_thread_to
 		.await
 		.unwrap();
 	assert_eq!(scope.calls, ["binding", "builtin:thread_message", "task"]);
+}
+
+#[rstest]
+#[tokio::test]
+async fn a_retired_file_share_cannot_stage_a_delivery(mut scope: Scope) {
+	assert!(matches!(
+		verify(&mut scope, &who(1), "file_share").await,
+		Err(Error::Invalid(_))
+	));
+	assert!(scope.calls.is_empty());
 }

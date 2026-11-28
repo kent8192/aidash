@@ -193,7 +193,7 @@ pub async fn upload(
 	}
 	Ok(attachment.metadata())
 }
-async fn attachment_bytes(
+pub async fn attachment_bytes(
 	scope: &mut dyn ChannelScope,
 	attachment: &AttachmentState,
 ) -> Result<Vec<u8>> {
@@ -250,11 +250,11 @@ pub async fn describe(
 	metadata.description = Some(description.to_owned());
 	Ok(metadata)
 }
-pub async fn download(
+pub async fn authorize_download(
 	scope: &mut dyn ChannelScope,
 	thread: Uuid,
 	id: Uuid,
-) -> Result<(ChannelAttachment, Vec<u8>)> {
+) -> Result<(AttachmentState, bool)> {
 	let attachment = scope
 		.attachment(thread, id)
 		.await?
@@ -262,7 +262,16 @@ pub async fn download(
 	let message = attachment
 		.message_id
 		.ok_or_else(|| Error::NotFound("attachment unavailable".into()))?;
-	scope.message(thread, message).await?;
+	let message = scope.message(thread, message).await?;
+	Ok((attachment, message.completion.is_some()))
+}
+
+pub async fn download(
+	scope: &mut dyn ChannelScope,
+	thread: Uuid,
+	id: Uuid,
+) -> Result<(ChannelAttachment, Vec<u8>)> {
+	let (attachment, _) = authorize_download(scope, thread, id).await?;
 	let content = attachment_bytes(scope, &attachment).await?;
 	Ok((attachment.metadata(), content))
 }

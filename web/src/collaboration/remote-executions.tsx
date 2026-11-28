@@ -12,7 +12,7 @@ import type {
 import { apiFetch } from "../transport";
 import { Alert, Facts, Hint, formClass } from "../components/patterns";
 import { Badge, Field, useI18n } from "../ui";
-import { useFilePreview } from "../capabilities/file-preview-pane";
+import { useLivePreview } from "../capabilities/live-preview-context";
 import { inspectRemotePreview } from "../capabilities/remote-preview";
 import { DeclineCall } from "./decline-call";
 import { offeredDecline, type DeclinableCall } from "./decline-call-model";
@@ -249,7 +249,7 @@ export function RemoteExecutions({ task }: { task: string }) {
                 </Alert>
               )}
               {execution && execution.phase !== "ADMITTED" && (
-                <RemotePreviewFiles run={execution.run_id} />
+                <RemoteLivePreview run={execution.run_id} />
               )}
               {!terminal && (
                 <div className="flex min-w-0 flex-wrap gap-2">
@@ -374,9 +374,9 @@ export function RemoteExecutions({ task }: { task: string }) {
   );
 }
 
-function RemotePreviewFiles({ run }: { run: string }) {
+function RemoteLivePreview({ run }: { run: string }) {
   const { t } = useI18n();
-  const preview = useFilePreview();
+  const preview = useLivePreview();
   const inspection = useQuery({
     queryKey: ["remote-preview", run],
     queryFn: ({ signal }) => inspectRemotePreview(run, signal),
@@ -399,27 +399,6 @@ function RemotePreviewFiles({ run }: { run: string }) {
     return <Hint>{t("remotePreviewDomainUnavailable")}</Hint>;
   return (
     <div className="grid min-w-0 gap-2">
-      <h4 className="text-xs font-semibold">{t("remotePreviewFiles")}</h4>
-      {value.files.length === 0 && <Hint>{t("remotePreviewNoFiles")}</Hint>}
-      <div className="flex min-w-0 flex-wrap gap-2">
-        {value.files.map((file) => (
-          <Button
-            key={file.file_id}
-            variant="outline"
-            size="sm"
-            type="button"
-            onClick={() =>
-              preview.open({
-                run,
-                area: value.area_id,
-                file: { ...file, scope: "working" },
-              })
-            }
-          >
-            {file.path}
-          </Button>
-        ))}
-      </div>
       {value.live_preview && (
         <div className="flex items-center gap-2 text-xs">
           <span>

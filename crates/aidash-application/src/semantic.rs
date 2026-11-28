@@ -10,8 +10,6 @@ use aidash_domain::semantic::{
 use serde_json::{Value, json};
 use uuid::Uuid;
 
-pub mod image_publications;
-
 pub async fn sweep(
 	repository: &dyn SemanticIndexingRepository,
 	vector: &dyn VectorIndex,
@@ -77,13 +75,15 @@ async fn index(
 		return Ok(false);
 	}
 	let spec: IndexingSpec = serde_json::from_value(plan.spec.clone())?;
-	let source = indexing::source(&entry)?;
+	let source = (!aidash_domain::semantic::retired_working_image(&entry.source))
+		.then(|| indexing::source(&entry))
+		.transpose()?;
 	let permitted = thread_allowed
 		&& scope.permits("semantic.write").await?
 		&& scope.permits("semantic.read").await?;
-	let content = if permitted && spec.enabled {
+	let content = if let Some(source) = source.filter(|_| permitted && spec.enabled) {
 		match &source {
-			Source::WorkingImage { .. } | Source::AttachmentImage { .. } => {
+			Source::AttachmentImage { .. } => {
 				let supported = spec.embedding.inputs.contains(&EmbeddingInputKind::Image);
 				let limit = if supported { spec.max_image_bytes } else { 0 };
 				let image = match scope.image(thread, &source, limit).await {

@@ -37,6 +37,7 @@ pub async fn start(
 	run: Uuid,
 	command: &str,
 	port: u16,
+	working_directory: String,
 ) -> Result<String> {
 	ensure(context).await.map_err(tool_error)?;
 	let target = context
@@ -46,7 +47,7 @@ pub async fn start(
 			scratch_space_id: context.scratch_space_id().to_owned(),
 			run_id: run.to_string(),
 			code: command.to_owned(),
-			cwd: None,
+			cwd: Some(working_directory),
 			port,
 			proxy_credential: context.credential.clone(),
 		})

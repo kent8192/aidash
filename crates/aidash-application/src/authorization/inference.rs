@@ -36,7 +36,7 @@ pub async fn authorize(
 	}
 	if agent.memory.is_none()
 		|| (!agent.conversation_memory && !agent.semantic_memory)
-		|| agent.allow_cross_conversation_memory == Some(false)
+		|| !aidash_domain::tool::contract::AgentFlag::MemoryRead.permitted(agent)
 	{
 		return Ok(());
 	}

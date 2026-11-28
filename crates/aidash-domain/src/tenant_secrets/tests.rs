@@ -168,7 +168,7 @@ fn agent_with_server_secrets(settings: serde_json::Value) -> crate::registry::En
 		"id":"agent","version":"1.0.0","kind":"agent",
 		"name":{"en":"agent"},"description":{"en":"agent"},
 		"config":{
-			"schema_version":1,"model":{"id":"model","version":"1.0.0"},"instructions":"Work",
+			"model":{"id":"model","version":"1.0.0"},"instructions":"Work",
 			"agent_plugins":[plugin],"agent_plugin_settings":{"acme-tools":settings}
 		}
 	}))

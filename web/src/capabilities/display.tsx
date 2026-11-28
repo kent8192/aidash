@@ -3,7 +3,6 @@ import { useEffect, useState } from "react";
 import { Alert } from "../components/patterns";
 import { useI18n } from "../ui";
 import { download, saveFile, type CoreFile } from "./client";
-import { useFilePreview } from "./file-preview-pane";
 
 /**
  * Capability panel (details or section): hairline-separated rhythm, the
@@ -17,24 +16,19 @@ export const panelClass = [
 ].join(" ");
 
 export function DisplayFile({
-  area,
+  run,
+  operation,
   file,
-  files,
-  revision,
-  thread,
 }: {
-  area: string;
+  run: string;
+  operation: string;
   file: CoreFile;
-  files?: readonly CoreFile[];
-  revision?: number;
-  thread?: string | null;
 }) {
-  const { locale, t } = useI18n();
+  const { locale } = useI18n();
   const ja = locale === "ja-JP";
-  const filePreview = useFilePreview();
   const [preview, setPreview] = useState<string>();
   const [error, setError] = useState("");
-  const path = `/working-areas/${area}/files/${file.file_id}/download`;
+  const path = `/executions/${run}/core-operations/${operation}/files/${file.file_id}/download`;
   useEffect(
     () => () => {
       if (preview) URL.revokeObjectURL(preview);
@@ -73,21 +67,6 @@ export function DisplayFile({
         </Button>
       )}
       <div className="flex flex-wrap gap-2">
-        <Button
-          variant="outline"
-          type="button"
-          onClick={() =>
-            filePreview.open({
-              area,
-              file,
-              files: files ?? [file],
-              revision,
-              thread,
-            })
-          }
-        >
-          {t("filePreviewAction")}
-        </Button>
         <Button
           variant="outline"
           type="button"

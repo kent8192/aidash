@@ -3,13 +3,6 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema, reinhardt::Validate)]
-#[serde(deny_unknown_fields)]
-pub struct PreviewTicketInput {
-	pub area_id: Uuid,
-	pub file_id: Uuid,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct PreviewTicket {
 	pub url: String,
@@ -54,8 +47,6 @@ pub struct LivePreview {
 	pub id: Uuid,
 	pub state: String,
 	pub stop_reason: Option<String>,
-	pub area_id: Uuid,
-	pub revision: i64,
 	pub port: u16,
 	pub idle_seconds: i64,
 	pub absolute_seconds: i64,
@@ -70,8 +61,6 @@ impl From<aidash_application::preview::live::Status> for LivePreview {
 			id: value.id,
 			state: value.state.as_str().to_owned(),
 			stop_reason: value.stop_reason.map(|reason| reason.as_str().to_owned()),
-			area_id: value.area_id,
-			revision: value.revision,
 			port: value.port,
 			idle_seconds: value.limits.idle_seconds,
 			absolute_seconds: value.limits.absolute_seconds,

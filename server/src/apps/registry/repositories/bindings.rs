@@ -305,47 +305,18 @@ async fn preview_mode(
 	.await
 }
 
-/// A receipt can use only the exact operation of an already admitted Run.
-pub(crate) async fn require_operation(
-	access: &mut crate::authorization::access::Access,
-	run: uuid::Uuid,
-	operation: &str,
-) -> aidash_application::Result<()> {
-	let run: aidash_domain::Run =
-		crate::apps::execution::models::Run::read_in(&mut **access.tx, run, None)
-			.await?
-			.ok_or(aidash_application::Error::Forbidden)?;
-	let snapshot =
-		run.context.binding_snapshot.as_ref().ok_or_else(|| {
-			aidash_application::Error::Invalid("Run has no Binding snapshot".into())
-		})?;
-	snapshot.validate()?;
-	if snapshot.agent.registry_deployment != access.node_id {
-		return Err(aidash_application::Error::Forbidden);
-	}
-	let binding = snapshot.operation(operation)?;
-	let current =
-		crate::authorization::catalog::entry(access, &binding.identity.local(), "registry.read")
-			.await?;
-	if aidash_domain::registry::rules::digest(&serde_json::to_value(&current)?) != binding.digest {
-		return Err(aidash_application::Error::Forbidden);
-	}
-	crate::marketplace::check_pinned(access, &current).await?;
-	let resource = access.resource(
-		"tool",
-		binding.identity.resource_id(),
-		serde_json::json!({"version":binding.identity.version}),
-	);
-	access.require(&resource, "tool.invoke").await?;
-	Ok(())
-}
-
 /// System visibility verifies the exact Node-owned bytes and grants no resource permission.
 pub(crate) async fn system_definition(
 	tx: &mut dyn reinhardt::db::backends::TransactionExecutor,
 	node: &str,
 	reference: &aidash_domain::registry::EntityRef,
 ) -> crate::Result<aidash_domain::registry::Entry> {
+	if let Some(definition) = aidash_domain::registry::bindings::memory_defaults::definition(
+		&reference.id,
+		&reference.version,
+	)? {
+		return Ok(definition);
+	}
 	let expected = crate::bootstrap::pinned_system_declaration(node, reference)?
 		.ok_or(crate::Error::Forbidden)?;
 	let saved = crate::apps::registry::models::transaction_records::definition(

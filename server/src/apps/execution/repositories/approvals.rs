@@ -6,7 +6,7 @@ use crate::apps::execution::capabilities::{
 			ApprovalChoice as NativeChoice, ApprovalDecision as NativeDecision,
 			Outbound as NativeOutbound, Revoke as NativeRevoke,
 		},
-		contracts::{Area, FileEntry},
+		contracts::FileEntry,
 	},
 	services::{
 		records::{self, Record as NativeRecord},
@@ -41,7 +41,6 @@ use uuid::Uuid;
 pub(crate) struct Scope<'a> {
 	pub(crate) store: Option<&'a Store>,
 	pub(crate) access: &'a mut Access,
-	pub(crate) area: Option<&'a Area>,
 	pub(crate) run: Option<Box<Run>>,
 }
 fn missing() -> Error {
@@ -157,12 +156,6 @@ impl ApprovalScope for Scope<'_> {
 			.await
 			.map_err(Into::into)
 	}
-	async fn active_run(&mut self) -> Result<Option<Uuid>> {
-		sessions::status(self.access, self.area.ok_or_else(missing)?)
-			.await
-			.map(|status| status.active_run_id)
-			.map_err(Into::into)
-	}
 	async fn require(&mut self, target: &Resource, action: &str) -> Result<()> {
 		self.access
 			.require(target, action)
@@ -239,12 +232,6 @@ impl ApprovalScope for Scope<'_> {
 			creation.state,
 			creation.data,
 			creation.expires,
-		)
-		.await?;
-		crate::apps::execution::observation::enqueue_capability(
-			self.access,
-			&record,
-			self.run.as_deref(),
 		)
 		.await?;
 		Ok(domain(record))

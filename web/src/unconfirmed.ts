@@ -10,7 +10,6 @@
 export type UnconfirmedKind =
   | "task"
   | "run"
-  | "artifact"
   | "event"
   | "message"
   | "human_request"

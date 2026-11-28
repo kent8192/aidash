@@ -109,7 +109,6 @@ async fn receiver_agent(p: &Pair) -> aidash_domain::registry::Entry {
 			.unwrap();
 	entry.id = "receiver-research".into();
 	entry.binding_normalization = None;
-	entry.config["max_steps"] = json!(200);
 	entry.config["remove_default"] = json!([]);
 	entry
 }
@@ -574,8 +573,61 @@ async fn the_home_checks_its_request_before_staging_a_message_without_a_delegati
 	assert_eq!(status, 200, "{staged}");
 	assert_eq!(staged["state"], "staging", "{staged}");
 	let (status, repeated) =
-		common::peer_request(&p.aa, (&p.b, "acme"), &destination, "", path, open).await;
+		common::peer_request(&p.aa, (&p.b, "acme"), &destination, "", path, open.clone()).await;
 	assert_eq!(status, 200, "{repeated}");
 	assert_eq!(repeated, staged);
+
+	use base64::{Engine as _, engine::general_purpose::STANDARD};
+	let (status, chunked) = common::peer_request(
+		&p.aa,
+		(&p.b, "acme"),
+		&destination,
+		"",
+		"/federation/v0.1/scoped/execution/deliveries/chunks",
+		json!({
+			"grant_id":p.grant, "admission_id":p.admission, "key":key,
+			"tool":"thread_message", "file":0, "offset":0, "data":STANDARD.encode(bytes)
+		}),
+	)
+	.await;
+	assert_eq!(status, 200, "{chunked}");
+
+	let path = "/federation/v0.1/scoped/execution/deliveries/commit";
+	let (status, committed) =
+		common::peer_request(&p.aa, (&p.b, "acme"), &destination, "", path, open.clone()).await;
+	assert_eq!(status, 200, "{committed}");
+	assert_eq!(committed["state"], "committed");
+	assert_eq!(
+		committed["receipt"]["files"][0]["digest"],
+		aidash_server::capabilities::objects::digest(bytes)
+	);
+	let (status, replayed) =
+		common::peer_request(&p.aa, (&p.b, "acme"), &destination, "", path, open).await;
+	assert_eq!(status, 200, "{replayed}");
+	assert_eq!(replayed, committed);
+	let delivery = staged["transfer_id"].as_str().unwrap();
+	let reserved: i64 = sqlx::query_scalar(
+		"SELECT (data->>'reserved')::bigint FROM core_records
+		  WHERE kind='transfer_in' AND data->'description'->>'transfer_id'=$1",
+	)
+	.bind(delivery)
+	.fetch_one(p.a.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	assert_eq!(reserved, 0);
+	let task = p.a.store.task(&TEST_FIXTURE, p.task).await.unwrap();
+	let snapshot =
+		p.a.store
+			.snapshot(&TEST_FIXTURE, task.thread_id)
+			.await
+			.unwrap();
+	assert_eq!(
+		snapshot
+			.messages
+			.iter()
+			.filter(|message| message.content == "Report from the remote Run")
+			.count(),
+		1
+	);
 	p.close().await;
 }

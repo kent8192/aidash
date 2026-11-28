@@ -2,7 +2,7 @@
 use super::access::Lease;
 use crate::{Error, Result as NativeResult};
 use aidash_application::{Result, ports::semantic::visibility::SemanticDisclosureScope};
-use aidash_domain::{Artifact, Message, policy::Resource};
+use aidash_domain::{Message, policy::Resource};
 use async_trait::async_trait;
 use reinhardt::query::{Expr, QueryStatementBuilder as _, SimpleExpr};
 use serde_json::Value;
@@ -54,35 +54,6 @@ impl SemanticDisclosureScope for Disclosure<'_, '_> {
 			.await
 			.map_err(Into::into)
 	}
-	async fn artifact(&mut self, id: Uuid, thread: Uuid) -> Result<Option<Artifact>> {
-		let result: NativeResult<Option<Artifact>> = async {
-			let row: Option<Artifact> = {
-				let query_bind_1 = &id;
-				let query_bind_2 = thread;
-				aidash_server::database::query_as(
-					&reinhardt::query::Query::select()
-						.expr(reinhardt::query::SimpleExpr::from(
-							reinhardt::query::Expr::col(reinhardt::query::ColumnRef::Asterisk),
-						))
-						.from(reinhardt::query::Alias::new("artifacts"))
-						.and_where(SimpleExpr::CustomWithExpr(
-							"(id = ? AND thread_id = ?)".to_owned(),
-							vec![
-								Expr::value(query_bind_1.to_owned()).into(),
-								Expr::value(query_bind_2.to_owned()).into(),
-							],
-						))
-						.lock(reinhardt::query::LockType::Share)
-						.to_string(reinhardt::query::PostgresQueryBuilder),
-				)
-				.fetch_optional(&mut **self.lease.tx())
-				.await?
-			};
-			Ok(row)
-		}
-		.await;
-		result.map_err(Into::into)
-	}
 	async fn message(&mut self, id: Uuid, thread: Uuid) -> Result<Option<Message>> {
 		let result: NativeResult<Option<Message>> = async {
 			let row: Option<Message> = {
@@ -113,16 +84,6 @@ impl SemanticDisclosureScope for Disclosure<'_, '_> {
 		result.map_err(Into::into)
 	}
 
-	async fn artifact_visible(&mut self, row: &Artifact) -> Result<bool> {
-		Box::pin(
-			self.lease
-				.access()
-				.ok_or(Error::Forbidden)?
-				.artifact_visible(row),
-		)
-		.await
-		.map_err(Into::into)
-	}
 	async fn message_visible(&mut self, row: &Message) -> Result<bool> {
 		Box::pin(
 			self.lease

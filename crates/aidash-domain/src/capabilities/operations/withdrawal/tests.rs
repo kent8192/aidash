@@ -92,25 +92,6 @@ fn an_uncertain_terminal_writer_reopens_only_its_own_area_after_stop(mut snapsho
 	snapshot.area_epoch += 1;
 	assert_eq!(snapshot.confirm_terminal_stop(true).area_state, None);
 }
-/// A withdrawn Check keeps the Area fenced only while its writer may run: it
-/// never exports `/work`, so a confirmed stop reopens the Area, including one
-/// an earlier unconfirmed pass fenced.
-#[rstest]
-#[case::confirmed_running_area(WriterStop::Confirmed, "running", Some("active"))]
-#[case::pending_stop(WriterStop::Unconfirmed, "running", Some("uncertain"))]
-#[case::confirmed_after_a_fenced_pass(WriterStop::Confirmed, "uncertain", Some("active"))]
-#[case::still_unconfirmed(WriterStop::Unconfirmed, "uncertain", None)]
-fn a_withdrawn_check_reopens_the_area_once_its_writer_stopped(
-	mut snapshot: Snapshot,
-	#[case] stop: WriterStop,
-	#[case] area: &str,
-	#[case] expected: Option<&str>,
-) {
-	snapshot.kind = super::super::VERIFICATION.into();
-	snapshot.state = "cancelling".into();
-	snapshot.area_state = area.into();
-	assert_eq!(snapshot.change(stop).area_state, expected);
-}
 #[rstest]
 fn a_withdrawn_shell_reopens_after_a_confirmed_stop(mut snapshot: Snapshot) {
 	snapshot.state = "cancelling".into();

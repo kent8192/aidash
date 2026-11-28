@@ -804,6 +804,7 @@ async fn unmapped_identity_stays_denied_until_deployment_administrator_approves_
 			&aidash_server::domain::NewTask {
 				title: "Managed run".into(),
 				description: "Browser Deployment Administrator control".into(),
+				goal: None,
 				requirements: json!({}),
 				dependencies: vec![],
 				parent_id: None,
@@ -824,7 +825,7 @@ async fn unmapped_identity_stays_denied_until_deployment_administrator_approves_
 		(
 			"agent",
 			"fixture-agent",
-			json!({"schema_version":1,"model":{"id":"fixture-model","version":"1.0.0"},"instructions":"Browser management fixture","bindings":[],"remove_default":[]}),
+			json!({"model":{"id":"fixture-model","version":"1.0.0"},"instructions":"Browser management fixture","bindings":[],"remove_default":[]}),
 		),
 	] {
 		agent = Some(federation

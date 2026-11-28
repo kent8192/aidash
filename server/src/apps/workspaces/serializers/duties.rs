@@ -34,6 +34,7 @@ pub(crate) struct DutyView {
 	pub mission: String,
 	/// The checklist its Agent follows on every Task.
 	pub procedure: String,
+	pub goal: Option<String>,
 	pub agent: EntityRef,
 	/// When it wakes by the clock, if it does.
 	pub trigger: Option<Trigger>,
@@ -98,6 +99,7 @@ impl DutyView {
 			title: definition.title,
 			mission: definition.mission,
 			procedure: definition.procedure,
+			goal: definition.goal,
 			agent: definition.agent,
 			trigger: definition.trigger,
 			approval_mode: definition.approval_mode,

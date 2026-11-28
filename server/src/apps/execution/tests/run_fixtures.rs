@@ -44,6 +44,7 @@ pub fn run() -> Run {
 		semantic_retry_cycle: 0,
 		pending_human_request_id: None,
 		stdio_session: None,
+		outside_versions: None,
 	}
 }
 

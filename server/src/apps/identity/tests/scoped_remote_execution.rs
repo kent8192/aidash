@@ -619,11 +619,10 @@ mod scoped_pair_composition {
 }
 use scoped_pair_composition::scoped_pair;
 
-/// A second admission for the same receiving Area waits without starting a
-/// Stint. Its Home sees one queue event and keeps renewing the live grant.
+/// The receiving Node starts a second Run while the first still holds its lease.
 #[rstest::rstest]
 #[tokio::test]
-async fn remote_run_waits_for_its_receiving_area(
+async fn remote_runs_can_start_concurrently_on_the_receiving_node(
 	#[with(false, false, false, false, (false, false, 32), false, false, false, true, true)]
 	#[future(awt)]
 	scoped_pair: Pair,
@@ -640,7 +639,7 @@ async fn remote_run_waits_for_its_receiving_area(
 		&p.token,
 		"POST",
 		&format!("/api/threads/{}/tasks", first.thread_id),
-		json!({"title":"Follow-up research","description":"Use the same receiving Area"}),
+		json!({"title":"Follow-up research","description":"Use the same Node Scratch Space"}),
 	)
 	.await;
 	assert_eq!(status, 200, "{task}");
@@ -665,71 +664,25 @@ async fn remote_run_waits_for_its_receiving_area(
 		federation: p.b.clone(),
 	};
 	assert!(worker.worker_once().await.unwrap());
-	let queued = p.b.store.run(&TEST_FIXTURE, second).await.unwrap();
-	assert_eq!(queued.error.as_deref(), Some("execution.queued"));
-	assert_eq!(queued.phase().as_str(), "READY");
-	assert!(queued.lease_owner.is_none());
-	assert!(queued.recovery.retry.is_none());
-	let stints = Query::select()
-		.expr(Expr::cust("COUNT(*)"))
-		.from(Alias::new("stints"))
-		.and_where(Expr::col("run_id").eq(Expr::value(second)))
-		.to_string(PostgresQueryBuilder);
-	let stint_count = async || -> i64 {
-		sqlx::query_scalar(&stints)
-			.fetch_one(p.b.store.pool.fixture_driver())
-			.await
-			.unwrap()
-	};
-	assert_eq!(stint_count().await, 0);
-	assert!(
-		p.requests.lock().await.is_empty(),
-		"no provider work while queued"
-	);
-	for _ in 0..2 {
-		assert!(
-			!worker.worker_once().await.unwrap(),
-			"the Area head still holds its turn"
-		);
-	}
-
-	let events = async || {
+	let started = p.b.store.run(&TEST_FIXTURE, second).await.unwrap();
+	assert_eq!(started.phase().as_str(), "THINKING", "{:?}", started.error);
+	assert!(started.error.is_none());
+	assert!(started.recovery.retry.is_none());
+	let stints: i64 = sqlx::query_scalar("SELECT count(*) FROM stints WHERE run_id = $1")
+		.bind(second)
+		.fetch_one(p.b.store.pool.fixture_driver())
+		.await
+		.unwrap();
+	assert_eq!(stints, 1);
+	assert_eq!(p.run().await.lease_owner, Some(lease));
+	assert_eq!(
 		p.a.store
-			.events(&TEST_FIXTURE, 0, Some(first.thread_id), 1000)
-			.await
-			.unwrap()
-			.into_iter()
-			.filter(|event| event.kind == "remote_run.queued")
-			.collect::<Vec<_>>()
-	};
-	let notices = tokio::time::timeout(std::time::Duration::from_secs(30), async {
-		loop {
-			let notices = events().await;
-			if !notices.is_empty() {
-				return notices;
-			}
-			tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-		}
-	})
-	.await
-	.expect("the Home records its queue notice");
-	assert_eq!(notices.len(), 1);
-	assert_eq!(notices[0].data["task_id"], json!(task));
-	assert_eq!(notices[0].data["remote_run_id"], json!(second));
-	assert_eq!(notices[0].data["runs_ahead"], 1);
-	assert!(
-		serde_json::from_value::<chrono::DateTime<chrono::Utc>>(
-			notices[0].data["queued_at"].clone()
-		)
-		.is_ok()
-	);
-	assert!(
-		!p.a.store
 			.task(&TEST_FIXTURE, task)
 			.await
 			.unwrap()
 			.status
-			.is_terminal()
+			.as_str(),
+		"RUNNING"
 	);
 	let due = chrono::Utc::now() + chrono::Duration::minutes(10);
 	let expiry = Query::update()
@@ -759,32 +712,6 @@ async fn remote_run_waits_for_its_receiving_area(
 		.release_lease(&TEST_FIXTURE, first.id, lease)
 		.await
 		.unwrap();
-	for _ in 0..10 {
-		if p.run().await.phase().is_terminal() {
-			break;
-		}
-		p.step().await;
-	}
-	assert_eq!(p.run().await.phase().as_str(), "COMPLETED");
-	for _ in 0..2 {
-		if worker.worker_once().await.unwrap() {
-			break;
-		}
-	}
-	let started = p.b.store.run(&TEST_FIXTURE, second).await.unwrap();
-	assert_eq!(started.phase().as_str(), "THINKING", "{:?}", started.error);
-	assert!(started.error.is_none());
-	assert_eq!(stint_count().await, 1);
-	assert_eq!(
-		p.a.store
-			.task(&TEST_FIXTURE, task)
-			.await
-			.unwrap()
-			.status
-			.as_str(),
-		"RUNNING"
-	);
-	assert_eq!(events().await.len(), 1);
 	p.close().await;
 }
 
@@ -2597,7 +2524,13 @@ async fn semantic_dependencies_hide_both_node_outputs_and_journals_after_source_
 		body.to_string().contains("Scoped remote progress"),
 		"{body}"
 	);
-	let artifact = body["artifacts"][0]["id"].clone();
+	let artifact = body["messages"]
+		.as_array()
+		.unwrap()
+		.iter()
+		.find(|message| message["completion"].is_object())
+		.unwrap()["id"]
+		.clone();
 	let receipt_path = format!("/api/tasks/{}/remote-grants/{}/semantic", p.task, p.grant);
 	let (status, receipt) = request(&p.aa, &p.token, "GET", &receipt_path, json!({})).await;
 	assert_eq!(status, 200, "{receipt}");
@@ -2647,7 +2580,7 @@ async fn semantic_dependencies_hide_both_node_outputs_and_journals_after_source_
 			.0,
 		403
 	);
-	let (status,body)=request(&p.aa,&p.token,"POST",&format!("/api/threads/{thread}/semantic/entries"),json!({"key":"derived-reingestion","expected_revision":0,"source":{"kind":"artifact","id":artifact},"metadata":{}})).await;
+	let (status,body)=request(&p.aa,&p.token,"POST",&format!("/api/threads/{thread}/semantic/entries"),json!({"key":"derived-reingestion","expected_revision":0,"source":{"kind":"message","id":artifact},"metadata":{}})).await;
 	assert_eq!(status, 403, "{body}");
 	let (status, body) = request(
 		&p.aa,
@@ -3311,8 +3244,24 @@ async fn scoped_remote_worker_finishes_at_home_and_retries_keep_one_execution(
 			.snapshot(&TEST_FIXTURE, task.thread_id)
 			.await
 			.unwrap();
-	assert_eq!(snapshot.artifacts.len(), 1);
-	assert_eq!(snapshot.artifacts[0].content, "Scoped remote result");
+	assert_eq!(
+		snapshot
+			.messages
+			.iter()
+			.filter(|message| message.completion.is_some())
+			.collect::<Vec<_>>()
+			.len(),
+		1
+	);
+	assert_eq!(
+		snapshot
+			.messages
+			.iter()
+			.filter(|message| message.completion.is_some())
+			.collect::<Vec<_>>()[0]
+			.content,
+		"Scoped remote result"
+	);
 	assert_eq!(
 		snapshot
 			.messages
@@ -3385,7 +3334,7 @@ async fn new_cross_node_scoped_transaction_is_accepted_now_that_parts_are_sealed
 		.and_where(SimpleExpr::CustomWithExpr("(id=?)".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into()])).to_string(PostgresQueryBuilder))
 		.execute(p.b.store.pool.fixture_driver()).await }.unwrap();
 	let mut manifest:Manifest=serde_json::from_value(json!({"id":Uuid::new_v4(),"coordinator":node_of(&p.a),"isolation":"serializable","deadline":chrono::Utc::now()+chrono::Duration::minutes(5),
-		"participants":[{"node_id":node_of(&p.a),"mutations":[{"kind":"complete_task","task_id":task.id,"expected_revision":task.revision,"artifact":{"kind":"text","name":"Answer","content":"Atomic remote answer"}}]},
+		"participants":[{"node_id":node_of(&p.a),"mutations":[{"kind":"complete_task","task_id":task.id,"expected_revision":task.revision,"text":"Atomic remote answer"}]},
 		{"node_id":node_of(&p.b),"mutations":[{"kind":"finish_run","run_id":run.id,"task_id":task.id,"expected_revision":run.revision}]}]})).unwrap();
 	manifest
 		.participants
@@ -3831,6 +3780,7 @@ async fn a_remote_grant_run_hands_its_child_on_to_a_third_node_through_its_home(
 			&NewTask {
 				title: "Multi-hop child".into(),
 				description: "Handed on to a third Node".into(),
+				goal: None,
 				requirements: json!({}),
 				dependencies: vec![],
 				parent_id: Some(p.task),
@@ -3926,6 +3876,7 @@ async fn a_hop_through_an_executor_the_home_does_not_know_is_refused(
 			&NewTask {
 				title: "Unknown executor child".into(),
 				description: "Handed on".into(),
+				goal: None,
 				requirements: json!({}),
 				dependencies: vec![],
 				parent_id: Some(p.task),
@@ -3995,6 +3946,7 @@ async fn a_remote_grant_runs_task_delegate_call_hands_its_child_to_its_home(
 			&NewTask {
 				title: "Tool hop child".into(),
 				description: "Handed on by the model".into(),
+				goal: None,
 				requirements: json!({}),
 				dependencies: vec![],
 				parent_id: Some(p.task),
@@ -4065,6 +4017,7 @@ async fn an_onward_hop_is_refused_when_an_agent_in_the_chain_may_not_delegate(
 			&NewTask {
 				title: "Chain child".into(),
 				description: "Handed on".into(),
+				goal: None,
 				requirements: json!({}),
 				dependencies: vec![],
 				parent_id: Some(p.task),
@@ -4137,6 +4090,7 @@ async fn a_repeated_onward_delegation_answers_its_first_delegation_after_the_tar
 			&NewTask {
 				title: "Replayed child".into(),
 				description: "Handed on once".into(),
+				goal: None,
 				requirements: json!({}),
 				dependencies: vec![],
 				parent_id: Some(p.task),
@@ -4272,6 +4226,7 @@ async fn a_hop_needs_both_lists_to_name_the_tool(#[future(awt)] scoped_pair: Pai
 			&NewTask {
 				title: "Unlisted hop child".into(),
 				description: "Not handed on".into(),
+				goal: None,
 				requirements: json!({}),
 				dependencies: vec![],
 				parent_id: Some(p.task),
@@ -4313,6 +4268,7 @@ async fn a_remote_grant_run_hands_its_child_back_to_its_homes_own_node(
 			&NewTask {
 				title: "Scoped delegated child".into(),
 				description: "Created under a remote run".into(),
+				goal: None,
 				requirements: json!({}),
 				dependencies: vec![],
 				parent_id: Some(p.task),
@@ -4523,7 +4479,10 @@ async fn a_changed_execution_boundary_stops_before_inference(
 			.snapshot(&TEST_FIXTURE, task.thread_id)
 			.await
 			.unwrap()
-			.artifacts
+			.messages
+			.iter()
+			.filter(|message| message.completion.is_some())
+			.collect::<Vec<_>>()
 			.is_empty()
 	);
 	p.close().await;
@@ -5725,7 +5684,14 @@ async fn revocation_during_remote_inference_discards_response_and_cancel_closes_
 			.snapshot(&TEST_FIXTURE, task.thread_id)
 			.await
 			.unwrap();
-	assert!(snapshot.artifacts.is_empty());
+	assert!(
+		snapshot
+			.messages
+			.iter()
+			.filter(|message| message.completion.is_some())
+			.collect::<Vec<_>>()
+			.is_empty()
+	);
 	assert!(snapshot.messages.is_empty());
 	let control = format!("/api/tasks/{}/remote-grants/{}/control", p.task, p.grant);
 	assert_eq!(
@@ -5810,7 +5776,10 @@ async fn peer_outage_and_both_node_restarts_reconcile_one_scoped_execution(
 			)
 			.await
 			.unwrap()
-			.artifacts
+			.messages
+			.iter()
+			.filter(|message| message.completion.is_some())
+			.collect::<Vec<_>>()
 			.is_empty()
 	);
 	restart_scoped_peers(
@@ -5936,7 +5905,15 @@ async fn peer_outage_and_both_node_restarts_reconcile_one_scoped_execution(
 			)
 			.await
 			.unwrap();
-	assert_eq!(snapshot.artifacts.len(), 1);
+	assert_eq!(
+		snapshot
+			.messages
+			.iter()
+			.filter(|message| message.completion.is_some())
+			.collect::<Vec<_>>()
+			.len(),
+		1
+	);
 	assert_eq!(
 		snapshot
 			.messages
@@ -6039,7 +6016,15 @@ async fn lost_home_effect_reply_reconciles_without_duplicate_effects(
 			)
 			.await
 			.unwrap();
-	assert_eq!(snapshot.artifacts.len(), 1);
+	assert_eq!(
+		snapshot
+			.messages
+			.iter()
+			.filter(|message| message.completion.is_some())
+			.collect::<Vec<_>>()
+			.len(),
+		1
+	);
 	assert_eq!(
 		snapshot
 			.messages
@@ -7197,8 +7182,13 @@ async fn deployment_administrator_content_views_cannot_bypass_both_node_subject_
 			.snapshot(&TEST_FIXTURE, task.thread_id)
 			.await
 			.unwrap();
-	let artifact = snapshot.artifacts.first().unwrap();
-	let (status,_)=request(&p.aa,&p.a.config.api_token,"POST",&format!("/api/threads/{}/semantic/entries",task.thread_id),json!({"key":"deployment-administrator-bypass","expected_revision":0,"source":{"kind":"artifact","id":artifact.id},"metadata":{}})).await;
+	let artifact = snapshot
+		.messages
+		.iter()
+		.filter(|message| message.completion.is_some())
+		.find(|message| message.completion.is_some())
+		.unwrap();
+	let (status,_)=request(&p.aa,&p.a.config.api_token,"POST",&format!("/api/threads/{}/semantic/entries",task.thread_id),json!({"key":"deployment-administrator-bypass","expected_revision":0,"source":{"kind":"message","id":artifact.id},"metadata":{}})).await;
 	assert_eq!(status, 403);
 	let (status, independent) = request(
 		&p.aa,
@@ -7499,8 +7489,13 @@ async fn a_cross_node_producer_cycle_terminates_and_still_requires_receiver_auth
 			.snapshot(&TEST_FIXTURE, task.thread_id)
 			.await
 			.unwrap();
-	let artifact = snapshot.artifacts.first().unwrap();
-	// Reproduce a persisted observation cycle: A's grant reads an A Artifact
+	let artifact = snapshot
+		.messages
+		.iter()
+		.filter(|message| message.completion.is_some())
+		.find(|message| message.completion.is_some())
+		.unwrap();
+	// Reproduce a persisted observation cycle: A's grant reads an A Completion Message
 	// produced by that grant's B Run. Such provenance must neither recurse over
 	// HTTP nor suppress the receiver's current-reader check.
 	{
@@ -7530,7 +7525,7 @@ async fn a_cross_node_producer_cycle_terminates_and_still_requires_receiver_auth
 							"(?)".to_owned(),
 							vec![Expr::value(query_bind_2.to_owned()).into()],
 						))
-						.expr(Expr::cust("'artifact'"))
+						.expr(Expr::cust("'message'"))
 						.expr(SimpleExpr::CustomWithExpr(
 							"(?)".to_owned(),
 							vec![Expr::value(query_bind_3.to_owned()).into()],
@@ -7582,7 +7577,13 @@ async fn a_cross_node_producer_cycle_terminates_and_still_requires_receiver_auth
 	)
 	.await;
 	assert_eq!(status, 200, "{body}");
-	assert!(body["artifacts"].as_array().unwrap().is_empty());
+	assert!(
+		!body["messages"]
+			.as_array()
+			.unwrap()
+			.iter()
+			.any(|message| message["completion"].is_object())
+	);
 	p.close().await;
 }
 
@@ -9776,11 +9777,9 @@ async fn node_deletion_blocks_cached_home_but_preserves_exact_finalization(
 	assert!(run.state.tool().unwrap().response.tool_calls.is_empty());
 	let home = Home::new(p.b.clone(), run.clone());
 	let task = home.task().await.unwrap();
-	let artifact = aidash_domain::ArtifactInput {
-		kind: "text".into(),
-		name: aidash_application::execution::result_artifact_name(&task.title),
-		content: json!(text),
-	};
+	let artifact =
+		aidash_domain::deliverable::Completion::new(task.id, &run.completion_key(), text, None);
+	run.context.final_completion = Some(Box::new(artifact.clone()));
 	if saved_failure {
 		run.state = aidash_domain::RunState::Waiting(Box::new(
 			aidash_domain::WaitingState::FailureDelivery {
@@ -9832,7 +9831,7 @@ async fn node_deletion_blocks_cached_home_but_preserves_exact_finalization(
 			.is_err()
 	);
 	let mut different = artifact.clone();
-	different.content = json!("a new answer");
+	different.text = "a new answer".into();
 	assert!(
 		home.complete(&format!("{}:complete", run.id), &different, &[])
 			.await
@@ -9922,9 +9921,12 @@ async fn node_deletion_blocks_cached_home_but_preserves_exact_finalization(
 			.unwrap();
 	assert_eq!(
 		snapshot
-			.artifacts
+			.messages
 			.iter()
-			.filter(|saved| saved.content == artifact.content)
+			.filter(|message| message.completion.is_some())
+			.collect::<Vec<_>>()
+			.iter()
+			.filter(|saved| saved.content == artifact.text)
 			.count(),
 		if saved_failure { 0 } else { 1 }
 	);
@@ -10214,7 +10216,7 @@ async fn node_deletion_retries_delegated_stop_until_receiver_and_home_settle(
 		async fn owned_file(f: &Federation, thread: Uuid) -> Uuid {
 			let area = Uuid::new_v4();
 			let file = Uuid::new_v4();
-			sqlx::query("INSERT INTO core_areas(id,tenant,home_node,agent_id,owner,thread_id) VALUES ($1,'acme',$2,'fixture','alice',$3)")
+			sqlx::query("INSERT INTO core_execution_scopes(id,tenant,home_node,agent_id,owner,thread_id) VALUES ($1,'acme',$2,'fixture','alice',$3)")
                 .bind(area).bind(node_of(f)).bind(thread).execute(f.store.pool.fixture_driver()).await.unwrap();
 			let digest = seed_fixture_blob(f, file).await;
 			sqlx::query("INSERT INTO core_objects(id,tenant,area_id,kind,digest,size) VALUES ($1,'acme',$2,'working',$3,4)")
@@ -11177,7 +11179,7 @@ async fn local_terminal_cancel_preserves_request_and_trust(
 		.thread_id;
 	let area = Uuid::new_v4();
 	let file = Uuid::new_v4();
-	sqlx::query("INSERT INTO core_areas(id,tenant,home_node,agent_id,owner,thread_id) VALUES($1,'acme',$2,'fixture','alice',$3)")
+	sqlx::query("INSERT INTO core_execution_scopes(id,tenant,home_node,agent_id,owner,thread_id) VALUES($1,'acme',$2,'fixture','alice',$3)")
 		.bind(area).bind(receiver.to_string()).bind(receiver_thread).execute(f.store.pool.fixture_driver()).await.unwrap();
 	let digest = seed_fixture_blob(&f, file).await;
 	sqlx::query("INSERT INTO core_objects(id,tenant,area_id,kind,digest,size) VALUES($1,'acme',$2,'working',$3,4)")
@@ -11362,6 +11364,7 @@ async fn a_run_on_another_node_abandons_the_unassigned_task_it_created(
 				&aidash_server::domain::NewTask {
 					title: "Remote subtask".into(),
 					description: "Nobody is given this".into(),
+					goal: None,
 					requirements: json!({}),
 					dependencies: vec![],
 					parent_id: Some(p.task),
@@ -11423,12 +11426,13 @@ async fn a_run_on_another_node_abandons_the_unassigned_task_it_created(
 			.snapshot(&TEST_FIXTURE, parent.thread_id)
 			.await
 			.unwrap();
-	assert!(snapshot.artifacts.iter().any(|artifact| {
-		artifact
-			.content
-			.as_str()
-			.is_some_and(|text| text.contains("Remote subtask"))
-	}));
+	assert!(
+		snapshot
+			.messages
+			.iter()
+			.any(|message| message.completion.is_some()
+				&& message.content.contains("Remote subtask"))
+	);
 	p.close().await;
 }
 

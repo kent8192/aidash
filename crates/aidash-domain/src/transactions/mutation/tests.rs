@@ -1,5 +1,4 @@
 use super::*;
-use crate::ArtifactInput;
 use crate::transactions::Mutation;
 use rstest::{fixture, rstest};
 use serde_json::json;
@@ -109,11 +108,7 @@ fn paired_completion_is_bound_to_the_same_task_and_participant() {
 	let complete = Mutation::CompleteTask {
 		task_id: task,
 		expected_revision: 0,
-		artifact: ArtifactInput {
-			kind: "text".into(),
-			name: "Answer".into(),
-			content: json!("Done"),
-		},
+		text: "Done".into(),
 	};
 	// The home Node sees the worker's claims, never its mutations.
 	let only_other = share(vec![finish(3, other)], vec![]);

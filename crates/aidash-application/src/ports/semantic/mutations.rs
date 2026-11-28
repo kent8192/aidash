@@ -25,6 +25,11 @@ pub trait SemanticConfigurationSession: Send {
 		Ok(())
 	}
 	async fn tenant(&mut self, thread: Uuid) -> Result<String>;
+	/// Fence the Tenant's active generation before locking its Thread.
+	async fn lock_active_embedding(
+		&mut self,
+		tenant: &str,
+	) -> Result<aidash_domain::semantic::EmbeddingConfig>;
 	async fn index(&mut self, thread: Uuid) -> Result<Option<Index>>;
 	async fn counts(&mut self, thread: Uuid) -> Result<(i64, usize)>;
 	async fn replace(

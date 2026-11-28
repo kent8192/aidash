@@ -5,7 +5,7 @@ use aidash_application::{
 	ports::semantic::{memory::SemanticMemoryReadSession, visibility::SemanticDisclosureScope},
 };
 use aidash_domain::{
-	Artifact, Message,
+	Message,
 	policy::Resource,
 	semantic::{Source, mutations::Entry},
 };
@@ -41,23 +41,8 @@ impl SemanticDisclosureScope for NativeReads<'_> {
 			.await
 			.map_err(Into::into)
 	}
-	async fn artifact(&mut self, id: Uuid, thread: Uuid) -> Result<Option<Artifact>> {
-		crate::apps::workspaces::models::Artifact::read_in(
-			self.access.tx.as_mut(),
-			id,
-			thread,
-			true,
-		)
-		.await
-		.map_err(Into::into)
-	}
 	async fn message(&mut self, id: Uuid, thread: Uuid) -> Result<Option<Message>> {
 		crate::apps::workspaces::models::Message::read_in(self.access.tx.as_mut(), id, thread, true)
-			.await
-			.map_err(Into::into)
-	}
-	async fn artifact_visible(&mut self, row: &Artifact) -> Result<bool> {
-		Box::pin(self.access.artifact_visible(row))
 			.await
 			.map_err(Into::into)
 	}

@@ -264,9 +264,15 @@ impl CreateScope for Creation<'_> {
 		let tenant = self.access.identity.tenant.clone();
 		let thread_id = Uuid::new_v4();
 		let title = input.title.as_deref().unwrap_or("Subnode");
-		let (scratch_space_id, created_by) =
+		let (_, created_by) =
 			subnode_scratch_binding(self.access, run, &self.federation.config.scratch_policy)
 				.await?;
+		let scratch_space_id = crate::apps::workspaces::repositories::scratch::default_space_id(
+			&mut **self.access.tx,
+			&tenant,
+			run.node.as_str(),
+		)
+		.await?;
 		let thread = self
 			.federation
 			.store
@@ -581,6 +587,7 @@ impl aidash_application::ports::subnodes::ManageScope for Management<'_> {
 		let input = aidash_domain::NewTask {
 			title: title.into(),
 			description: request.into(),
+			goal: None,
 			requirements: json!({}),
 			dependencies: vec![],
 			parent_id: None,

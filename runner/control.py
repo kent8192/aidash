@@ -54,34 +54,11 @@ class StartupIdentityMismatch(Exception):
     """A different sandbox or input was observed before dispatch."""
 
 
-class StoppedExportRefused(Exception):
-    def __init__(self, refusal):
-        self.refusal = refusal
-
-
 def scratch_resource_name(scratch_space_id):
     """Derive a stable Kubernetes DNS label without exposing the opaque ID."""
     if not isinstance(scratch_space_id, str) or not scratch_space_id:
         raise ValueError("scratch_space_id must be a nonempty string")
     return "scratch-" + hashlib.sha256(scratch_space_id.encode("utf-8")).hexdigest()[:48]
-
-
-# Guidance shown to the model when the collector refuses to export /work.
-EXPORT_GUIDANCE = {
-    'symlink': 'symlinks are not supported in /work: {path}; use npm install --no-bin-links, or keep dependency trees under /tmp',
-    'hard_link': 'hard-link aliases are not supported in /work: {path}; write independent copies, or keep dependency trees under /tmp',
-    'file_count': 'the working area holds at most {limit} files; remove files (first over the limit: {path}), or keep dependency trees under /tmp',
-    'bytes': 'the working area holds at most {limit} bytes; remove files (first over the limit: {path}), or keep large output under /tmp',
-    'unsafe_directory': 'unsupported directory in /work: {path}; rename or remove it, or use /tmp',
-    'unsafe_file': 'unsupported file in /work: {path}; keep only regular files with printable names, or use /tmp',
-}
-
-
-def export_error(refused):
-    """The typed tool error of an export refusal: final, never retried."""
-    message = EXPORT_GUIDANCE[refused['reason']].format(path=refused['path'], limit=refused['limit'])
-    return {'code': 'WORKING_EXPORT_REFUSED', 'message': message, 'details': refused, 'retryable': False}
-
 
 
 def termination_time(terminated, started_at, observed):
@@ -282,7 +259,7 @@ class Runner(AllocationJournal):
                     continue
                 if (record.get('status') != 'uncertain' or not record.get('termination_confirmed')
                         or record.get('output_harvested') or record.get('acknowledged')
-                        or record.get('request', {}).get('kind') not in ('shell', 'verify', 'python', 'journal')):
+                        or record.get('request', {}).get('kind') not in ('shell', 'python', 'journal')):
                     continue
                 operation = record['operation_id']
                 with self.lock:
@@ -301,12 +278,6 @@ class Runner(AllocationJournal):
                     if time.time() < since + self.config.get('uncertain_retention_seconds', DEFAULT_UNCERTAIN_RETENTION_SECONDS):
                         try:
                             self.harvest_stopped_output(record)
-                        except StoppedExportRefused as refusal:
-                            detail = export_error(refusal.refusal)
-                            record = self.update(operation, output_harvested=True, output_discarded=True,
-                                                 files=[], displays=[], error=detail)
-                            self.allocation_harvested(record)
-                            self.close_allocation(record)
                         except Exception:
                             try:
                                 pod = self.pod(record.get('pod_operation', operation))
@@ -315,7 +286,7 @@ class Runner(AllocationJournal):
                             if pod is not None:
                                 raise
                             self.update(operation, output_harvested=True, output_discarded=True, files=[],
-                                        error={'code':'SANDBOX_LOST', 'message':"Sandbox is gone; the command's file changes were not saved."})
+                                        error={'code':'SANDBOX_LOST', 'message':"Sandbox is gone and command output may be incomplete."})
                     else:
                         self.allocation_harvested(record)
                         self.close_allocation(record)
@@ -523,7 +494,7 @@ class Runner(AllocationJournal):
             try:
                 data = base64.b64decode(record['stdout'], validate=True)
                 if len(data) > 16384:
-                    data = data[-16384:] if record.get('request', {}).get('kind') == 'verify' else data[:16384]
+                    data = data[:16384]
                     public.update(stdout=base64.b64encode(data).decode(), truncated=True)
             except ValueError:
                 pass
@@ -548,11 +519,9 @@ class Runner(AllocationJournal):
         operation, area = identity(request["operation_id"]), identity(request["area_id"])
         if kind == "journal" and request.get("runner_instance") != self.instance:
             raise Rejected(409, "Journal Query runner instance changed")
-        # "verify" runs like "shell" but never exports /work: a Completion Gate
-        # Check must not change the Working Area it verifies. Agent commands,
-        # Python cells and Live previews run in Execution Pods through /v2 (#745);
-        # "shell" stays for Reference extraction.
-        if kind not in ("shell", "verify", "journal") or not isinstance(request["code"], str):
+        # Agent commands, Python cells and Live previews run in Execution Pods
+        # through /v2 (#745). "shell" stays for Reference extraction.
+        if kind not in ("shell", "journal") or not isinstance(request["code"], str):
             raise Rejected(400, "invalid command kind")
         if len(request["code"].encode()) > self.config.get("limits", {}).get("command_bytes", 65536) or len(request["files"]) > 4096:
             raise Rejected(400, "command or file limit")
@@ -1003,7 +972,7 @@ class Runner(AllocationJournal):
                         self.update(operation, status='uncertain', termination_confirmed=True, writer_frozen=False,
                                     output_harvested=True, output_discarded=True, files=[], finished_at=time.time(),
                                     uncertain_at=time.time(), error={'code':'SANDBOX_LOST',
-                                    'message':"Sandbox is gone; the command's file changes were not saved."})
+                                    'message':"Sandbox is gone and command output may be incomplete."})
                     return
                 except Exception as error:
                     record = self.get(operation)
@@ -1021,18 +990,15 @@ class Runner(AllocationJournal):
                     if stopped_at is not None:
                         if now >= stopped_at + STOP_WATCH_SECONDS:
                             self.update(operation, status='uncertain', uncertain_at=now, finished_at=now,
-                                        error={'code':'OUTPUT_LOST', 'message':"The command's file changes were not saved."})
+                                        error={'code':'OUTPUT_LOST', 'message':"Command output could not be recovered."})
                             return
                         try:
-                            collected = self.collect_stopped_output(record)
-                            if collected is None:
-                                return
-                            exported, captured = collected
+                            captured = self.collect_stopped_output(record)
                             saved = self.update(operation, status=record.get('pending_status', 'failed'), termination_confirmed=True,
-                                                writer_frozen=False, output_harvested=True, finished_at=now, files=exported['files'],
+                                                writer_frozen=False, output_harvested=True, finished_at=now, files=[],
                                                 stdout=captured['stdout'], truncated=True, exit_code=record.get('exit_code', 137),
                                                 deadline_expired=cell_timed_out(record),
-                                                error=record.get('pending_error') or {'code':'SESSION_LOST', 'message':'Interpreter stopped; its saved files were recovered.'})
+                                                error=record.get('pending_error') or {'code':'SESSION_LOST', 'message':'Interpreter stopped during the cell.'})
                             self.allocation_harvested(saved)
                             self.close_allocation(saved)
                             return
@@ -1271,67 +1237,23 @@ class Runner(AllocationJournal):
                                 output_fetched_at=time.time() if memory_live and 'stdout' in result else self.get(operation).get('output_fetched_at'),
                                 stdout=result.get('stdout', ''), displays=result.get('displays', []), truncated=result.get('truncated', False))
         deadline_expired = cell_timed_out(finishing)
-        exported = self.guard(record, "export", working_bytes=self.writable_bytes(record))
-        if 'refused' in exported:
-            if memory_live:
-                self.guard(record, 'terminate')
-            session = dict(session_id=record['session_id'], area_id=record['area_id'], operation_id=operation, kind=record['request']['kind'],
-                           pod_operation=pod_operation, pod_uid=record['pod_uid'], container_id=cid,
-                           status='stopped', last_used=time.time(), manifest=self.file_identity([f for f in record['request']['files'] if f['scope'] != 'journal']))
-            save(self.root / ('session-' + record['session_id'] + '.json'), session)
-            self.refuse_export(operation, exported['refused'], pod_operation, writer_frozen=False,
-                               stdout=result.get('stdout', ''), truncated=result.get('truncated', False),
-                               exit_code=result['exit_code'], deadline_expired=deadline_expired)
-            return
-        directory = self.root / (operation + ".files")
-        directory.mkdir(exist_ok=True, mode=0o700)
-        for file in exported["files"]:
-            digest = hashlib.sha256()
-            with (directory / file["object_id"]).open("wb") as output:
-                offset = 0
-                while offset < file["size"]:
-                    chunk = self.guard(record, "read", path=file["path"], offset=offset)
-                    data = base64.b64decode(chunk["data"], validate=True)
-                    if not data or offset + len(data) > file["size"]:
-                        raise RuntimeError("Python file changed after freeze")
-                    output.write(data)
-                    digest.update(data)
-                    offset += len(data)
-                output.flush()
-                os.fsync(output.fileno())
-            if digest.hexdigest() != file["digest"]:
-                raise RuntimeError("Python file integrity")
-        sync_directory(directory)
-        manifest = [f for f in record["request"]["files"] if f["scope"] not in ("working", "journal")]
-        manifest += [dict(f, scope="working") for f in exported["files"]]
+        manifest = [f for f in record["request"]["files"] if f["scope"] != "journal"]
         session = dict(session_id=record["session_id"], area_id=record["area_id"], operation_id=operation, kind=record["request"]["kind"],
                        pod_operation=pod_operation, pod_uid=record["pod_uid"], container_id=cid,
                        status="frozen" if memory_live else "stopped", last_used=time.time(), manifest=self.file_identity(manifest))
         save(self.root / ("session-" + record["session_id"] + ".json"), session)
         self.update(operation, status=result["status"], writer_frozen=memory_live, termination_confirmed=not memory_live,
                     output_harvested=True, finished_at=time.time(), stdout=result.get("stdout", ""), truncated=result.get("truncated", False),
-                    displays=result.get("displays", []), files=exported["files"], error=result.get("error"), exit_code=result["exit_code"],
+                    displays=result.get("displays", []), files=[], error=result.get("error"), exit_code=result["exit_code"],
                     deadline_expired=deadline_expired)
         self.allocation_harvested(self.get(operation), idle=memory_live)
         if not memory_live:
             self.close_allocation(record)
 
-    def refuse_export(self, operation, refused, _pod_operation, **fields):
-        """End an operation whose Working Area export was refused.
-
-        The refusal is certain and final: nothing is published, so the area
-        keeps its previous revision, and the export is never retried.
-        """
-        fields['output_harvested'] = True
-        record = self.update(operation, status='failed', termination_confirmed=True, finished_at=time.time(),
-                             error=export_error(refused), **fields)
-        self.allocation_harvested(record, idle=False)
-        self.close_allocation(record)
-
     def recover_stopped_shell(self, record):
         # Collector RPCs can fail before the Sentry's death becomes observable.
         # Wait for exact-bound physical stop evidence; never replay the command
-        # or export files while a writer may still be alive.
+        # while a writer may still be alive.
         deadline = time.monotonic() + 10
         while True:
             try:
@@ -1342,48 +1264,18 @@ class Runner(AllocationJournal):
                 if time.monotonic() >= deadline:
                     raise
                 time.sleep(.25)
-        collected = self.collect_stopped_output(record)
-        if collected is None:
-            return
-        exported, captured = collected
+        captured = self.collect_stopped_output(record)
         operation = record['operation_id']
         self.update(operation, status='failed', exit_code=137, termination_confirmed=True,
-                    output_harvested=True, stdout=captured['stdout'], truncated=True, files=exported['files'],
-                    finished_at=time.time(), error={'code':'SANDBOX_LOST', 'message':'Sandbox stopped; saved files were recovered and output may be incomplete.'})
+                    output_harvested=True, stdout=captured['stdout'], truncated=True, files=[],
+                    finished_at=time.time(), error={'code':'SANDBOX_LOST', 'message':'Sandbox stopped and command output may be incomplete.'})
         self.allocation_harvested(self.get(operation))
         self.close_allocation(record)
 
-    def collect_stopped_output(self, record, *, refuse=True):
-        exported = ({'files': []} if record['request']['kind'] == 'verify' else
-                    self.guard(record, 'export', working_bytes=self.writable_bytes(record)))
-        operation = record['operation_id']
-        if 'refused' in exported:
-            if not refuse:
-                raise StoppedExportRefused(exported['refused'])
-            captured = ({'stdout':record.get('stdout', '')} if record['request']['kind'] in ('python', 'journal') else self.guard(record, 'logs'))
-            self.refuse_export(operation, exported['refused'], operation, stdout=captured['stdout'], truncated=True, output_harvested=True,
-                               deadline_expired=record['request']['kind'] in ('python', 'journal') and cell_timed_out(record))
-            return
-        captured = ({'stdout':record.get('stdout', '')} if record['request']['kind'] in ('python', 'journal') else self.guard(record, 'logs'))
-        directory = self.root / (operation + '.files')
-        directory.mkdir(exist_ok=True, mode=0o700)
-        for file in exported['files']:
-            digest, offset = hashlib.sha256(), 0
-            with (directory / file['object_id']).open('wb') as output:
-                while offset < file['size']:
-                    chunk = self.guard(record, 'read', path=file['path'], offset=offset)
-                    data = base64.b64decode(chunk['data'], validate=True)
-                    if not data or offset + len(data) > file['size']:
-                        raise RuntimeError('stopped output length changed')
-                    output.write(data)
-                    digest.update(data)
-                    offset += len(data)
-                output.flush()
-                os.fsync(output.fileno())
-            if digest.hexdigest() != file['digest']:
-                raise RuntimeError('stopped output integrity')
-        sync_directory(directory)
-        return exported, captured
+    def collect_stopped_output(self, record):
+        if record['request']['kind'] in ('python', 'journal'):
+            return {'stdout': record.get('stdout', '')}
+        return self.guard(record, 'logs')
 
     def collector_holds_output(self, record):
         # A finished execution container leaves no runsc state for the guard to
@@ -1399,37 +1291,12 @@ class Runner(AllocationJournal):
         states = {s['name']: s.get('state', {}) for s in pod.get('status', {}).get('containerStatuses', [])}
         return 'terminated' in states.get('execution', {}) and 'running' in states.get('collector', {})
 
-    def read_collector_files(self, operation, exported):
-        directory = self.root / (operation + ".files")
-        directory.mkdir(exist_ok=True, mode=0o700)
-        for file in exported["files"]:
-            output_path = directory / file["object_id"]
-            digest = hashlib.sha256()
-            with output_path.open("wb") as output:
-                offset = 0
-                while offset < file["size"]:
-                    data = self.exec_collector(operation, ["read", file["path"], str(offset)]).stdout
-                    if not data or offset + len(data) > file["size"]:
-                        raise RuntimeError("output file length changed")
-                    output.write(data)
-                    digest.update(data)
-                    offset += len(data)
-                output.flush()
-                os.fsync(output.fileno())
-            if digest.hexdigest() != file["digest"]:
-                raise RuntimeError("output file digest changed")
-        sync_directory(directory)
-
     def collect_through_collector(self, record):
         operation, kind = record['operation_id'], record['request']['kind']
-        captured = json.loads(self.exec_collector(operation, ["logs", str(self.config["output_bytes"]), "final",
-                                                              *(["tail"] if kind == "verify" else [])]).stdout)
-        exported = ({"files": []} if kind == "verify" else
-                    json.loads(self.exec_collector(operation, ["export", str(self.writable_bytes(record))], timeout=120).stdout))
-        if 'refused' in exported:
-            raise StoppedExportRefused(exported['refused'])
-        self.read_collector_files(operation, exported)
-        return exported, captured
+        return json.loads(self.exec_collector(
+            operation, ["logs", str(self.config["output_bytes"]), "final",
+                        *(["tail"] if kind == "verify" else [])],
+        ).stdout)
 
     def harvest_stopped_output(self, record):
         # Never re-run code, reinterpret the semantic outcome, or substitute
@@ -1440,19 +1307,15 @@ class Runner(AllocationJournal):
         if self.collector_holds_output(record):
             try:
                 collected = self.collect_through_collector(record)
-            except StoppedExportRefused:
-                raise
             except Exception as error:
                 print(f"Collector harvest {record['operation_id']}: {error}", file=sys.stderr, flush=True)
         if collected is None:
             if self.guard(record, 'status').get('termination_confirmed') is not True:
                 raise Rejected(409, 'physical termination proof unavailable')
-            collected = self.collect_stopped_output(record, refuse=False)
-            if collected is None:
-                return
-        exported, captured = collected
+            collected = self.collect_stopped_output(record)
+        captured = collected
         self.update(record['operation_id'], output_harvested=True, stdout=captured['stdout'],
-                    files=exported['files'], displays=record.get('displays', []), truncated=True)
+                    files=[], displays=record.get('displays', []), truncated=True)
         self.allocation_harvested(self.get(record['operation_id']), idle=False)
         self.close_allocation(record)
 
@@ -1499,7 +1362,7 @@ class Runner(AllocationJournal):
                         self.update(operation, status='uncertain', termination_confirmed=True,
                                     output_harvested=True, output_discarded=True, files=[], finished_at=time.time(),
                                     uncertain_at=time.time(), error={'code':'SANDBOX_LOST',
-                                    'message':"Sandbox is gone; the command's file changes were not saved."})
+                                    'message':"Sandbox is gone and command output may be incomplete."})
                     return
                 except StartupIdentityMismatch as error:
                     if self.get(operation).get('executed'):
@@ -1519,7 +1382,7 @@ class Runner(AllocationJournal):
                     stopped_at = record.get('stop_confirmed_at')
                     if stopped_at is not None and now >= stopped_at + STOP_WATCH_SECONDS:
                         self.update(operation, status='uncertain', uncertain_at=now, finished_at=now,
-                                    error={'code':'OUTPUT_LOST', 'message':"The command's file changes were not saved."})
+                                    error={'code':'OUTPUT_LOST', 'message':"Command output could not be recovered."})
                         return
                     started = record.get('running_at') or record.get('started_at') or record.get('dispatch_at') or now
                     deadline = started + record['request']['seconds'] + 30
@@ -1638,14 +1501,10 @@ class Runner(AllocationJournal):
                     stamp = json.loads(self.exec_collector(operation, ["prepared"]).stdout).get("started_at")
                     if stamp is not None:
                         current = self.update(operation, started_at=stamp)
-                # A Check is charged until its command stopped, not until
-                # its output and files were harvested below.
                 if "running" not in collector:
                     self.recover_stopped_shell(self.get(operation))
                     break
-                # A Check keeps the end of its output, where the failure is.
-                captured = json.loads(self.exec_collector(operation, ["logs", str(self.config["output_bytes"]), "final",
-                                                                      *(["tail"] if record["request"]["kind"] == "verify" else [])]).stdout)
+                captured = json.loads(self.exec_collector(operation, ["logs", str(self.config["output_bytes"]), "final"]).stdout)
                 self.update(operation, stdout=captured['stdout'], truncated=captured['truncated'], output_fetched_at=time.time())
                 diagnostic = None
                 if terminal["exitCode"] != 0 and not captured["stdout"]:
@@ -1653,18 +1512,10 @@ class Runner(AllocationJournal):
                     # An empty log says nothing: the exit code stands alone.
                     if log.strip():
                         diagnostic = {"code": "COMMAND_FAILED", "message": log}
-                exported = ({"files": []} if record["request"]["kind"] == "verify" else
-                            json.loads(self.exec_collector(operation, ["export", str(self.writable_bytes(record))], timeout=120).stdout))
-                if 'refused' in exported:
-                    self.refuse_export(operation, exported['refused'], operation,
-                                       stdout=captured['stdout'], truncated=captured['truncated'],
-                                       deadline_expired=captured.get("deadline_expired"))
-                    break
-                self.read_collector_files(operation, exported)
                 self.update(operation, status="cancelled" if current["cancel_requested"] else
                             ("completed" if terminal["exitCode"] == 0 else "failed"),
                             output_harvested=True, finished_at=time.time(), stdout=captured["stdout"],
-                            truncated=captured["truncated"], files=exported["files"], error=diagnostic,
+                            truncated=captured["truncated"], files=[], error=diagnostic,
                             deadline_expired=captured.get("deadline_expired"))
                 self.allocation_harvested(self.get(operation))
                 # Retain the terminal journal and files before collecting Kubernetes resources.
@@ -1752,7 +1603,7 @@ class Handler(BaseHTTPRequestHandler):
                 '/v2/commands/submit', '/v2/commands/result', '/v2/commands/refuse', '/v2/commands/stop',
                 '/v2/runs/cancel', '/v2/runs/stop', '/v2/runs/stop_sessions',
                 '/v2/background/ended', '/v2/background/list', '/v2/background/stop', '/v2/background/log', '/v2/changes', '/v2/viewers/heartbeat',
-                '/v2/files/read', '/v2/files/search', '/v2/files/write', '/v2/files/manifest', '/v2/files/patch',
+                '/v2/files/read', '/v2/files/search', '/v2/files/write', '/v2/files/manifest', '/v2/files/patch', '/v2/files/clear-thread', '/v2/files/usage',
                 '/v2/previews/start', '/v2/previews/stop',
                 '/v2/mcp/start', '/v2/mcp/call', '/v2/mcp/stop', '/v2/mcp/stop_run',
                 '/v2/python/start', '/v2/python/cell', '/v2/python/stop'):
@@ -1795,6 +1646,8 @@ class Handler(BaseHTTPRequestHandler):
                 return runner.execution_pods.stop_background(request['operation_id'])
             if path == '/v2/background/log':
                 return runner.execution_pods.background_log(request)
+            if path == '/v2/files/clear-thread':
+                return runner.execution_pods.clear_thread(request)
             if path.startswith('/v2/files/'):
                 return runner.execution_pods.file_operation(path.rsplit('/', 1)[-1], request)
             if path == '/v2/previews/start':

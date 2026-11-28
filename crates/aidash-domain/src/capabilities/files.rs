@@ -31,37 +31,10 @@ pub enum Representation {
 #[serde(deny_unknown_fields)]
 pub struct FileRead {
 	pub file_id: Uuid,
-	/// Select an Area in a Subnode Thread created by this Run. A call saved in
-	/// a Run's `pending` before #1008 names it `workspace_id`.
-	#[serde(alias = "workspace_id")]
-	pub thread_id: Option<Uuid>,
-	pub area_id: Option<Uuid>,
 	pub representation: Representation,
 	pub offset: Option<usize>,
 	pub max_bytes: Option<usize>,
 	pub expected_digest: Option<String>,
-}
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Materialize {
-	pub idempotency_key: Uuid,
-	pub expected_revision: i64,
-	pub source: MaterializeSource,
-	pub path: String,
-}
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-pub enum MaterializeSource {
-	File {
-		file_id: Uuid,
-		expected_digest: String,
-	},
-	Message {
-		message_id: Uuid,
-	},
-	ReferenceText {
-		index: usize,
-	},
 }
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -95,6 +68,8 @@ pub enum ScratchScope {
 #[serde(deny_unknown_fields)]
 pub struct ScratchRead {
 	pub path: String,
+	pub representation: Option<Representation>,
+	pub expected_digest: Option<String>,
 	pub offset: Option<u64>,
 	pub max_bytes: Option<usize>,
 }
@@ -128,6 +103,20 @@ pub struct ScratchSave {
 	#[serde(default)]
 	pub sync: bool,
 	pub expected_revision: Option<i64>,
+}
+/// File selection shared by Scratch exports and Drive publication.
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct FileSelector {
+	pub paths: Vec<String>,
+	#[serde(default = "default_ignore_files")]
+	pub ignore_files: Vec<String>,
+	#[serde(default)]
+	pub exclude: Vec<String>,
+	#[serde(default)]
+	pub include: Vec<String>,
+	#[serde(default)]
+	pub sync: bool,
 }
 pub fn default_ignore_files() -> Vec<String> {
 	vec![".gitignore".into()]

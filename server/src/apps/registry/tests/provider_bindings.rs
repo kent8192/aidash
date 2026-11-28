@@ -13,7 +13,7 @@ use aidash_server::{
 use native_database::{DatabaseFixture, database};
 use reinhardt::db::orm::Model;
 use rstest::rstest;
-use serde_json::json;
+use serde_json::{Value, json};
 
 async fn registry(database: &DatabaseFixture) -> Registry {
 	let pool = database.connection.clone().into_postgres().unwrap();
@@ -191,7 +191,7 @@ async fn database_admits_personal_transports_and_rejects_invalid_connection_fiel
 
 #[rstest]
 #[tokio::test]
-async fn context_descriptors_remain_valid_alongside_native_memory_roles(
+async fn registry_accepts_context_sources_and_rejects_retired_memory_descriptors(
 	#[future] database: DatabaseFixture,
 ) {
 	let database = database.await;
@@ -206,13 +206,23 @@ async fn context_descriptors_remain_valid_alongside_native_memory_roles(
 			"config":{"schema_version":1,"source":{"adapter":adapter}}
 		}))
 		.unwrap();
-		let saved = registry
+		let result = registry
 			.register(
 				&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
 				entry.clone(),
 			)
-			.await
-			.unwrap();
+			.await;
+		if kind == "memory" {
+			let error = result.unwrap_err();
+			assert!(
+				error
+					.to_string()
+					.contains("unsupported Registry kind memory"),
+				"{error}"
+			);
+			continue;
+		}
+		let saved = result.unwrap();
 		assert_eq!(saved.config, entry.config);
 		assert_eq!(
 			registry
@@ -418,14 +428,19 @@ async fn owner_ddl(database: &DatabaseFixture, sql: &str) {
 
 #[rstest]
 #[tokio::test]
-async fn develop_system_definitions_and_removed_decider_survive_upgrade_seeding(
-	#[future] database: DatabaseFixture,
-) {
+async fn develop_system_tools_survive_upgrade_seeding(#[future] database: DatabaseFixture) {
 	let database = database.await;
 	let registry = registry(&database).await;
 	let fixture = include_str!("../../../../../tests/fixtures/builtin_seed_develop_7abdf5.json")
 		.replace("aidash://local", "aidash://node");
-	let entries: Vec<Entry> = serde_json::from_str(&fixture).unwrap();
+	let entries: Vec<Value> = serde_json::from_str(&fixture).unwrap();
+	let entries = entries.into_iter().filter_map(|mut entry| {
+		if entry["kind"] != "tool" {
+			return None;
+		}
+		entry.as_object_mut().unwrap().remove("skills");
+		Some(serde_json::from_value::<Entry>(entry).unwrap())
+	});
 	// The snapshot uses a test catalog for native file and Skill tools. Their
 	// native declarations did not change since develop; use the real catalog
 	// so the database contains every deployed operation.
@@ -472,11 +487,7 @@ async fn develop_system_definitions_and_removed_decider_survive_upgrade_seeding(
 			.tenant("acme")
 			.id(&entry.id)
 			.version(&entry.version)
-			.kind(if entry.kind == "decider" {
-				DefinitionKind::Decider
-			} else {
-				DefinitionKind::Tool
-			})
+			.kind(DefinitionKind::Tool)
 			.metadata(serde_json::to_value(entry).unwrap().into())
 			.finish();
 		Definition::objects()

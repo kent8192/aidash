@@ -1,7 +1,6 @@
 //! Scoped graph identity, bounds, and projection rules independent of transport.
 use crate::{
-	Artifact, Conversation, Error, Event, Result, RunControl, RunMetadata, Task, Thread,
-	registry::Entry,
+	Conversation, Error, Event, Result, RunControl, RunMetadata, Task, Thread, registry::Entry,
 };
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -38,7 +37,6 @@ pub struct GraphNode {
 	pub version: Option<String>,
 	pub thread_id: Option<Uuid>,
 	pub status: Option<String>,
-	pub goal_body: Option<String>,
 	pub at: Option<DateTime<Utc>>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
@@ -105,21 +103,19 @@ impl GraphOptions {
 				!matches!(
 					kind.as_str(),
 					"thread"
-						| "goal" | "task" | "run"
-						| "artifact" | "conversation"
-						| "agent" | "cluster"
-						| "tool" | "model" | "skill"
+						| "task" | "run" | "conversation"
+						| "agent" | "tool" | "model"
+						| "skill"
 				)
 			}) || self.relations.iter().any(|relation| {
 			!matches!(
 				relation.as_str(),
 				"contains"
-					| "goal" | "depends"
-					| "produces" | "executes"
-					| "tool" | "model"
-					| "skill" | "member"
-					| "hosts" | "coordinates"
-					| "participates"
+					| "depends" | "produces"
+					| "executes" | "tool"
+					| "model" | "skill"
+					| "member" | "hosts"
+					| "coordinates" | "participates"
 			)
 		}) {
 			return Err(Error::Invalid("invalid graph bounds".into()));
@@ -133,7 +129,6 @@ pub enum Candidate {
 	Thread(Thread),
 	Task(Task),
 	Run(RunMetadata),
-	Artifact(Artifact),
 	Conversation(Conversation),
 }
 pub fn resource_key(node: &str, kind: &str, id: impl ToString) -> String {
@@ -147,12 +142,9 @@ pub fn kind_allowed(kind: &str, options: &GraphOptions) -> bool {
 		return false;
 	}
 	match options.mode.as_str() {
-		"topology" => matches!(kind, "agent" | "cluster" | "tool"),
-		"execution" => matches!(kind, "goal" | "task" | "run" | "agent" | "artifact"),
-		"collaboration" => matches!(
-			kind,
-			"thread" | "goal" | "conversation" | "task" | "agent" | "cluster" | "artifact"
-		),
+		"topology" => matches!(kind, "agent" | "tool"),
+		"execution" => matches!(kind, "task" | "run" | "agent"),
+		"collaboration" => matches!(kind, "thread" | "conversation" | "task" | "agent"),
 		"knowledge" => kind != "run",
 		_ => true,
 	}
@@ -239,12 +231,6 @@ pub fn build_edges(
 					"activity",
 				);
 			}
-			Candidate::Artifact(artifact) => add(
-				resource_key(node, "task", artifact.task_id),
-				resource_key(node, "artifact", artifact.id),
-				"produces",
-				"activity",
-			),
 			Candidate::Conversation(conversation) => {
 				let id = resource_key(node, "conversation", conversation.id);
 				add(
@@ -253,7 +239,7 @@ pub fn build_edges(
 					"contains",
 					"configuration",
 				);
-				if matches!(conversation.target_kind.as_str(), "agent" | "cluster")
+				if conversation.target_kind == "agent"
 					&& let Some((target, version)) = conversation.target.rsplit_once('@')
 				{
 					add(
@@ -266,22 +252,11 @@ pub fn build_edges(
 			}
 			Candidate::Registry(entry) => {
 				let id = entity_key(node, &entry.kind, &entry.id, &entry.version);
-				if entry.kind == "cluster"
-					&& let Some((target, version)) = registry_ref(&entry.config["coordinator"])
-				{
-					add(
-						id.clone(),
-						entity_key(node, "agent", target, version),
-						"coordinates",
-						"configuration",
-					);
-				}
 				if entry.kind == "agent" {
 					for (kind, field, relation) in [
 						("tool", "tools", "tool"),
 						("model", "model", "model"),
 						("skill", "skills", "skill"),
-						("cluster", "cluster", "member"),
 					] {
 						let value = &entry.config[field];
 						let refs = value
@@ -320,9 +295,6 @@ pub fn event_reference(event: &Event, node: &str) -> Option<String> {
 			.or_else(|| id(&data["id"]))
 			.map(|id| resource_key(node, "task", id));
 	}
-	if event.kind.starts_with("artifact.") {
-		return id(&data["id"]).map(|id| resource_key(node, "artifact", id));
-	}
 	if event.kind.starts_with("conversation.") {
 		return id(&data["id"]).map(|id| resource_key(node, "conversation", id));
 	}
@@ -338,7 +310,6 @@ impl Candidate {
 			Self::Thread(_) => "thread",
 			Self::Task(_) => "task",
 			Self::Run(_) => "run",
-			Self::Artifact(_) => "artifact",
 			Self::Conversation(_) => "conversation",
 		}
 	}
@@ -355,7 +326,6 @@ impl Candidate {
 				version: Some(entry.version.clone()),
 				thread_id: None,
 				status: None,
-				goal_body: None,
 				at: None,
 			}),
 			Self::Thread(thread) => {
@@ -369,7 +339,6 @@ impl Candidate {
 						version: None,
 						thread_id: Some(thread.id),
 						status: None,
-						goal_body: None,
 						at: Some(thread.created_at),
 					});
 				}
@@ -383,7 +352,6 @@ impl Candidate {
 				version: None,
 				thread_id: Some(task.thread_id),
 				status: Some(task.status.to_string()),
-				goal_body: None,
 				at: Some(task.created_at),
 			}),
 			Self::Run(run) => nodes.push(GraphNode {
@@ -399,20 +367,7 @@ impl Candidate {
 				} else {
 					run.phase().to_string()
 				}),
-				goal_body: None,
 				at: Some(run.updated_at),
-			}),
-			Self::Artifact(artifact) => nodes.push(GraphNode {
-				id: resource_key(node_id, "artifact", artifact.id),
-				node_id: node_id.to_owned(),
-				kind: "artifact".into(),
-				name: name(&artifact.name),
-				resource_id: Some(artifact.id.to_string()),
-				version: None,
-				thread_id: Some(artifact.thread_id),
-				status: Some(artifact.kind.clone()),
-				goal_body: None,
-				at: Some(artifact.created_at),
 			}),
 			Self::Conversation(conversation) => nodes.push(GraphNode {
 				id: resource_key(node_id, "conversation", conversation.id),
@@ -423,7 +378,6 @@ impl Candidate {
 				version: None,
 				thread_id: Some(conversation.thread_id),
 				status: None,
-				goal_body: None,
 				at: Some(conversation.created_at),
 			}),
 		}
@@ -437,9 +391,7 @@ pub fn valid_remote_page(page: &GraphPage, node_id: &str, options: &GraphOptions
 				|| entry.count == 0
 				|| !matches!(
 					entry.kind,
-					crate::unconfirmed::Kind::Task
-						| crate::unconfirmed::Kind::Run
-						| crate::unconfirmed::Kind::Artifact
+					crate::unconfirmed::Kind::Task | crate::unconfirmed::Kind::Run
 				) || options
 				.scope_thread
 				.is_some_and(|thread| thread != entry.thread_id)
@@ -466,14 +418,10 @@ pub fn valid_remote_page(page: &GraphPage, node_id: &str, options: &GraphOptions
 	}
 	let mut ids = BTreeSet::new();
 	for node in &page.nodes {
-		let registry = matches!(
-			node.kind.as_str(),
-			"agent" | "cluster" | "tool" | "model" | "skill"
-		);
+		let registry = matches!(node.kind.as_str(), "agent" | "tool" | "model" | "skill");
 		if node.node_id != node_id
 			|| !kind_allowed(&node.kind, options)
 			|| node.resource_id.as_deref().is_none_or(str::is_empty)
-			|| node.goal_body.is_some() && node.kind != "goal"
 			|| registry != node.version.is_some()
 		{
 			return false;

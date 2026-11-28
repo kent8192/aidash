@@ -106,7 +106,7 @@ async fn idle_heap_is_physically_stopped_without_deleting_saved_files(
 }
 #[rstest::rstest]
 #[tokio::test]
-async fn python_timeout_exports_prior_files_and_requires_new_memory_ack(
+async fn python_timeout_preserves_scratch_files_and_requires_new_memory_ack(
 	#[future]
 	#[from(running_runtime)]
 	runtime_fixture: (CoreFixture, aidash_server::domain::Run, CapabilityWorker),
@@ -131,20 +131,14 @@ async fn python_timeout_exports_prior_files_and_requires_new_memory_ack(
 	let (_, area) = common::get(
 		&c.app,
 		&c.token,
-		&format!("/api/executions/{}/working-area", run.id),
+		&format!("/api/executions/{}/execution-scope", run.id),
 	)
 	.await;
-	let file = area["manifest"]
-		.as_array()
-		.unwrap()
-		.iter()
-		.find(|f| f["path"] == "before-timeout.txt")
-		.expect("files written before timeout must remain visible");
 	let (status, content) = common::post(
 		&c.app,
 		&c.token,
 		&format!("/api/executions/{}/files/read", run.id),
-		json!({"file_id":file["file_id"],"representation":"text"}),
+		json!({"path":format!("threads/{}/before-timeout.txt",run.thread_id),"representation":"text"}),
 	)
 	.await;
 	assert_eq!(status, 200, "{content}");
@@ -199,16 +193,6 @@ async fn shell_output_saturation_is_bounded_and_control_stays_usable(
 		);
 		tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 	}
-	let (status, area) = common::get(
-		&c.app,
-		&c.token,
-		&format!("/api/executions/{}/working-area", run.id),
-	)
-	.await;
-	assert_eq!(status, 200, "{area}");
-	let (status,queue)=common::post(&c.app, &c.token, &format!("/api/working-areas/{}/queue",area["id"].as_str().unwrap()), json!({"idempotency_key":Uuid::new_v4(),"agent_version":"1.1.0","title":"Next turn","description":"Controls remain available while stdout floods"})).await;
-	assert_eq!(status, 200, "{queue}");
-	assert_eq!(queue["queue"].as_array().unwrap().len(), 2);
 	let (status, result) = common::post(
 		&c.app,
 		&c.token,
@@ -300,9 +284,6 @@ async fn disabled_admission_stops_live_work_and_keeps_files_for_explicit_restart
 	let (status, denied) = common::post(&c.app, &c.token, &path, json!({"idempotency_key":Uuid::new_v4(),"expected_revision":first["revision"],"code":"raise RuntimeError('disabled work ran')"})).await;
 	assert_eq!(status, 409, "{denied}");
 	assert_eq!(denied["error"]["code"], "CAPABILITIES_DISABLED");
-	let (status, inventory) = common::get(&c.app, &c.token, "/api/working-files").await;
-	assert_eq!(status, 200, "{inventory}");
-	assert_eq!(inventory["items"][0]["files"], 1);
 	stop.send(true).unwrap();
 	worker.await.unwrap().unwrap();
 	c.f.store.capabilities = Runtime::new(enabled).unwrap();
@@ -370,91 +351,6 @@ async fn profile_drift_still_cancels_an_active_operation(
 	)
 	.await;
 	assert_eq!(cancelled["termination_confirmed"], true, "{cancelled}");
-	stop.send(true).unwrap();
-	worker.await.unwrap().unwrap();
-	c.close().await;
-}
-
-#[rstest::rstest]
-#[tokio::test]
-async fn cleanup_waits_for_proven_shell_stop_and_fences_delayed_writes(
-	#[future]
-	#[from(running_runtime)]
-	runtime_fixture: (CoreFixture, aidash_server::domain::Run, CapabilityWorker),
-) {
-	let (c, run, worker) = Box::pin(runtime_fixture).await;
-	let stop = worker.stop.clone();
-	let (status,op)=common::post(&c.app, &c.token, &format!("/api/executions/{}/shell",run.id), json!({"idempotency_key":Uuid::new_v4(),"expected_revision":1,"command":"printf saved > live.txt; printf ready; sleep 30; printf forbidden > late.txt"})).await;
-	assert_eq!(status, 200, "{op}");
-	let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(40);
-	loop {
-		let running = operation_until(&c, run.id, "shell", &op["operation_id"], &["running"]).await;
-		if running["output"].as_str().unwrap().contains("ready") {
-			break;
-		}
-		assert!(
-			tokio::time::Instant::now() < deadline,
-			"Shell did not create its initial file"
-		);
-		tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-	}
-	let cleanup = format!(
-		"/api/working-areas/{}/cleanup",
-		op["area_id"].as_str().unwrap()
-	);
-	let (status, blocked) = common::post(
-		&c.app,
-		&c.token,
-		&cleanup,
-		json!({"idempotency_key":Uuid::new_v4(),"expected_revision":1,"choice":"recoverable"}),
-	)
-	.await;
-	assert_eq!(status, 409, "{blocked}");
-	assert_eq!(blocked["error"]["code"], "AREA_BUSY");
-	let (status, cancel) = common::post(
-		&c.app,
-		&c.token,
-		&format!("/api/executions/{}/shell/cancel", run.id),
-		json!({"operation_id":op["operation_id"]}),
-	)
-	.await;
-	assert_eq!(status, 200, "{cancel}");
-	let cancelled = operation_until(&c, run.id, "shell", &op["operation_id"], &["cancelled"]).await;
-	assert_eq!(cancelled["termination_confirmed"], true);
-	let (_, area) = common::get(
-		&c.app,
-		&c.token,
-		&format!("/api/executions/{}/working-area", run.id),
-	)
-	.await;
-	assert_eq!(
-		area["manifest"].as_array().unwrap().len(),
-		1,
-		"no delayed write: {area}"
-	);
-	assert_eq!(area["manifest"][0]["path"], "live.txt");
-	let (status,cleaned)=common::post(&c.app, &c.token, &cleanup, json!({"idempotency_key":Uuid::new_v4(),"expected_revision":area["revision"],"choice":"recoverable"})).await;
-	assert_eq!(status, 200, "{cleaned}");
-	let (status,stale)=common::post(&c.app, &c.token, &format!("/api/executions/{}/patch",run.id), json!({"idempotency_key":Uuid::new_v4(),"expected_revision":area["revision"],"preconditions":{"late.txt":null},"patch":"*** Begin Patch\n*** Add File: late.txt\n+must not recreate deleted generation\n*** End Patch"})).await;
-	assert!(status >= 400, "stale generation must not write: {stale}");
-	let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(15);
-	loop {
-		let (status, result) = common::get(
-			&c.app,
-			&c.token,
-			&format!(
-				"/api/file-cleanups/{}",
-				cleaned["operation_id"].as_str().unwrap()
-			),
-		)
-		.await;
-		assert_eq!(status, 200, "{result}");
-		if result["state"] == "recoverable" {
-			break;
-		}
-		assert!(tokio::time::Instant::now() < deadline, "{result}");
-		tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-	}
 	stop.send(true).unwrap();
 	worker.await.unwrap().unwrap();
 	c.close().await;

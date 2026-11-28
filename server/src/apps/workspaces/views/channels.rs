@@ -70,8 +70,28 @@ pub async fn channel_attachment_download(
 ) -> ViewResult<Response> {
 	let result = async {
 		let (attachment, content) = channels.download(thread, attachment).await?;
-		Ok(Response::ok()
-			.with_body(content)
+		use crate::apps::workspaces::services::attachments::Download;
+		let response = match content {
+			Download::Buffered(bytes) => Response::ok().with_body(bytes),
+			Download::Blob(mut reader) => {
+				use tokio::io::AsyncReadExt as _;
+				let mut remaining = u64::try_from(attachment.size_bytes)
+					.map_err(|_| crate::Error::Conflict("OBJECT_INTEGRITY".into()))?;
+				let stream: reinhardt::http::StreamBody = Box::pin(async_stream::try_stream! {
+				  while remaining > 0 {
+					let length = remaining.min(64 * 1024) as usize;
+					let mut buffer = vec![0; length];
+					reader.read_exact(&mut buffer).await?;
+					remaining -= length as u64;
+					yield bytes::Bytes::from(buffer);
+				  }
+				});
+				Response::ok()
+					.with_stream(stream)
+					.with_header("Content-Length", &attachment.size_bytes.to_string())
+			}
+		};
+		Ok(response
 			.with_header("Content-Type", &attachment.media_type)
 			.with_header(
 				"Content-Disposition",

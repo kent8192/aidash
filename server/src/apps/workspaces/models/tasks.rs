@@ -28,6 +28,12 @@ pub struct Task {
 	pub title: String,
 	#[field(field_type = "text")]
 	pub description: String,
+	#[field(field_type = "text", null = true)]
+	pub goal: Option<String>,
+	#[field(null = true)]
+	pub goal_history: Option<Json<Value>>,
+	#[field(null = true)]
+	pub goal_verdicts: Option<Json<Value>>,
 	#[field(field_type = "text", max_length = 64)]
 	pub status: TaskStatus,
 	#[field]

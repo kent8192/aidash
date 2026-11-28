@@ -13,7 +13,7 @@ fn content(
 			.collect::<Vec<_>>()
 	};
 	json!({
-		"goal":"ship the parser",
+		"intent":"ship the parser",
 		"constraints":items(constraints),
 		"decisions":["use nom"],
 		"unresolved":items(unresolved),
@@ -454,10 +454,10 @@ fn decisions_and_artifacts_survive_later_merges() {
 	let second = adopted(&edit(&revised), Some(&first), &[written]);
 	assert_eq!(second.content.artifacts[0].revision, "r2");
 	assert_eq!(second.content.decisions, ["use nom"]);
-	// The accumulated goal is copied verbatim by every later merge.
+	// The accumulated intent is copied verbatim by every later merge.
 	assert_eq!(
 		SummaryContent::parse(
-			&edit(&|value| value["goal"] = json!("ship a different parser")),
+			&edit(&|value| value["intent"] = json!("ship a different parser")),
 			Some(&second),
 			&[tool(7)],
 			4096
@@ -633,7 +633,7 @@ fn draft_copies_source_words_and_outcomes_and_drops_unknown_labels() {
 	let content =
 		SummaryContent::from_draft(&draft, "Ship the parser", None, &[human, result], 4096)
 			.unwrap();
-	assert_eq!(content.goal, "Ship the parser");
+	assert_eq!(content.intent, "Ship the parser");
 	assert!(content.constraints.iter().any(|item| item.text == "agreed"));
 	assert!(
 		content
@@ -672,17 +672,17 @@ fn draft_rejects_a_missing_previous_item() {
 #[test]
 fn draft_can_extend_a_previous_summary_near_the_model_output_limit() {
 	let mut first = adopted(&content(&[], &[], &[]), None, &[tool(2)]);
-	first.content.goal = "g".repeat(700);
+	first.content.intent = "g".repeat(700);
 	let draft = json!({"retained":SummaryContent::retained_ids(Some(&first)),"labels":[],"prose":"d".repeat(400)}).to_string();
 	let result = SummaryContent::from_draft(&draft, "ignored", Some(&first), &[], 1024).unwrap();
-	assert_eq!(result.goal, first.content.goal);
+	assert_eq!(result.intent, first.content.intent);
 	assert!(result.decisions.iter().any(|item| item == &"d".repeat(400)));
 }
 
 #[test]
 fn history_budget_evicts_oldest_decisions_then_verification_but_keeps_required_state() {
 	let mut summary = SummaryContent {
-		goal: "日本語の目的".into(),
+		intent: "日本語の目的".into(),
 		constraints: vec![SummaryItem {
 			id: "c".into(),
 			text: "keep constraint".into(),

@@ -74,9 +74,7 @@ pub struct Area {
 	pub revision: i64,
 	pub epoch: i64,
 	pub state: String,
-	pub manifest: Value,
 	pub constraints: Value,
-	pub next_sequence: i64,
 }
 impl crate::database::native::Decode for Area {
 	fn decode(row: &crate::database::native::Row, _: &[&str]) -> crate::Result<Self> {
@@ -92,10 +90,6 @@ impl crate::database::native::Decode for Area {
 			epoch: row.try_get("epoch")?,
 			state: row.try_get("state")?,
 			constraints: row.try_get("constraints")?,
-			next_sequence: row.try_get("next_sequence")?,
-			manifest: row
-				.try_get::<Option<Value>>("manifest")?
-				.ok_or_else(|| crate::Error::Invalid("missing area manifest revision".into()))?,
 		})
 	}
 }
@@ -124,7 +118,6 @@ pub enum CapabilityResult {
 	Patch(PatchResult),
 	Skills(SkillListResult),
 	Skill(SkillReadResult),
-	Share(ShareResult),
 	Outbound(OutboundResult),
 	/// Scratch Space reads and searches, saves, copies and Background
 	/// processes (#745). Last, so it only takes what no other result shape fits.
@@ -239,27 +232,6 @@ pub struct SkillReadResult {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema, reinhardt::Validate)]
-pub struct FileReceipt {
-	pub id: Uuid,
-	pub node_id: Option<String>,
-	pub area_id: Uuid,
-	pub revision: i64,
-	pub manifest_digest: Option<String>,
-	pub files: Vec<FileEntry>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema, reinhardt::Validate)]
-pub struct ShareResult {
-	pub snapshot_id: Option<Uuid>,
-	pub transfer_id: Uuid,
-	pub manifest_digest: String,
-	pub recipient: super::sharing::Recipient,
-	pub receipt: Option<FileReceipt>,
-	pub error: Option<super::errors::CapabilityError>,
-	pub effects_may_have_occurred: Option<bool>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema, reinhardt::Validate)]
 pub struct OutboundResult {
 	pub approval_id: Uuid,
 	pub approval_state: String,
@@ -286,33 +258,6 @@ pub struct AreaPage {
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema, reinhardt::Validate)]
 #[serde(deny_unknown_fields)]
-pub struct Materialize {
-	pub idempotency_key: Uuid,
-	#[validate(range(min = 0))]
-	/// The working area revision: take it from the previous result's `revision`; a new area starts at 1.
-	pub expected_revision: i64,
-	pub source: MaterializeSource,
-	#[validate(length(min = 1, max = 4096))]
-	pub path: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-pub enum MaterializeSource {
-	File {
-		file_id: Uuid,
-		expected_digest: String,
-	},
-	Message {
-		message_id: Uuid,
-	},
-	ReferenceText {
-		index: usize,
-	},
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema, reinhardt::Validate)]
-#[serde(deny_unknown_fields)]
 pub struct Enqueue {
 	pub idempotency_key: Uuid,
 	#[validate(length(min = 1, max = 128))]
@@ -329,26 +274,11 @@ pub struct Enqueue {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema, reinhardt::Validate)]
-pub struct SessionRun {
-	pub run_id: Uuid,
-	pub sequence: i64,
-	pub phase: String,
-	pub control: String,
-}
-crate::native_record!(SessionRun {
-	run_id,
-	sequence,
-	phase,
-	control
-});
-
-#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema, reinhardt::Validate)]
 pub struct SessionStatus {
 	pub area_id: Uuid,
 	pub last_run_id: Option<Uuid>,
 	pub last_agent_version: Option<String>,
 	pub active_run_id: Option<Uuid>,
-	pub queue: Vec<SessionRun>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema, reinhardt::Validate)]
@@ -407,11 +337,6 @@ pub struct LivePreviewStop {}
 #[serde(deny_unknown_fields)]
 pub struct Patch {
 	pub idempotency_key: Uuid,
-	#[validate(range(min = 0))]
-	/// The working area revision: take it from the previous result's `revision`; a new area starts at 1.
-	pub expected_revision: i64,
-	/// Every changed path must have a SHA-256 digest, or null to require absence.
-	pub preconditions: std::collections::BTreeMap<String, Option<String>>,
 	pub patch: String,
 }
 
@@ -465,17 +390,16 @@ pub struct OperationResult {
 
 use uuid::Uuid;
 
-/// `file_read` as Agents call it: a Working Area or Reference file by
-/// `file_id`, or a Scratch Space file by `path` (#745).
-#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+/// Read a Reference file by `file_id` or a Scratch Space file by `path`.
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema, reinhardt::Validate)]
 #[serde(deny_unknown_fields)]
 pub struct ToolFileRead {
-	/// A Working Area or Reference file. Leave it out to read `path`.
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub drive: Option<aidash_domain::drive::FileLocation>,
+	/// A Reference file. Leave it out to read `path`.
 	pub file_id: Option<Uuid>,
 	/// A file in the Scratch Space, relative to its root. Leave out `file_id`.
 	pub path: Option<String>,
-	pub thread_id: Option<Uuid>,
-	pub area_id: Option<Uuid>,
 	pub representation: Option<Representation>,
 	pub offset: Option<usize>,
 	pub max_bytes: Option<usize>,
@@ -486,17 +410,17 @@ pub struct ToolFileRead {
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ToolFileScope {
-	Working,
+	Drive,
 	References,
-	Received,
 	Scratch,
 }
 
 /// `file_search` as Agents call it (#745).
-#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema, reinhardt::Validate)]
 #[serde(deny_unknown_fields)]
 pub struct ToolFileSearch {
 	/// May be empty in `path` mode, which then lists every path in the scope.
+	#[validate(length(max = 1024))]
 	pub query: String,
 	pub mode: SearchMode,
 	pub scope: ToolFileScope,
@@ -505,46 +429,6 @@ pub struct ToolFileSearch {
 	pub glob: Option<String>,
 	pub cursor: Option<String>,
 	pub limit: Option<usize>,
-}
-
-/// Register Scratch Space files in the Working Area (#745).
-#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct FileSave {
-	pub idempotency_key: Uuid,
-	/// Files or directories relative to the Scratch Space root; `.` is all of it.
-	pub paths: Vec<String>,
-	/// Files whose gitignore rules apply in each directory. Defaults to `.gitignore`.
-	pub ignore_files: Option<Vec<String>>,
-	/// Patterns to leave out, beating `ignore_files`.
-	pub exclude: Option<Vec<String>>,
-	/// Patterns to save even when excluded or ignored.
-	pub include: Option<Vec<String>>,
-	/// Also remove registered files under `paths` that the selection no longer holds.
-	pub sync: Option<bool>,
-	/// The working area revision from the previous result, to refuse a save over a newer one.
-	pub expected_revision: Option<i64>,
-}
-
-/// Remove registered files, or everything under a directory, from the Working Area.
-#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct FileRemove {
-	pub idempotency_key: Uuid,
-	pub paths: Vec<String>,
-	/// The working area revision from the previous result.
-	pub expected_revision: Option<i64>,
-}
-
-/// Copy registered Working Area files into the Scratch Space (#745).
-#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct FileCopy {
-	pub idempotency_key: Uuid,
-	/// Registered files or directories.
-	pub paths: Vec<String>,
-	/// A Scratch Space directory to copy under; by default each file keeps its path.
-	pub destination: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]

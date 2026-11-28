@@ -358,6 +358,7 @@ async fn pod_python_admission_preserves_the_expected_session_in_idempotency(
 		Some(session),
 		super::pod::PYTHON,
 		"space",
+		"threads/test",
 	)
 	.await
 	.unwrap();
@@ -372,11 +373,12 @@ async fn pod_python_admission_preserves_the_expected_session_in_idempotency(
 		Some(session),
 		super::pod::PYTHON,
 		"space",
+		"threads/test",
 	)
 	.await
 	.unwrap();
 	assert!(matches!(
-		super::pod::accept(&mut scope, &run, input, Some(Uuid::from_u128(12)), super::pod::PYTHON, "space").await,
+		super::pod::accept(&mut scope, &run, input, Some(Uuid::from_u128(12)), super::pod::PYTHON, "space", "threads/test").await,
 		Err(Error::Conflict(code)) if code == "IDEMPOTENCY_CONFLICT"
 	));
 	assert_eq!(scope.accepted.len(), 1);
@@ -389,6 +391,7 @@ async fn background_admission_uses_a_separate_ceiling(
 	run: RunMetadata,
 	mut input: ShellRequest,
 ) {
+	let directory = "threads/00000000-0000-0000-0000-000000000007";
 	input.background = true;
 	input.notify_on_exit = true;
 	input.timeout_seconds = Some(14_401);
@@ -399,6 +402,7 @@ async fn background_admission_uses_a_separate_ceiling(
 		None,
 		super::pod::SHELL,
 		"space",
+		directory,
 	)
 	.await
 	.unwrap_err();
@@ -409,9 +413,18 @@ async fn background_admission_uses_a_separate_ceiling(
 	assert!(scope.accepted.is_empty());
 
 	input.timeout_seconds = Some(9_000);
-	super::pod::accept(&mut scope, &run, input, None, super::pod::SHELL, "space")
-		.await
-		.unwrap();
+	super::pod::accept(
+		&mut scope,
+		&run,
+		input,
+		None,
+		super::pod::SHELL,
+		"space",
+		directory,
+	)
+	.await
+	.unwrap();
+	assert_eq!(scope.accepted[0].input["working_directory"], directory);
 	assert_eq!(scope.accepted[0].input["seconds"], 9_000);
 	assert_eq!(scope.accepted[0].input["background"], true);
 	assert_eq!(scope.accepted[0].input["notify_on_exit"], true);

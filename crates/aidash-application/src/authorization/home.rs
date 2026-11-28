@@ -332,7 +332,10 @@ pub async fn control<R: HomeRepository>(
 		repository,
 		task,
 		id,
-		matches!(action, RemoteExecutionControl::Resume),
+		matches!(
+			action,
+			RemoteExecutionControl::Resume | RemoteExecutionControl::ResumeGoal { .. }
+		),
 	)
 	.await?;
 	let mut scope = repository.begin().await?;
@@ -340,7 +343,10 @@ pub async fn control<R: HomeRepository>(
 		let task = managed_task(
 			&mut scope,
 			task,
-			matches!(action, RemoteExecutionControl::Resume),
+			matches!(
+				action,
+				RemoteExecutionControl::Resume | RemoteExecutionControl::ResumeGoal { .. }
+			),
 		)
 		.await?;
 		let resource = scope.task_resource(&task).await?;
@@ -351,8 +357,10 @@ pub async fn control<R: HomeRepository>(
 	}
 	.await;
 	let admission = finish(scope, result).await?;
-	if matches!(action, RemoteExecutionControl::Resume)
-		&& !serde_json::from_value::<Binding>(grant.semantic.clone())?.disabled()
+	if matches!(
+		action,
+		RemoteExecutionControl::Resume | RemoteExecutionControl::ResumeGoal { .. }
+	) && !serde_json::from_value::<Binding>(grant.semantic.clone())?.disabled()
 	{
 		let (mut authority, description) = repository.description(&grant.node_id, id).await?;
 		let result = authority
@@ -962,6 +970,7 @@ pub async fn follow_up<R: HomeRepository>(
 		let input = NewTask {
 			title: input.title,
 			description: input.description,
+			goal: None,
 			requirements: serde_json::to_value(input.requirements)?,
 			dependencies: vec![],
 			parent_id: None,

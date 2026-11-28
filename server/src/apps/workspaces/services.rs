@@ -19,6 +19,7 @@ pub(crate) mod duty_halt_backfill;
 pub(crate) mod duty_scripts;
 pub(crate) mod duty_start_backfill;
 pub mod migration_backfill;
+pub(crate) mod node_scratch_backfill;
 pub(crate) mod scratch;
 
 pub(crate) mod thread_backfill;

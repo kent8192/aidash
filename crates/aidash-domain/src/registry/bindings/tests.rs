@@ -3,7 +3,7 @@ use serde_json::{Value, json};
 
 #[test]
 fn reference_embedding_is_an_immutable_agent_definition_dependency() {
-	let entry: Entry = serde_json::from_value(json!({"id":"agent","version":"1.0.0","kind":"agent","name":{"en":"Agent"},"description":{"en":"Agent"},"config":{"schema_version":1,"model":{"id":"model","version":"1.0.0"},"instructions":"Work","reference_embedding":{"id":"image-embedding","version":"2.0.0"}}})).unwrap();
+	let entry: Entry = serde_json::from_value(json!({"id":"agent","version":"1.0.0","kind":"agent","name":{"en":"Agent"},"description":{"en":"Agent"},"config":{"model":{"id":"model","version":"1.0.0"},"instructions":"Work","reference_embedding":{"id":"image-embedding","version":"2.0.0"}}})).unwrap();
 	let root = QualifiedRef {
 		registry_deployment: "aidash://node-a".into(),
 		id: "agent".into(),
@@ -27,11 +27,14 @@ fn reference_embedding_is_an_immutable_agent_definition_dependency() {
 mod agent_plugins;
 
 fn agent() -> AgentBindings {
-	serde_json::from_value(json!({"schema_version":1,"model":{"id":"model","version":"1.0.0"},"instructions":"Work on the Task."})).unwrap()
+	serde_json::from_value(
+		json!({"model":{"id":"model","version":"1.0.0"},"instructions":"Work on the Task."}),
+	)
+	.unwrap()
 }
 
 #[test]
-fn built_in_memory_is_default_and_an_explicit_provider_takes_precedence() {
+fn built_in_memory_is_default_and_a_custom_provider_is_refused() {
 	let node = "aidash://node-a";
 	let mut config = agent();
 	let defaults = config.normalize(node).unwrap();
@@ -55,14 +58,10 @@ fn built_in_memory_is_default_and_an_explicit_provider_takes_precedence() {
 		members: vec![],
 		exposure: None,
 	});
-	let bound = config.normalize(node).unwrap();
-	let memories: Vec<_> = bound
-		.iter()
-		.filter(|binding| binding.binding.kind == BindingKind::Memory)
-		.collect();
-	assert_eq!(memories.len(), 1);
-	assert_eq!(memories[0].binding.target.id, "custom-memory");
-	assert_eq!(memories[0].origin, BindingOrigin::Explicit);
+	assert!(matches!(
+		config.normalize(node),
+		Err(crate::Error::Invalid(_))
+	));
 }
 
 #[test]
@@ -122,7 +121,7 @@ fn agent_model_roles_do_not_add_registry_dependencies() {
 }
 #[rstest::rstest]
 fn agent_config_rejects_removed_cluster_field() {
-	let input = json!({"schema_version":1,"model":{"id":"model","version":"1.0.0"},"instructions":"Work on the Task.","cluster":null});
+	let input = json!({"model":{"id":"model","version":"1.0.0"},"instructions":"Work on the Task.","cluster":null});
 	let error = serde_json::from_value::<AgentBindings>(input).unwrap_err();
 	assert!(error.to_string().contains("unknown field `cluster`"));
 }
@@ -146,7 +145,7 @@ fn legacy_and_mixed_schemas_are_rejected() {
 	}
 	assert!(
 		serde_json::from_value::<AgentBindings>(
-			json!({"model":{"id":"model","version":"1.0.0"},"instructions":"old"})
+			json!({"model":{"id":"model","version":"1.0.0"},"instructions":"old","exposure":{"version":"legacy@1"}})
 		)
 		.is_err()
 	);
@@ -204,7 +203,7 @@ fn with_current_wait(mut bindings: Vec<NormalizedBinding>) -> Vec<NormalizedBind
 #[test]
 fn existing_agent_normalization_keeps_its_original_system_bindings() {
 	let config = agent();
-	let old = config.normalize_mode("aidash://node-a", 1).unwrap();
+	let old = config.normalize_mode("aidash://node-a", 1, true).unwrap();
 	let mut entry: Entry = serde_json::from_value(json!({"id":"agent","version":"1.0.0","kind":"agent","name":{"en":"Agent"},"description":{"en":"Agent"},"config":config})).unwrap();
 	entry.binding_normalization = Some(AgentNormalization {
 		schema_version: BINDING_SCHEMA,
@@ -225,7 +224,7 @@ fn existing_agent_normalization_keeps_its_original_system_bindings() {
 			.any(|b| b.binding.target.id == "aidash.thread_search")
 	);
 	assert!(current.iter().any(
-		|b| b.binding.target.id == "aidash.thread_read" && b.binding.target.version == "1.0.0"
+		|b| b.binding.target.id == "aidash.thread_read" && b.binding.target.version == "1.2.0"
 	));
 }
 
@@ -233,7 +232,7 @@ fn existing_agent_normalization_keeps_its_original_system_bindings() {
 fn historical_agent_normalization_remains_valid_and_tampering_is_rejected() {
 	let node = "aidash://node-a";
 	let config = agent();
-	let old = config.normalize_mode(node, 1).unwrap();
+	let old = config.normalize_mode(node, 1, true).unwrap();
 	let mut entry: Entry = serde_json::from_value(json!({"id":"agent","version":"1.0.0","kind":"agent","name":{"en":"Agent"},"description":{"en":"Agent"},"schema":{},"config":config})).unwrap();
 	entry.binding_normalization = Some(AgentNormalization {
 		schema_version: BINDING_SCHEMA,
@@ -282,13 +281,14 @@ fn narrowing_intersects_and_enforces_bounds_without_changing_facts() {
 	assert!(serde_json::from_value::<Narrowing>(json!({"effect":"read_only"})).is_err());
 }
 #[test]
-fn explicit_source_does_not_implicitly_grant_memory_read_or_write() {
-	let mut agent = agent();
-	agent.bindings.push(Binding {
-		kind: BindingKind::Memory,
+fn an_explicit_source_does_not_restore_removed_memory_tools() {
+	let node = "aidash://node-a";
+	let mut config = agent();
+	config.bindings.push(Binding {
+		kind: BindingKind::Source,
 		target: QualifiedRef {
-			registry_deployment: "aidash://node-a".into(),
-			id: "native.memory".into(),
+			registry_deployment: node.into(),
+			id: "retrieval".into(),
 			version: "1.0.0".into(),
 		},
 		alias: None,
@@ -296,23 +296,25 @@ fn explicit_source_does_not_implicitly_grant_memory_read_or_write() {
 		members: vec![],
 		exposure: None,
 	});
-	let normalized = agent.normalize("aidash://node-a").unwrap();
-	assert_eq!(
+	config
+		.remove_default
+		.extend(MEMORY_TOOLS.iter().map(|tool| (*tool).to_owned()));
+	let normalized = config.normalize(node).unwrap();
+	assert!(
 		normalized
 			.iter()
-			.filter(|b| b.binding.kind == BindingKind::Memory)
-			.count(),
-		1
+			.any(|binding| binding.binding.target.id == "retrieval")
 	);
-	agent.remove_default.push("memory_mutate".into());
-	assert!(
-		agent
-			.normalize("aidash://node-a")
-			.unwrap()
-			.iter()
-			.any(|b| b.binding.kind == BindingKind::Memory)
-	);
+	for tool in MEMORY_TOOLS {
+		assert!(
+			!normalized
+				.iter()
+				.any(|binding| binding.binding.target.id == format!("aidash.{tool}")),
+			"{tool}"
+		);
+	}
 }
+
 #[test]
 fn memory_builtins_stay_default_bindings_and_may_be_explicit() {
 	let memory_tools = |agent: &AgentBindings| -> Vec<BindingOrigin> {
@@ -334,20 +336,8 @@ fn memory_builtins_stay_default_bindings_and_may_be_explicit() {
 	let explicit = Binding::tool(QualifiedRef::builtin("aidash://node-a", "memory_recall"));
 	agent.bindings.push(explicit.clone());
 	agent.validate().unwrap();
-	agent.bindings.push(Binding {
-		kind: BindingKind::Memory,
-		target: QualifiedRef {
-			registry_deployment: "aidash://node-a".into(),
-			id: "native.memory".into(),
-			version: "1.0.0".into(),
-		},
-		alias: None,
-		narrow: Narrowing::default(),
-		members: vec![],
-		exposure: None,
-	});
-	agent.validate().unwrap();
-	agent.bindings.retain(|b| b != &explicit);
+	assert!(memory_tools(&agent).contains(&BindingOrigin::Explicit));
+	agent.bindings.clear();
 	agent.remove_default.push("memory_recall".into());
 	assert_eq!(memory_tools(&agent).len(), 2);
 }
@@ -584,7 +574,6 @@ fn binding_exposure_requires_deferred_policy_and_exposable_kind() {
 #[test]
 fn legacy_agent_json_round_trips_byte_identically() {
 	let input = json!({
-		"schema_version": 1,
 		"model": {"id": "model", "version": "1.0.0"},
 		"instructions": "Work on the Task.",
 		"bindings": [{
@@ -593,8 +582,7 @@ fn legacy_agent_json_round_trips_byte_identically() {
 			"alias": "read",
 			"narrow": {}
 		}],
-		"remove_default": ["memory_mutate"],
-		"max_steps": 9
+		"remove_default": ["memory_mutate"]
 	});
 	let parsed: AgentBindings = serde_json::from_value(input.clone()).unwrap();
 	assert_eq!(parsed.exposure, None);
@@ -671,24 +659,22 @@ fn unknown_harness_contract_versions_are_rejected() {
 }
 
 #[test]
-fn retired_pins_keep_their_saved_serialization() {
-	for projection in ["legacy", "ordered", "native"] {
-		let mut input = serde_json::to_value(agent()).unwrap();
-		input["projection_version"] = json!(projection);
-		input["harness_contract"] = json!("legacy@1");
-		let parsed: crate::registry::AgentConfig = serde_json::from_value(input.clone()).unwrap();
-		let serialized = serde_json::to_value(&parsed).unwrap();
-		assert_eq!(
-			serialized["projection_version"],
-			input["projection_version"]
+fn retired_rendering_pins_keep_definition_bytes_and_refuse_execution() {
+	let mut input = serde_json::to_value(agent()).unwrap();
+	for (field, version) in [
+		("projection_version", "legacy"),
+		("projection_version", "ordered"),
+		("harness_contract", "legacy@1"),
+	] {
+		input[field] = json!(version);
+		let parsed: AgentBindings = serde_json::from_value(input.clone()).unwrap();
+		assert_eq!(serde_json::to_value(&parsed).unwrap(), input);
+		assert!(
+			crate::registry::execution_contract(parsed.projection_version, parsed.harness_contract)
+				.unwrap_err()
+				.contains(version)
 		);
-		assert_eq!(serialized["harness_contract"], input["harness_contract"]);
-		assert_eq!(
-			parsed.definition().harness_contract,
-			Some(crate::harness_contract::HarnessContractPin::Retired(
-				crate::harness_contract::RetiredHarnessContract::V1
-			))
-		);
+		input.as_object_mut().unwrap().remove(field);
 	}
 }
 
@@ -750,7 +736,7 @@ fn an_agent_normalized_before_the_schedule_tools_loads_without_them() {
 			.any(|tool| binding.binding.target == QualifiedRef::builtin(node, tool))
 	};
 	// Before #745 too, so its file tools are at 1.0.0 (set 6).
-	let mut saved = config.normalize_mode(node, 6).unwrap();
+	let mut saved = config.normalize_mode(node, 6, true).unwrap();
 	assert_eq!(saved.iter().filter(|b| schedule_tool(b)).count(), 4);
 	saved.retain(|binding| !schedule_tool(binding));
 	let mut entry: Entry = serde_json::from_value(json!({"id":"agent","version":"1.0.0","kind":"agent","name":{"en":"Agent"},"description":{"en":"Agent"},"config":config})).unwrap();
@@ -762,7 +748,7 @@ fn an_agent_normalized_before_the_schedule_tools_loads_without_them() {
 
 	// Act
 	let resolved = entry.normalized_bindings(node).unwrap();
-	let historical = config.normalize_mode(node, 2).unwrap();
+	let historical = config.normalize_mode(node, 2, true).unwrap();
 
 	// Assert: what it pinned stands; no historical set has the new tools.
 	assert!(!resolved.iter().any(schedule_tool));
@@ -776,12 +762,12 @@ fn an_agent_normalized_before_the_execution_pod_keeps_its_1_0_0_file_tools() {
 	// 1.0.1.
 	let node = "aidash://node-a";
 	let config = agent();
-	let today = config.normalize_mode(node, 7).unwrap();
+	let today = config.normalize_mode(node, 7, true).unwrap();
 	let mut saved = today.clone();
 	for item in &mut saved {
 		if POD_FILE_TOOLS
 			.iter()
-			.any(|tool| item.binding.target == QualifiedRef::builtin(node, tool))
+			.any(|tool| item.binding.target.id == QualifiedRef::builtin(node, tool).id)
 		{
 			item.binding.target.version = "1.0.0".into();
 		}
@@ -797,7 +783,7 @@ fn an_agent_normalized_before_the_execution_pod_keeps_its_1_0_0_file_tools() {
 	// Act
 	let resolved = entry.normalized_bindings(node).unwrap();
 
-	// Assert: the pinned 1.0.0 file tools stand; a new normalization binds 1.0.1.
+	// Assert: the pinned 1.0.0 file tools and the later 1.0.1 set still resolve.
 	assert_eq!(resolved, saved);
 	let file_read = |bindings: &[NormalizedBinding]| {
 		bindings
@@ -811,6 +797,7 @@ fn an_agent_normalized_before_the_execution_pod_keeps_its_1_0_0_file_tools() {
 	};
 	assert_eq!(file_read(&resolved), "1.0.0");
 	assert_eq!(file_read(&today), "1.0.1");
+	assert_eq!(file_read(&config.normalize(node).unwrap()), "1.2.0");
 }
 
 #[test]
@@ -820,7 +807,7 @@ fn an_agent_normalized_before_attachment_image_search_binds_the_1_1_0_tools() {
 	// (the defaults before #1008, set 7).
 	let node = "aidash://node-a";
 	let config = agent();
-	let mut saved = config.normalize_mode(node, 7).unwrap();
+	let mut saved = config.normalize_mode(node, 7, true).unwrap();
 	for item in &mut saved {
 		match item.binding.target.id.as_str() {
 			"aidash.workspace_message" => item.binding.target.version = "1.0.1".into(),
@@ -866,7 +853,7 @@ fn an_agent_from_before_image_retrieval_binds_thread_message_1_1_0() {
 	// Arrange: the #640-era defaults (mode 2) with workspace_message 1.0.1.
 	let node = "aidash://node-a";
 	let config = agent();
-	let mut saved = config.normalize_mode(node, 2).unwrap();
+	let mut saved = config.normalize_mode(node, 2, true).unwrap();
 	for item in &mut saved {
 		if item.binding.target.id == "aidash.workspace_message" {
 			item.binding.target.version = "1.0.1".into();

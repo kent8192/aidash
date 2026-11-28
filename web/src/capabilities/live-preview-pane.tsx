@@ -4,7 +4,10 @@ import { Button } from "../components/ui/button";
 import { desktop, desktopAvailable } from "../desktop";
 import { corePreviewLiveTicket } from "../generated/aidash";
 import { useI18n } from "../ui";
-import { useFilePreview, type LivePreviewSelection } from "./file-preview-pane";
+import {
+  useLivePreview,
+  type LivePreviewSelection,
+} from "./live-preview-context";
 import { livePreviewTicketErrorKey } from "./live-preview-model";
 import { issueRemotePreview } from "./remote-preview";
 
@@ -34,7 +37,7 @@ export function LivePreviewPane({
   onClose: () => void;
 }) {
   const { t } = useI18n();
-  const { availability } = useFilePreview();
+  const { availability } = useLivePreview();
   const heading = useRef<HTMLHeadingElement>(null);
 
   useEffect(() => {

@@ -85,7 +85,7 @@ pub(crate) async fn set_area(access: &mut Access, id: Uuid, state: &str, epoch: 
 		let query_bind_3 = epoch;
 		crate::database::native::query(
 			&Query::update()
-				.table(Alias::new("core_areas"))
+				.table(Alias::new("core_execution_scopes"))
 				.value_expr(
 					Alias::new("state"),
 					SimpleExpr::CustomWithExpr(
@@ -179,6 +179,6 @@ mod read_recheck;
 pub(crate) mod remote_tools;
 #[cfg(test)]
 pub(crate) use read_recheck::stop_pending_run_with_runner;
-mod receipt_output;
+mod stopped_logs;
 
 mod pod_usage;

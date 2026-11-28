@@ -441,12 +441,7 @@ impl DefinitionLookup for NativeScope<'_> {
 	}
 
 	async fn definition(&mut self, id: &str, version: &str) -> aidash_application::Result<Entry> {
-		Ok(serde_json::from_value(
-			transaction_records::definition(self.0, id, version)
-				.await?
-				.metadata
-				.into_inner(),
-		)?)
+		Ok(crate::apps::registry::models::Definition::read_in(self.0, id, version).await?)
 	}
 	async fn tenant_secret_hosts(
 		&mut self,

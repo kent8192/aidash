@@ -29,13 +29,10 @@ import type {
   ApprovalRuleView,
   RuleEffect,
 } from "./generated/models";
-import { CatalogApprovalLink } from "./approval-decider";
 import {
   approvalPreferencesKey,
-  useApprovalDecider,
   useApprovalPreferences,
 } from "./approval-queries";
-import { versionKey } from "./approval-decider-model";
 import { approvalCopy } from "./approval-settings-copy";
 import {
   approvalKinds,
@@ -50,7 +47,6 @@ import {
   type DeadlineUnit,
   modeAllowed,
   modeReason,
-  needsApprovalDecider,
   preferencesUpdate,
   ruleEffects,
   ruleInput,
@@ -109,7 +105,6 @@ function ModeOption({
   checked,
   allowed,
   reason,
-  decider,
   disabled,
   choose,
 }: {
@@ -117,8 +112,6 @@ function ModeOption({
   checked: boolean;
   allowed: boolean;
   reason: ApprovalModeReason | null;
-  /** The Tenant's approval Decider, once known. */
-  decider: { id: string; version: string } | null;
   disabled: boolean;
   choose: () => void;
 }) {
@@ -150,17 +143,10 @@ function ModeOption({
             className="text-xs leading-relaxed text-muted-foreground [overflow-wrap:anywhere]"
           >
             {copy.modes[mode].description}
-            {reason &&
-              ` ${copy.modeReason[reason](decider ? versionKey(decider) : "")}`}
+            {reason && ` ${copy.modeReason[reason]}`}
           </span>
         </span>
       </label>
-      {reason === "decider_unapproved" && decider && (
-        <CatalogApprovalLink
-          reference={decider}
-          className="ml-9 w-fit text-xs text-brand underline-offset-4 hover:underline focus-visible:outline-2 focus-visible:outline-ring"
-        />
-      )}
     </div>
   );
 }
@@ -171,11 +157,6 @@ function DefaultMode({ tenant }: { tenant: string }) {
   const client = useQueryClient();
   const node = useNodes().selected?.name;
   const preferences = useApprovalPreferences(tenant);
-  // Only a mode held back by the Decider needs to name it.
-  const decider = useApprovalDecider(
-    tenant,
-    preferences.data ? needsApprovalDecider(preferences.data.modes) : false,
-  );
   const [confirming, setConfirming] = useState(false);
   const [busy, setBusy] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -228,7 +209,6 @@ function DefaultMode({ tenant }: { tenant: string }) {
             checked={current.default_mode === mode}
             allowed={modeAllowed(current.modes, mode)}
             reason={modeReason(current.modes, mode)}
-            decider={decider.data?.decider ?? null}
             disabled={busy}
             choose={() =>
               bypassNeedsConfirmation(current, mode)

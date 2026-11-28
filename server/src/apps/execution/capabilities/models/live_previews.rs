@@ -14,8 +14,6 @@ pub struct CoreLivePreviews {
 	#[field(field_type = "text")]
 	pub tenant: String,
 	pub run_id: Uuid,
-	pub area_id: Uuid,
-	pub revision: i64,
 	pub port: i32,
 	#[field(field_type = "text")]
 	pub state: String,

@@ -54,6 +54,8 @@ pub struct ChannelAttachment {
 	/// Denormalized business reference; the typed relation is authoritative.
 	#[field(db_column = "message_id", null = true)]
 	pub message_key: Option<uuid::Uuid>,
+	#[field(null = true)]
+	pub planned_completion: Option<uuid::Uuid>,
 	/// The Image Description its uploader wrote for an image (#622).
 	#[field(field_type = "text", null = true)]
 	pub description: Option<String>,
@@ -66,6 +68,18 @@ use reinhardt::db::orm::{Model, execution::convert_values};
 use reinhardt::query::{
 	Alias, Expr, ExprTrait, PostgresQueryBuilder, Query, QueryStatementBuilder,
 };
+pub(crate) struct CompletionAttachment<'a> {
+	pub id: Uuid,
+	pub thread: Uuid,
+	pub sender: &'a str,
+	pub message: Uuid,
+	pub filename: &'a str,
+	pub media_type: &'a str,
+	pub digest: &'a str,
+	pub size: u64,
+	pub object: Uuid,
+}
+
 impl ChannelAttachment {
 	pub(crate) async fn has_media_in(
 		tx: &mut dyn TransactionExecutor,
@@ -79,6 +93,106 @@ impl ChannelAttachment {
 			.map_err(FrameworkError::from)?
 			.is_empty())
 	}
+	pub(crate) async fn stage_completion(
+		tx: &mut dyn TransactionExecutor,
+		input: CompletionAttachment<'_>,
+	) -> Result<()> {
+		let (sql, values) = Query::insert()
+			.into_table(Alias::new("channel_attachments"))
+			.columns(
+				[
+					"id",
+					"thread_id",
+					"uploaded_by",
+					"idempotency_key",
+					"filename",
+					"media_type",
+					"sha256",
+					"size_bytes",
+					"object_id",
+					"tenant",
+					"planned_completion",
+				]
+				.map(Alias::new),
+			)
+			.values_expr(vec![
+				Expr::value(input.id).into(),
+				Expr::value(input.thread).into(),
+				Expr::value(input.sender).into(),
+				Expr::value(input.id).into(),
+				Expr::value(input.filename).into(),
+				Expr::value(input.media_type).into(),
+				Expr::value(input.digest).into(),
+				Expr::value(input.size as i64).into(),
+				Expr::value(input.object).into(),
+				crate::database::scope::tenant_of("threads", "id", input.thread),
+				Expr::value(input.message).into(),
+			])
+			.expect("one value per column")
+			.build(PostgresQueryBuilder);
+		tx.execute(&sql, convert_values(values)).await?;
+		Ok(())
+	}
+
+	pub(crate) async fn attach_completion(
+		tx: &mut dyn TransactionExecutor,
+		thread: Uuid,
+		message: Uuid,
+		sender: &str,
+		ids: &[Uuid],
+	) -> Result<()> {
+		use aidash_domain::deliverable::{
+			MAX_COMPLETION_ATTACHMENT_BYTES, MAX_COMPLETION_ATTACHMENTS,
+		};
+		if ids.is_empty() {
+			return Ok(());
+		}
+		if ids.len() > MAX_COMPLETION_ATTACHMENTS
+			|| ids.iter().collect::<std::collections::BTreeSet<_>>().len() != ids.len()
+		{
+			return Err(Error::Invalid(
+				"Invalid Completion Message attachment count".into(),
+			));
+		}
+		let rows = Self::objects()
+			.filter(Self::field_thread_id().eq(thread))
+			.filter(Self::field_uploaded_by().eq(sender.to_owned()))
+			.filter(Self::field_planned_completion().eq(Some(message)))
+			.filter(Self::field_id().is_in(ids.to_vec()))
+			.order_by(&["id"])
+			.select_for_update()
+			.all_with_executor(&mut *tx)
+			.await
+			.map_err(FrameworkError::from)?;
+		if rows.len() != ids.len()
+			|| rows
+				.iter()
+				.any(|record| record.message_key.is_some_and(|id| id != message))
+		{
+			return Err(Error::Invalid(
+				"Completion Message attachments are unavailable".into(),
+			));
+		}
+		let bytes = rows
+			.iter()
+			.fold(0u64, |sum, row| sum.saturating_add(row.size_bytes as u64));
+		if bytes > MAX_COMPLETION_ATTACHMENT_BYTES {
+			return Err(Error::Invalid(
+				"Completion Message attachments exceed 4 GiB".into(),
+			));
+		}
+		for (position, id) in ids.iter().enumerate() {
+			let (sql, values) = Query::update()
+				.table(Alias::new("channel_attachments"))
+				.value_expr(Alias::new("message_id"), Expr::value(message))
+				.value_expr(Alias::new("position"), Expr::value(position as i32))
+				.and_where(Expr::col("id").eq(Expr::value(*id)))
+				.build(PostgresQueryBuilder);
+			tx.execute(&sql, convert_values(values)).await?;
+		}
+		Ok(())
+	}
+
 	pub(crate) async fn attach_run_media_in(
 		tx: &mut dyn TransactionExecutor,
 		thread: Uuid,
@@ -181,6 +295,7 @@ impl crate::database::Record for ChannelAttachment {
 			wav_sha256: row.try_get("wav_sha256")?,
 			wav_size_bytes: row.try_get("wav_size_bytes")?,
 			message_key: row.try_get("message_id")?,
+			planned_completion: row.try_get("planned_completion")?,
 			description: row.try_get("description")?,
 		})
 	}

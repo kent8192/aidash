@@ -361,7 +361,7 @@ data:
           "base_apply_immediately" $e.pods.baseApplyImmediately
           "docker_runtime_class" $dockerRuntime "admission_capacity_bytes" (int64 $e.pods.admissionCapacityBytes)
           "metadata_server_absent" $e.pods.metadataServerAbsent
-          "max_cpu" (int $e.pods.maxCpu) "max_memory_bytes" (int64 $e.pods.maxMemoryBytes)
+          "max_command_slots" (int $e.pods.maxCommandSlots) "max_cpu" (int $e.pods.maxCpu) "max_memory_bytes" (int64 $e.pods.maxMemoryBytes)
           "max_capacity_bytes" (int64 $e.pods.maxCapacityBytes) "proxy_endpoint" $proxy
           "proxy_namespace" $proxyNamespace "proxy_selector" $proxySelector -}}
     {{- if $tenantProxies -}}{{- $_ := set $pods "tenant_proxy_endpoints" $tenantProxies -}}{{- end -}}

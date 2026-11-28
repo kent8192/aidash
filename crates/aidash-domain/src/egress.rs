@@ -164,7 +164,7 @@ impl Default for AnomalyRule {
 	}
 }
 
-pub const DISCLOSURE: &str = "Sandboxed code may send this External service anything it can read, including Tenant data in the Working Area. Individual requests are not approved. Aidash's zero data retention and Usage Record guarantees do not apply to these calls.";
+pub const DISCLOSURE: &str = "Sandboxed code may send this External service anything it can read, including Tenant data in the Scratch Space. Individual requests are not approved. Aidash's zero data retention and Usage Record guarantees do not apply to these calls.";
 pub const UNAVAILABLE: &str = "EGRESS_UNAVAILABLE";
 /// A budget counter reached its limit: the gateway stops the stream.
 pub const LIMIT_EXCEEDED: &str = "egress_limit_exceeded";

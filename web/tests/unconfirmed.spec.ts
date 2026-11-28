@@ -29,7 +29,7 @@ test("the Task list names each silent Node once, with the Tasks it left out", as
       entry(known, "task", 3),
       entry(stranger, "task", 1),
       // Other kinds and other Threads do not belong to this list.
-      entry(known, "artifact", 9),
+      entry(known, "message", 9),
       entry(known, "task", 40, "thread-two"),
     ],
   });
@@ -88,28 +88,16 @@ test("a Thread without the field reads as nothing left out", async ({
   expect(errors).toEqual([]);
 });
 
-test("results and conversation warn about their own kinds", async ({
-  page,
-}) => {
+test("message counts belong in the conversation", async ({ page }) => {
   const { errors } = await setup(page, {
     subject: true,
-    unconfirmed: [
-      entry(known, "artifact", 2),
-      entry(stranger, "message", 5),
-      entry(known, "task", 7),
-    ],
+    unconfirmed: [entry(stranger, "message", 5), entry(known, "task", 7)],
   });
   await page.goto("/collaboration?channel=thread-one");
-  // The conversation reads pages of messages; only message counts show there.
   await expect(page.getByText(english(5, stranger))).toBeVisible();
-  await expect(page.getByText(english(2, "Default"))).toHaveCount(0);
+  await expect(page.getByText(english(7, "Default"))).toHaveCount(0);
   await page.getByRole("tab", { name: /^Results/ }).click();
-  await expect(page.getByText(english(2, "Default"))).toBeVisible();
-  await expect(
-    page
-      .locator('section[aria-label="Results"]')
-      .getByText("No matching information."),
-  ).toHaveCount(0);
+  await expect(page.getByText(english(5, stranger))).toBeHidden();
   expect(errors).toEqual([]);
 });
 

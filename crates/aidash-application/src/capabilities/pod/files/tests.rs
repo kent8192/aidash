@@ -6,6 +6,8 @@ use std::sync::Arc;
 
 fn scratch_read(path: &str, offset: Option<u64>, max_bytes: Option<usize>) -> ScratchRead {
 	ScratchRead {
+		representation: None,
+		expected_digest: None,
 		path: path.into(),
 		offset,
 		max_bytes,

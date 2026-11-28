@@ -3,8 +3,8 @@ use super::visibility::RowOutcome;
 use crate::Result;
 use aidash_domain::unconfirmed::Tally;
 use aidash_domain::{
-	Artifact, Conversation, Event, HumanRequest, RunInspection, RunMetadata, Task, Thread,
-	policy::Resource, registry::Entry, run_state::RawRun, threads::TaskPage,
+	Conversation, Event, HumanRequest, RunInspection, RunMetadata, Task, Thread, policy::Resource,
+	registry::Entry, run_state::RawRun, threads::TaskPage,
 };
 use async_trait::async_trait;
 use uuid::Uuid;
@@ -34,7 +34,7 @@ pub trait ThreadStateScope: Send + RowOutcome {
 		cursor: Option<Uuid>,
 	) -> Result<Vec<Uuid>>;
 	async fn task_candidates(&mut self, node: Option<&str>) -> Result<Vec<Task>>;
-	async fn artifact_candidates(&mut self, node: Option<&str>) -> Result<Vec<Artifact>>;
+
 	async fn run_candidates(&mut self, node: Option<&str>) -> Result<Vec<RawRun>>;
 	async fn pending_human_candidates(&mut self, node: Option<&str>) -> Result<Vec<HumanRequest>>;
 	async fn conversation_candidates(&mut self, node: Option<&str>) -> Result<Vec<Conversation>>;
@@ -44,11 +44,8 @@ pub trait ThreadStateScope: Send + RowOutcome {
 	async fn prepare_tasks(&mut self, _tasks: &[Task]) -> Result<()> {
 		Ok(())
 	}
-	async fn prepare_artifacts(&mut self, _artifacts: &[Artifact]) -> Result<()> {
-		Ok(())
-	}
 	async fn task_visible(&mut self, task: &Task) -> Result<bool>;
-	async fn artifact_visible(&mut self, artifact: &Artifact) -> Result<bool>;
+
 	/// Prepare candidate rows for the state window without changing visibility rules.
 	async fn prepare_runs(&mut self, _runs: &[RunMetadata]) -> Result<()> {
 		Ok(())

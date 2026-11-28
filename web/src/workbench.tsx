@@ -80,15 +80,12 @@ export type AgentEntry = {
   capabilities: string[];
   tags: string[];
   languages: string[];
-  skills: string[];
   schema: Record<string, unknown>;
   config: {
     model: Ref;
     instructions: string;
-    schema_version: number;
     bindings: Binding[];
     remove_default: string[];
-    max_steps: number;
     reference_embedding?: Ref;
   };
 };
@@ -283,7 +280,6 @@ const text = {
     model: "モデル",
     skills: "Skills",
     tools: "ツール",
-    maxSteps: "最大ステップ",
     docs: "非公開参照テキスト",
     docName: "文書名",
     docText: "抽出済みテキスト",
@@ -352,7 +348,6 @@ const text = {
     model: "Model",
     skills: "Skills",
     tools: "Tools",
-    maxSteps: "Maximum steps",
     docs: "Private reference text",
     docName: "Document name",
     docText: "Extracted text",
@@ -436,7 +431,6 @@ function versionFields(
     ],
     ["Private references", draftKnowledgeDigest, registeredKnowledgeDigest],
     ["Instructions", draft.config.instructions, registered.config.instructions],
-    ["Maximum steps", draft.config.max_steps, registered.config.max_steps],
   ];
 }
 function versionDifferences(
@@ -482,15 +476,12 @@ function newEntry(model?: Ref): AgentEntry {
     capabilities: [],
     tags: [],
     languages: ["ja", "en"],
-    skills: [],
     schema: {},
     config: {
       model: model ?? { id: "", version: "" },
       instructions: "",
-      schema_version: 1,
       bindings: [],
       remove_default: [],
-      max_steps: 64,
     },
   };
 }
@@ -1988,7 +1979,7 @@ export function Workbench({
         </Field>
       </Section>
       <Section title={ja ? "モデルと能力" : "Model and capabilities"}>
-        <div className="grid items-start gap-4 sm:grid-cols-[minmax(0,1fr)_160px]">
+        <div className="grid items-start gap-4 sm:grid-cols-2">
           <Field label={t.model}>
             <NativeSelect
               value={refKey(editing.config.model)}
@@ -2024,20 +2015,6 @@ export function Workbench({
                 </option>
               ))}
             </NativeSelect>
-          </Field>
-          <Field label={t.maxSteps}>
-            <Input
-              type="number"
-              min={1}
-              max={1000}
-              className="font-mono tabular"
-              value={editing.config.max_steps}
-              onChange={(event) =>
-                change((value) => {
-                  value.config.max_steps = Number(event.target.value);
-                })
-              }
-            />
           </Field>
           <div className="sm:col-span-2">
             <Field label={t.capabilities}>

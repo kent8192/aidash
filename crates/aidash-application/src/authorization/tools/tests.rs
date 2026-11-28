@@ -37,7 +37,7 @@ async fn renamed_builtin_keeps_its_grant_resource_and_agent_flag(
 			"release".to_owned()
 		]
 	);
-	agent.allow_task_creation = Some(false);
+	agent.operations.remove("task_create");
 	let before = repository.calls();
 	assert!(matches!(
 		super::authorize(&repository, &run, &agent, &input, &contract).await,
@@ -288,7 +288,7 @@ fn agent() -> AgentConfig {
 		serde_json::from_value(crate::test_support::agent("producer").config).unwrap();
 	// Resource adapter flags are an internal view derived by native admission.
 	config.memory = Some(reference());
-	config.allow_memory_write = Some(true);
+	config.operations.insert("memory_mutate".into());
 	config.tools = vec![reference()];
 	config.skills = vec![reference()];
 	config
@@ -312,7 +312,6 @@ fn entry() -> Entry {
 		capabilities: vec![],
 		tags: vec![],
 		languages: vec![],
-		skills: vec![],
 		schema: json!({}),
 		config: json!({"transport":"native","operation":"fixture"}),
 	}
@@ -521,6 +520,7 @@ impl AgentToolScope for Scope<'_> {
 			title: "saved".into(),
 			description: String::new(),
 			status: TaskStatus::Open,
+			goal: None,
 			requirements: json!({}),
 			owner: None,
 			created_by: "saved creator".into(),
@@ -538,15 +538,6 @@ impl AgentToolScope for Scope<'_> {
 			"task",
 			&task.id.to_string(),
 			json!({"revision":task.revision,"creator":task.created_by}),
-		))
-	}
-	async fn artifact_creation_resource(&mut self, task: Uuid, creator: &str) -> Result<Resource> {
-		self.0.record(format!("artifact:{creator}"));
-		self.0.check("artifact")?;
-		Ok(resource(
-			"artifact",
-			&task.to_string(),
-			json!({"created_by":creator}),
 		))
 	}
 	async fn memory_resource(&mut self, run: &RunMetadata) -> Result<Resource> {
@@ -606,10 +597,11 @@ async fn disabled_local_tool_flags_precede_acquiring_authority(
 	mut agent: AgentConfig,
 	#[case] name: &str,
 ) {
-	agent.allow_task_creation = Some(false);
-	agent.allow_task_delegation = Some(false);
-	agent.allow_memory_write = Some(false);
-	agent.allow_workspace_retrieval = Some(false);
+	agent.operations.remove("task_create");
+	agent.operations.remove("task_delegate");
+	agent.operations.remove("task_assign");
+	agent.operations.remove("memory_mutate");
+	agent.operations.remove("thread_read");
 	assert!(matches!(
 		authorize(&repository, &run, &agent, &call(name, json!({}))).await,
 		Err(Error::AuthorityRefused(ref refusal)) if refusal.check == RefusalCheck::AgentFlag
@@ -628,7 +620,7 @@ async fn remote_refresh_precedes_even_a_disabled_tool_flag(
 ) {
 	repository.remote = true;
 	repository.active = active;
-	agent.allow_task_creation = Some(false);
+	agent.operations.remove("task_create");
 	assert!(matches!(
 		authorize(&repository, &run, &agent, &call("task_create", json!({}))).await,
 		Err(Error::AuthorityRefused(ref refusal)) if refusal.check == RefusalCheck::AgentFlag
@@ -787,7 +779,8 @@ async fn agent_plugins_check_delegation_flag_and_home_before_target_catalog(
 ) {
 	repository.catalog.config = json!({"transport":"agent","node_id":if disabled{run.home_node.as_str()}else{"aidash://other"},"agent":{"id":"target","version":"1"}});
 	if disabled {
-		agent.allow_task_delegation = Some(false);
+		agent.operations.remove("task_delegate");
+		agent.operations.remove("task_assign");
 	}
 	assert!(matches!(
 		authorize(&repository, &run, &agent, &call("plugin_0", json!({}))).await,
@@ -978,7 +971,8 @@ async fn a_remote_grant_runs_delegation_keeps_the_agent_flag(
 	mut agent: AgentConfig,
 ) {
 	repository.remote = true;
-	agent.allow_task_delegation = Some(false);
+	agent.operations.remove("task_delegate");
+	agent.operations.remove("task_assign");
 	let result = authorize(
 		&repository,
 		&run,
@@ -1218,7 +1212,7 @@ async fn malformed_delegate_agent_keeps_the_json_error(
 }
 #[rstest]
 #[tokio::test]
-async fn artifact_creation_uses_the_last_subject_in_the_delegation_chain(
+async fn outside_version_checks_the_task_resource(
 	repository: Repository,
 	run: RunMetadata,
 	agent: AgentConfig,
@@ -1227,39 +1221,19 @@ async fn artifact_creation_uses_the_last_subject_in_the_delegation_chain(
 		&repository,
 		&run,
 		&agent,
-		&call("artifact_publish", json!({})),
+		&call("deliverable_note", json!({})),
 	)
 	.await
 	.unwrap();
 	assert_eq!(
 		repository.decisions()[1].0.attributes,
-		json!({"created_by":"delegated"})
+		json!({"creator":"saved creator","revision":7})
 	);
-	assert!(repository.calls().contains(&"artifact:delegated".into()));
+	assert_eq!(repository.decisions()[1].1, "task.complete");
 }
 #[rstest]
 #[tokio::test]
-async fn local_artifact_creation_requires_a_nonempty_subject_chain(
-	mut repository: Repository,
-	run: RunMetadata,
-	agent: AgentConfig,
-) {
-	repository.subjects.clear();
-	assert!(matches!(
-		authorize(
-			&repository,
-			&run,
-			&agent,
-			&call("artifact_publish", json!({}))
-		)
-		.await,
-		Err(Error::AuthorityRefused(ref refusal)) if refusal.check == RefusalCheck::Policy
-	));
-	assert_eq!(repository.decisions().len(), 1);
-}
-#[rstest]
-#[tokio::test]
-async fn remote_artifact_authority_uses_qualified_id_and_current_context(
+async fn remote_outside_version_uses_the_qualified_task_and_current_context(
 	mut repository: Repository,
 	run: RunMetadata,
 	agent: AgentConfig,
@@ -1270,22 +1244,17 @@ async fn remote_artifact_authority_uses_qualified_id_and_current_context(
 		&repository,
 		&run,
 		&agent,
-		&call("artifact_publish", json!({})),
+		&call("deliverable_note", json!({})),
 	)
 	.await
 	.unwrap();
 	let decision = &repository.decisions()[1];
 	assert_eq!(
 		decision.0.id,
-		format!("aidash://home/artifacts/{}", run.task_id)
+		format!("aidash://home/tasks/{}", run.task_id)
 	);
 	assert_eq!(decision.0.attributes, repository.context);
-	assert!(
-		!repository
-			.calls()
-			.iter()
-			.any(|name| name.starts_with("artifact:"))
-	);
+	assert!(!repository.calls().iter().any(|name| name == "task:local"));
 }
 #[rstest]
 #[case::third_node("aidash://third/quiet-falcon-4f8k2m1z")]
@@ -1587,7 +1556,7 @@ fn asset_snapshot(repository: &mut Repository, run: &RunMetadata) -> String {
 	let agent_entry = definition(
 		&agent,
 		"agent",
-		json!({"schema_version":1,"model":{"id":"model","version":"1"},"instructions":"Work.","bindings":[],"exposure":{"version":"deferred@1"}}),
+		json!({"model":{"id":"model","version":"1"},"instructions":"Work.","bindings":[],"exposure":{"version":"deferred@1"}}),
 	);
 	let snapshot = BindingSnapshot {
 		schema_version: 1,

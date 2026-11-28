@@ -94,7 +94,7 @@ pub async fn reads_invalidity(
 			}
 			continue;
 		}
-		let text = if matches!(source, Source::Artifact { .. } | Source::Message { .. }) {
+		let text = if matches!(source, Source::Message { .. }) {
 			scope
 				.classified_output_source(entry.thread_id, &source, pending)
 				.await?

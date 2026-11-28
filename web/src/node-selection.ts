@@ -68,9 +68,6 @@ export function nodeView(
     events: state.events.filter(
       (event) => event.node === null || event.node === node.name,
     ),
-    artifacts: state.artifacts.filter((artifact) =>
-      ids.has(artifact.thread_id),
-    ),
     unconfirmed: (state.unconfirmed ?? []).filter((entry) =>
       ids.has(entry.thread_id),
     ),

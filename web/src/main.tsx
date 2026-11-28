@@ -589,14 +589,6 @@ function Dashboard({
           [...projected.tasks, ...snapshot.tasks].map((row) => [row.id, row]),
         ).values(),
       ],
-      artifacts: [
-        ...new Map(
-          [...projected.artifacts, ...snapshot.artifacts].map((row) => [
-            row.id,
-            row,
-          ]),
-        ).values(),
-      ],
     };
   }, [projected, selectedSnapshot, remembered.selected?.name]);
   const channelNode = route.channel
@@ -919,7 +911,7 @@ function Dashboard({
     setError("");
     try {
       const result = await request();
-      if (selection?.kind === "entity" || selection?.kind === "cluster") {
+      if (selection?.kind === "entity") {
         const registration = result as {
           id?: string;
           version?: string;

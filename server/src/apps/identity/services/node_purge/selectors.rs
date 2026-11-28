@@ -34,7 +34,7 @@ impl Owners<'_> {
 			Run => ("task_executions", "id"),
 			ModelCall => ("model_calls", "id"),
 			Task => ("tasks", "id"),
-			Area => ("core_areas", "id"),
+			Area => ("core_execution_scopes", "id"),
 			Request => ("generation_requests", "id"),
 			Bank => ("memory_banks", "id"),
 			Unit => ("memory_units", "id"),
@@ -46,13 +46,15 @@ impl Owners<'_> {
 			RemoteUsage => ("generation_remote_usage", "attempt_id"),
 			Observation => ("approval_observations", "id"),
 			Message => ("messages", "id"),
-			RetentionHold => ("core_retention_holds", "id"),
 			Preview => ("core_previews", "id"),
 			LivePreview => ("core_live_previews", "id"),
 			Subnode => ("subnodes", "id"),
 			ScratchSpace => ("scratch_spaces", "id"),
 			Record => ("core_records", "id"),
 			Duty => ("duties", "id"),
+			Drive => ("drives", "id"),
+			DriveUpload => ("drive_uploads", "id"),
+			DriveJob => ("drive_jobs", "id"),
 		};
 		Ok(Expr::from(col(table, field))
 			.in_subquery(
@@ -113,8 +115,8 @@ impl Owners<'_> {
 					.in_subquery(
 						Query::select()
 							.column(Alias::new("area_id"))
-							.from(Alias::new("core_runs"))
-							.and_where(self.root("core_runs", "run_id", Root::Run)?)
+							.from(Alias::new("core_run_scopes"))
+							.and_where(self.root("core_run_scopes", "run_id", Root::Run)?)
 							.to_owned(),
 					)
 					.into();

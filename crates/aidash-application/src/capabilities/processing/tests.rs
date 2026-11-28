@@ -29,21 +29,6 @@ struct Trace {
 struct Repository(Mutex<Trace>);
 struct OutputScope<'a>(&'a Repository);
 #[async_trait]
-impl crate::ports::capabilities::processing::OutputTransfer for OutputScope<'_> {
-	async fn request(&mut self, _: &str, _: &str, _: Option<Value>) -> Result<Value> {
-		Err(Error::Forbidden)
-	}
-	async fn begin_output(&mut self, _: u64) -> Result<()> {
-		Err(Error::Forbidden)
-	}
-	async fn write_output(&mut self, _: &[u8]) -> Result<()> {
-		Err(Error::Forbidden)
-	}
-	async fn finish_output(&mut self, _: &str) -> Result<(Uuid, String)> {
-		Err(Error::Forbidden)
-	}
-}
-#[async_trait]
 impl crate::ports::capabilities::processing::ReceiptOutputScope for OutputScope<'_> {
 	fn limits(&self) -> aidash_domain::capabilities::operations::reconciliation::Limits {
 		aidash_domain::capabilities::operations::reconciliation::Limits {
@@ -54,8 +39,10 @@ impl crate::ports::capabilities::processing::ReceiptOutputScope for OutputScope<
 			maximum_seconds: 600,
 		}
 	}
-	async fn put(&mut self, _: &str, _: &[u8]) -> Result<(Uuid, String)> {
-		Err(Error::Forbidden)
+	async fn put(&mut self, kind: &str, bytes: &[u8]) -> Result<(Uuid, String)> {
+		self.0.0.lock().unwrap().calls.push(format!("put:{kind}"));
+		let digest = aidash_domain::capabilities::transfer::receiver::chunk_digest(bytes);
+		Ok((Uuid::new_v4(), digest))
 	}
 	async fn commit(self: Box<Self>, proof: &str, output: Value) -> Result<()> {
 		self.0.0.lock().unwrap().adopted = Some((proof.into(), output));
@@ -265,6 +252,48 @@ async fn a_withdrawn_receipt_the_runner_holds_as_uncertain_requires_output_adopt
 
 #[rstest]
 #[tokio::test]
+async fn stopped_output_keeps_logs_without_adopting_working_files(repository: Repository) {
+	let id = Uuid::from_u128(1);
+	let mut observed = json!({
+		"operation_id":id, "digest":"digest-one", "status":"uncertain",
+		"termination_confirmed":true, "output_harvested":true,
+		"stdout":"bG9nCg==", "files":[{"path":"left-behind.txt","size":16}],
+	});
+	let proof =
+		aidash_domain::capabilities::operations::processing::output_digest("runner", &observed)
+			.unwrap();
+	observed["output_digest"] = json!(proof);
+	{
+		let mut trace = repository.0.lock().unwrap();
+		trace.accept_output = true;
+		trace.operation = observed;
+	}
+	let receipt = Receipt {
+		id,
+		digest: "digest-one".into(),
+		runner_instance: Some("runner".into()),
+		uncertain: true,
+	};
+	let adopted = super::super::stopped_logs::adopt(&repository, &receipt)
+		.await
+		.unwrap();
+	assert_eq!(adopted.as_deref(), Some(proof.as_str()));
+	let trace = repository.0.lock().unwrap();
+	let (_, output) = trace.adopted.as_ref().unwrap();
+	assert!(output.get("files").is_none());
+	assert_eq!(output["output_file"]["size"], 4);
+	assert_eq!(
+		trace.calls,
+		[
+			format!("GET:/v1/operations/{id}"),
+			"put:output".into(),
+			"GET:/v1/health".into()
+		]
+	);
+}
+
+#[rstest]
+#[tokio::test]
 async fn discarded_output_is_recorded_before_the_runner_acknowledgement(repository: Repository) {
 	let id = Uuid::from_u128(1);
 	let proof = "a".repeat(64);
@@ -281,7 +310,7 @@ async fn discarded_output_is_recorded_before_the_runner_acknowledgement(reposito
 		runner_instance: Some("runner".into()),
 		uncertain: true,
 	};
-	let result = super::super::receipt_output::adopt(&repository, &receipt)
+	let result = super::super::stopped_logs::adopt(&repository, &receipt)
 		.await
 		.unwrap();
 	assert_eq!(result.as_deref(), Some(proof.as_str()));
@@ -308,7 +337,7 @@ async fn discarded_output_from_a_replacement_runner_is_not_adopted(repository: R
 		uncertain: true,
 	};
 	assert!(matches!(
-		super::super::receipt_output::adopt(&repository, &receipt).await,
+		super::super::stopped_logs::adopt(&repository, &receipt).await,
 		Err(Error::Forbidden)
 	));
 	assert!(repository.0.lock().unwrap().adopted.is_none());

@@ -92,15 +92,6 @@ impl NativeAccess {
 		.map_err(Into::into)
 	}
 
-	pub(crate) async fn artifact_visible(&mut self, artifact: &domain::Artifact) -> Result<bool> {
-		aidash_application::authorization::visibility::resources::artifact_visible(
-			&mut crate::bootstrap::native_run_visibility_scope(self),
-			artifact,
-		)
-		.await
-		.map_err(Into::into)
-	}
-
 	pub(crate) async fn message_visible(&mut self, message: &domain::Message) -> Result<bool> {
 		aidash_application::authorization::visibility::resources::message_visible(
 			&mut crate::bootstrap::native_run_visibility_scope(self),

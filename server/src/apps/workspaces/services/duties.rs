@@ -4,7 +4,7 @@
 use super::access::Lease;
 use crate::apps::workspaces::repositories::{
 	duties::{self as repository, Filter, Stop},
-	scratch::{self, NativeScratchServices, ScratchAdapter},
+	scratch::{NativeScratchServices, ScratchAdapter},
 };
 use crate::apps::workspaces::serializers::duties::{DetailView, DutyNotice, DutyView, NoticesView};
 use crate::{
@@ -17,16 +17,12 @@ use crate::{
 	federation::Federation,
 	store::Store,
 };
-use aidash_application::{
-	Error as AppError,
-	duties::{self as app, DutyScope, Listing, Origin},
-};
+use aidash_application::duties::{self as app, DutyScope, Listing, Origin};
 use aidash_domain::{
 	approval_rules::{ApprovalMode, MODE_RESOURCE},
 	duties::{self, Claim, Definition, Duty, Halt, Patch, Tick, TickStatus},
 	policy::SubjectKind,
 	registry::{EntityRef, Search},
-	scratch::ScratchState,
 	tenancy::TenantName,
 };
 use chrono::{DateTime, Duration, Utc};
@@ -276,9 +272,14 @@ impl DutyScope for Adapter<'_> {
 		from: Uuid,
 		definition: &Definition,
 	) -> aidash_application::Result<Uuid> {
-		// The Requester opens the Duty's own Thread in the Node and
-		// Scratch Space it was registered from (#1008, ADR 0140).
-		let place = self.thread_place(from).await?;
+		let mut place = self.thread_place(from).await?;
+		let tenant = tenant(self.access);
+		place.scratch_space_id = crate::apps::workspaces::repositories::scratch::default_space_id(
+			&mut **self.access.tx,
+			&tenant,
+			&place.node,
+		)
+		.await?;
 		Ok(self
 			.open_in(Uuid::new_v4(), &place, definition, None)
 			.await?)
@@ -295,10 +296,8 @@ impl DutyScope for Adapter<'_> {
 		deleted_at: DateTime<Utc>,
 		definition: &Definition,
 	) -> aidash_application::Result<Uuid> {
-		// Only where the deleted Thread was: a Duty never moves to another
-		// Scratch Space unseen (#991, ADR 0145).
+		// Reopen the Duty in the same Node.
 		let place = self.thread_place(deleted).await?;
-		let tenant = tenant(self.access);
 		let person = self.subject().to_owned();
 		let node = aidash_domain::nodes::NodeName::parse(&place.node)?;
 		let mut services = NativeScratchServices {
@@ -309,40 +308,13 @@ impl DutyScope for Adapter<'_> {
 			services: &mut services,
 			person_override: None,
 		};
-		// The selection holds the Scratch Space lock through the Thread and
-		// Duty writes in this same transaction.
-		let selection = aidash_application::scratch::select_for_thread(
-			&mut scope,
-			&node,
-			&definition.title,
-			Some(place.scratch_space_id),
-			self.now,
-		)
-		.await;
-		if let Err(error) = selection {
-			if !matches!(error, AppError::Forbidden | AppError::NotFound(_)) {
-				return Err(error);
-			}
-			// Explain why the original Space cannot be selected. The selection
-			// already locked it if it exists.
-			let reason =
-				match scratch::read(&mut *self.access.tx, &tenant, place.scratch_space_id).await? {
-					None => "the Scratch Space of the Duty's deleted Thread no longer exists",
-					Some(space) if space.state != ScratchState::Active => {
-						"the Scratch Space of the Duty's deleted Thread can no longer be used"
-					}
-					Some(space) if !space.may_use(&person) => {
-						"the Duty's new Thread opens in the Scratch Space of its deleted Thread, which \
-					 you cannot use; ask its creator to add you as a member"
-					}
-					Some(_) if matches!(error, AppError::Forbidden) => {
-						"the Scratch Space of the Duty's deleted Thread cannot be used with the current \
-					 Node access or execution policy"
-					}
-					Some(_) => return Err(error),
-				};
-			return Err(AppError::Invalid(reason.into()));
-		}
+		let scratch_space_id =
+			aidash_application::scratch::select_for_thread(&mut scope, &node, None, self.now)
+				.await?;
+		let place = ThreadPlace {
+			scratch_space_id,
+			..place
+		};
 		let note = format!(
 			"The Duty's previous Thread was deleted at {}.",
 			deleted_at.format("%Y-%m-%d %H:%M UTC")
@@ -1440,6 +1412,7 @@ pub async fn agent_tool(
 					title: input.title,
 					mission: input.mission,
 					procedure: input.procedure.unwrap_or_default(),
+					goal: input.goal,
 					agent: input.agent.unwrap_or_else(|| EntityRef {
 						id: run.agent_id.clone(),
 						version: run.agent_version.clone(),
@@ -1484,6 +1457,7 @@ pub async fn agent_tool(
 					title: input.title,
 					mission: input.mission,
 					procedure: input.procedure,
+					goal: input.goal,
 					agent: input.agent,
 					trigger: input.trigger,
 					approval_mode: input.approval_mode,

@@ -147,8 +147,6 @@ pub mod retrieval;
 
 pub mod embedding;
 
-pub mod image_publications;
-
 pub mod memory;
 
 pub mod visibility;

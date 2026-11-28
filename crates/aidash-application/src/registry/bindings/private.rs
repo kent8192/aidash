@@ -82,7 +82,6 @@ pub fn attach(entry: &mut Entry, node: &str, documents: &Value) -> Result<Entry>
 		capabilities: vec![],
 		tags: vec!["private".into()],
 		languages: vec![],
-		skills: vec![],
 		schema: json!({}),
 		config: serde_json::to_value(NativeContext {
 			schema_version: 1,

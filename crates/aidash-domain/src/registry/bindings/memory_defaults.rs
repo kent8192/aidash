@@ -55,7 +55,6 @@ fn entry(id: &str, kind: &str, config: Value) -> Entry {
 		capabilities: vec![],
 		tags: vec!["system".into()],
 		languages: vec![],
-		skills: vec![],
 		schema: serde_json::json!({}),
 		config,
 	}
@@ -153,4 +152,12 @@ pub fn definitions() -> Result<Vec<Entry>> {
 		),
 		entry(MEMORY_ID, "memory", serde_json::to_value(provider)?),
 	])
+}
+
+/// Resolve an immutable internal role without consulting the Tenant Registry.
+pub fn definition(id: &str, version: &str) -> Result<Option<Entry>> {
+	if version != VERSION || !matches!(id, MEMORY_ID | RERANKER_ID | TOKENIZER_ID) {
+		return Ok(None);
+	}
+	Ok(definitions()?.into_iter().find(|entry| entry.id == id))
 }

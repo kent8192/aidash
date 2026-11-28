@@ -82,10 +82,6 @@ export function MeshInspector({
     localNode && node.kind === "task"
       ? data.tasks.find((v) => v.id === node.resourceId)
       : undefined;
-  const artifact =
-    localNode && node.kind === "artifact"
-      ? data.artifacts.find((v) => v.id === node.resourceId)
-      : undefined;
   const thread =
     localNode && node.threadId
       ? data.threads.find((v) => v.id === node.threadId)
@@ -457,16 +453,6 @@ export function MeshInspector({
                 <p className="text-xs text-muted-foreground">
                   {task.description}
                 </p>
-              )}
-              {artifact && (
-                <>
-                  <p className="text-xs text-muted-foreground">
-                    {t(artifact.kind)} · {date(artifact.created_at)}
-                  </p>
-                  <Disclosure summary={copy.open}>
-                    <JsonView value={artifact.content} />
-                  </Disclosure>
-                </>
               )}
             </InspectorSection>
             {run && (

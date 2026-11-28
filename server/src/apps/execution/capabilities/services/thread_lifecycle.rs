@@ -11,7 +11,7 @@ pub(crate) async fn delete(
 	input: DeleteThread,
 ) -> Result<Value> {
 	aidash_application::capabilities::thread_lifecycle::delete(
-		&mut crate::bootstrap::cleanup_scope(Some(store), access),
+		&mut crate::apps::execution::repositories::thread_lifecycle::Scope { store, access },
 		thread,
 		input.into(),
 	)

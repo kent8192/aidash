@@ -2,14 +2,14 @@
 use super::capability_records::{domain, native};
 use crate::apps::execution::capabilities::{
 	serializers::{
-		contracts::{Area, FileEntry},
+		contracts::FileEntry,
 		references::{Chunk as NativeChunk, Reference as NativeReference, Upload as NativeUpload},
 	},
 	services::{
 		objects::PendingObject,
 		operations,
 		records::{self, Record as NativeRecord},
-		service, sessions,
+		sessions,
 	},
 };
 use crate::{
@@ -20,7 +20,7 @@ use crate::{
 use aidash_application::tenancy::{DeploymentScopeReason, TenancyScope};
 use aidash_application::{
 	Error, Result,
-	ports::capabilities::references::{Limits, Mounts, ReferenceRepository, ReferenceScope},
+	ports::capabilities::references::{Limits, ReferenceRepository, ReferenceScope},
 };
 use aidash_domain::capabilities::{
 	operations::MountedFile,
@@ -100,7 +100,6 @@ impl Authority<'_> {
 pub(crate) struct Scope<'a> {
 	pub(crate) store: Option<&'a Store>,
 	pub(crate) authority: Authority<'a>,
-	pub(crate) area: Option<&'a mut Area>,
 	pub(crate) pending: Option<PendingObject>,
 }
 fn missing() -> Error {
@@ -205,7 +204,6 @@ impl ReferenceRepository for Repository<'_> {
 		Ok(Box::new(Scope {
 			store: Some(self.store),
 			authority: Authority::Owned(Box::new(access)),
-			area: None,
 			pending: None,
 		}))
 	}
@@ -329,21 +327,6 @@ impl ReferenceScope for Scope<'_> {
 			staging_seconds: profile.staging_seconds,
 			runner_image: profile.runner.as_ref().map(|runner| runner.image.clone()),
 		})
-	}
-	fn mounts(&self) -> Result<Mounts> {
-		let area = self.area.as_deref().ok_or_else(missing)?;
-		Ok(Mounts {
-			manifest: area.manifest.clone(),
-			constraints: area.constraints.clone(),
-		})
-	}
-	fn set_constraints(&mut self, value: Value) -> Result<()> {
-		self.area.as_deref_mut().ok_or_else(missing)?.constraints = value;
-		Ok(())
-	}
-	fn set_manifest(&mut self, value: Value) -> Result<()> {
-		self.area.as_deref_mut().ok_or_else(missing)?.manifest = value;
-		Ok(())
 	}
 	async fn load(&mut self, id: Uuid) -> Result<Record> {
 		records::get(self.authority.get_mut(), id, "reference")
@@ -469,15 +452,6 @@ impl ReferenceScope for Scope<'_> {
 			.finish(self.authority.get_mut(), Some(digest))
 			.await
 			.map_err(Into::into)
-	}
-	async fn publish(&mut self) -> Result<()> {
-		service::publish(
-			self.store.ok_or_else(missing)?,
-			self.authority.get_mut(),
-			self.area.as_deref_mut().ok_or_else(missing)?,
-		)
-		.await
-		.map_err(Into::into)
 	}
 	async fn verified_health(&mut self) -> Result<Value> {
 		operations::verified_health(self.store.ok_or_else(missing)?, false)

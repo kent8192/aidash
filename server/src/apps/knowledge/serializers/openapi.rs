@@ -1,7 +1,7 @@
 //! OpenAPI payload contracts for native endpoints.
 use super::super::views;
 use crate::apps::knowledge::serializers::contracts::CleanupStatus as SemanticCleanupStatus;
-use crate::apps::knowledge::serializers::contracts::ConfigureIndex as SemanticConfigureIndex;
+use crate::apps::knowledge::serializers::contracts::ConfigureThreadIndex as SemanticConfigureIndex;
 use crate::apps::knowledge::serializers::contracts::Entry as SemanticEntry;
 use crate::apps::knowledge::serializers::contracts::History as SemanticHistory;
 use crate::apps::knowledge::serializers::contracts::Index as SemanticIndex;

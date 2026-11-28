@@ -454,11 +454,9 @@ pub async fn status<R: PeerAdmissionRepository>(
 		declinable_call: run.as_ref().and_then(|r| r.declinable_call.clone()),
 		error: run.and_then(|r| {
 			r.error
-				.clone()
-				.map(|error| match error.as_str() {
-					aidash_domain::capabilities::sessions::QUEUED
-					| aidash_domain::capabilities::sessions::QUEUE_LIMIT => error,
-					_ => "Remote execution requires attention. Review current authority and retry controls.".into(),
+				.as_ref()
+				.map(|_| {
+					"Remote execution requires attention. Review current authority and retry controls.".into()
 				})
 		}),
 	}))
@@ -498,7 +496,10 @@ pub async fn control<R: PeerAdmissionRepository>(
 	if run.home_node != source || run_grant(repository, &run.metadata).await? != Some(grant) {
 		return Err(Error::Forbidden);
 	};
-	if matches!(action, RemoteExecutionControl::Resume) {
+	if matches!(
+		action,
+		RemoteExecutionControl::Resume | RemoteExecutionControl::ResumeGoal { .. }
+	) {
 		let (scope, _) = worker_lease(repository, &run.metadata)
 			.await?
 			.ok_or(Error::Forbidden)?;

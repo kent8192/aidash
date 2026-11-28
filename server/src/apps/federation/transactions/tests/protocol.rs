@@ -389,7 +389,7 @@ async fn overlapping_coordinators_use_the_same_node_order_without_lost_updates(
 #[case::ordinary(false)]
 #[case::node_deletion_after_decision(true)]
 #[tokio::test]
-async fn thread_task_execution_and_artifact_commit_together_once(
+async fn thread_task_execution_and_completion_message_commit_together_once(
 	#[future] pair: Option<Pair>,
 	#[case] delete_after_decision: bool,
 ) {
@@ -400,7 +400,7 @@ async fn thread_task_execution_and_artifact_commit_together_once(
 	let Some((a, b, mut manifest, wa, _wb)) = Box::pin(pair).await else {
 		return;
 	};
-	let agent:Entry=serde_json::from_value(json!({"id":"executor","version":"1.0.0","kind":"agent","name":{"en":"Executor"},"description":{"en":"Atomic fixture"},"config":{"model":{"id":"fixture","version":"1.0.0"},"instructions":"Atomic execution","schema_version":1,"bindings":[],"remove_default":[]}})).unwrap();
+	let agent:Entry=serde_json::from_value(json!({"id":"executor","version":"1.0.0","kind":"agent","name":{"en":"Executor"},"description":{"en":"Atomic fixture"},"config":{"model":{"id":"fixture","version":"1.0.0"},"instructions":"Atomic execution","bindings":[],"remove_default":[]}})).unwrap();
 	let model: Entry = serde_json::from_value(json!({"id":"fixture","version":"1.0.0","kind":"model","name":{"en":"Atomic model"},"description":{"en":"Pinned execution fixture"},"config":{"provider":"openrouter","model_id":"fixture","endpoint":"http://localhost:19999/v1","context_window":128000,"max_output_tokens":4096,"modalities":["text"],"cost":{}}})).unwrap();
 	b.f.registry
 		.register(
@@ -430,6 +430,7 @@ async fn thread_task_execution_and_artifact_commit_together_once(
 				&NewTask {
 					title: "Atomic task".into(),
 					description: "Finish with the remote execution".into(),
+					goal: None,
 					requirements: json!({}),
 					dependencies: vec![],
 					parent_id: None,
@@ -480,7 +481,7 @@ async fn thread_task_execution_and_artifact_commit_together_once(
 	)
 	.await;
 	pending_run(&b, run.id, json!([])).await;
-	manifest.participants[0].mutations.push(serde_json::from_value(json!({"kind":"complete_task","task_id":task.id,"expected_revision":task.revision,"artifact":{"kind":"text","name":"Atomic result","content":"one committed result"}})).unwrap());
+	manifest.participants[0].mutations.push(serde_json::from_value(json!({"kind":"complete_task","task_id":task.id,"expected_revision":task.revision,"text":"one committed result"})).unwrap());
 	manifest.participants[1].mutations.push(
 		serde_json::from_value(
 			json!({"kind":"finish_run","run_id":run.id,"task_id":task.id,"expected_revision":run.revision}),
@@ -509,7 +510,10 @@ async fn thread_task_execution_and_artifact_commit_together_once(
 			.snapshot(&TEST_FIXTURE, wa)
 			.await
 			.unwrap()
-			.artifacts
+			.messages
+			.into_iter()
+			.filter(|message| message.completion.is_some())
+			.collect::<Vec<_>>()
 			.is_empty()
 	);
 	pending_run(&b, run.id, json!([])).await;
@@ -636,14 +640,17 @@ async fn thread_task_execution_and_artifact_commit_together_once(
 			.as_str(),
 		"COMPLETED"
 	);
-	let artifacts =
+	let completions =
 		a.f.store
 			.snapshot(&TEST_FIXTURE, wa)
 			.await
 			.unwrap()
-			.artifacts;
-	assert_eq!(artifacts.len(), 1);
-	assert_eq!(artifacts[0].created_by, owner);
+			.messages
+			.into_iter()
+			.filter(|message| message.completion.is_some())
+			.collect::<Vec<_>>();
+	assert_eq!(completions.len(), 1);
+	assert_eq!(completions[0].sender, owner);
 }
 
 #[rstest]

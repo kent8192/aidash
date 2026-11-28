@@ -122,3 +122,91 @@ impl Home {
 			.await
 	}
 }
+
+impl Home {
+	pub(crate) async fn deliver_completion_attachments(
+		&self,
+		tenant: &str,
+		message: Uuid,
+		attachments: &[crate::apps::execution::repositories::deliverables::Attachment],
+	) -> Result<Vec<Uuid>> {
+		use tokio::io::AsyncReadExt as _;
+		let key = format!("completion:{message}");
+		let grant =
+			crate::authorization::peer::admission::run_grant(&self.federation.store, &self.run)
+				.await?
+				.ok_or(Error::Forbidden)?;
+		let sender = self
+			.admitted_sender("home_delivery", &json!({"key":key}))
+			.await?;
+		let manifest: Vec<File> = attachments
+			.iter()
+			.map(|file| File {
+				path: file.path.clone(),
+				digest: file.digest.clone(),
+				size: file.size,
+				media_type: file.media_type.clone(),
+			})
+			.collect();
+		let purpose = Purpose::CompletionAttachments {
+			message_id: message,
+		};
+		let id = delivery::delivery_id(self.run.id, &key);
+		let open = json!({
+			"grant_id": grant, "admission_id": self.run.id, "key": key,
+			"purpose": purpose, "files": manifest
+		});
+		let staged = self.delivery_request(&sender, "prepare", &open).await?;
+		let receipt = if delivery::receipt_matches(id, &manifest, &staged) {
+			staged
+		} else {
+			if staged["state"] != "staging" || staged["transfer_id"] != json!(id) {
+				return Err(Error::Conflict("DELIVERY_NOT_STAGING".into()));
+			}
+			let blobs = self.federation.store.capabilities.blob_store().await?;
+			let mut bytes = vec![0; CHUNK_BYTES as usize];
+			for (index, file) in manifest.iter().enumerate() {
+				let digest = file
+					.digest
+					.parse()
+					.map_err(|_| Error::Conflict("OBJECT_INTEGRITY".into()))?;
+				let mut source = blobs
+					.get(tenant, digest, None)
+					.await?
+					.ok_or(Error::Forbidden)?;
+				let mut offset = 0;
+				while offset < file.size {
+					let length = (file.size - offset).min(CHUNK_BYTES) as usize;
+					source.read_exact(&mut bytes[..length]).await?;
+					let reply = self
+						.delivery_request(
+							&sender,
+							"chunks",
+							&json!({
+								"grant_id":grant, "admission_id":self.run.id, "key":key,
+								"tool":purpose.tool(), "file":index, "offset":offset,
+								"data":base64::engine::general_purpose::STANDARD.encode(&bytes[..length]),
+							}),
+						)
+						.await?;
+					if reply["state"] != "staging" {
+						return Err(Error::Conflict("DELIVERY_CHUNK_UNCONFIRMED".into()));
+					}
+					offset += length as u64;
+				}
+			}
+			self.delivery_request(&sender, "commit", &open).await?
+		};
+		if !delivery::receipt_matches(id, &manifest, &receipt)
+			|| receipt["receipt"]["message_id"] != json!(message)
+		{
+			return Err(Error::Conflict("INVALID_DELIVERY_RECEIPT".into()));
+		}
+		let ids = receipt["receipt"]["files"]
+			.as_array()
+			.ok_or(Error::Forbidden)?;
+		ids.iter()
+			.map(|file| serde_json::from_value(file["attachment_id"].clone()).map_err(Into::into))
+			.collect()
+	}
+}

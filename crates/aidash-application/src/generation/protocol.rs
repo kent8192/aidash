@@ -92,8 +92,7 @@ fn exact_provider(description: &Description, usage: &Usage) -> Result<()> {
 			let config: aidash_domain::model::ModelConfig =
 				aidash_domain::model::ModelConfig::from_stored(definition.metadata.config.clone())?;
 			let valid = if usage.purpose == Purpose::Summary {
-				let policy =
-					aidash_domain::context::policy::Effective::of(agent.context_policy.as_ref());
+				let policy = aidash_domain::context::policy::Effective::of(None);
 				let max = policy.summary_tokens(config.context_window).map(|tokens| {
 					tokens.min(config.provider_max_output_tokens.unwrap_or(u32::MAX))
 				});

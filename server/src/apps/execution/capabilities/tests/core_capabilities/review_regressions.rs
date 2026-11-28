@@ -13,7 +13,7 @@ async fn withdrawn_operation_fixture(
 		&c.app,
 		&c.token,
 		"GET",
-		&format!("/api/executions/{}/working-area", run.id),
+		&format!("/api/executions/{}/execution-scope", run.id),
 		Value::Null,
 	)
 	.await;
@@ -78,7 +78,7 @@ async fn withdrawn_operation_fixture(
 		let query_bind_1 = serde_json::from_value::<Uuid>(area["id"].clone()).unwrap();
 		sqlx::query(
 			&Query::update()
-				.table(Alias::new("core_areas"))
+				.table(Alias::new("core_execution_scopes"))
 				.value(Alias::new("state"), "running")
 				.and_where(Expr::col(Alias::new("id")).eq(Expr::value(query_bind_1.to_owned())))
 				.to_string(PostgresQueryBuilder),
@@ -92,7 +92,7 @@ async fn withdrawn_operation_fixture(
 
 #[rstest::rstest]
 #[tokio::test]
-async fn authority_withdrawal_before_dispatch_keeps_saved_files_usable(
+async fn authority_withdrawal_before_dispatch_leaves_the_execution_scope_usable(
 	#[future]
 	#[from(running_withdrawn_operation_fixture)]
 	withdrawn_operation_fixture: (
@@ -140,7 +140,7 @@ async fn authority_withdrawal_before_dispatch_keeps_saved_files_usable(
 		sqlx::query_scalar(
 			&Query::select()
 				.column(Alias::new("state"))
-				.from(Alias::new("core_areas"))
+				.from(Alias::new("core_execution_scopes"))
 				.and_where(
 					reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("id"))).eq(
 						SimpleExpr::CustomWithExpr(
@@ -159,8 +159,16 @@ async fn authority_withdrawal_before_dispatch_keeps_saved_files_usable(
 		state, "active",
 		"an undispatched operation has no uncertain effects"
 	);
-	let (status,patched) = request(&c.app,&c.token,"POST",&path_for_patch(run.id),json!({"idempotency_key":Uuid::new_v4(),"expected_revision":area["revision"],"preconditions":{"saved.txt":null},"patch":"*** Begin Patch\n*** Add File: saved.txt\n+still usable\n*** End Patch"})).await;
-	assert_eq!(status, 200, "{patched}");
+	let (status, result) = request(
+		&c.app,
+		&c.token,
+		"POST",
+		&format!("/api/executions/{}/files/search", run.id),
+		json!({"query":"","mode":"path","scope":"references"}),
+	)
+	.await;
+	assert_eq!(status, 200, "{result}");
+	assert!(result["matches"].is_array(), "{result}");
 	c.close().await;
 }
 
@@ -379,7 +387,7 @@ async fn mounted_skills_require_writable_capacity_before_operation_commit(
 		&c.app,
 		&c.token,
 		"GET",
-		&format!("/api/executions/{}/working-area", run.id),
+		&format!("/api/executions/{}/execution-scope", run.id),
 		Value::Null,
 	)
 	.await;
@@ -660,7 +668,7 @@ async fn command_cleanup_fixture(
 	let id = Uuid::new_v4();
 	sqlx::query(
 		&Query::insert()
-			.into_table(Alias::new("core_areas"))
+			.into_table(Alias::new("core_execution_scopes"))
 			.columns(
 				[
 					"id",
@@ -688,7 +696,6 @@ async fn command_cleanup_fixture(
 	.execute(f.store.pool.fixture_driver())
 	.await
 	.unwrap();
-	fixture_revision(f.store.pool.fixture_driver(), area, 1, json!([])).await;
 	for index in 0..operation_count {
 		let id = if index == 0 { id } else { Uuid::new_v4() };
 		sqlx::query(
@@ -1036,7 +1043,7 @@ async fn a_withdrawn_undelivered_operation_has_no_effects_and_is_acknowledged(
 	let area_state: String = sqlx::query_scalar(
 		&Query::select()
 			.column(Alias::new("state"))
-			.from(Alias::new("core_areas"))
+			.from(Alias::new("core_execution_scopes"))
 			.and_where(Expr::col(Alias::new("id")).eq(Expr::value(area)))
 			.to_string(PostgresQueryBuilder),
 	)
@@ -1496,92 +1503,4 @@ async fn node_deletion_due_cursor_visits_later_jobs_after_a_failed_page(
 		0
 	);
 	cleanup(c.f, &c.url, &c.schema).await;
-}
-
-#[rstest::rstest]
-#[tokio::test]
-async fn waiting_area_reader_sees_the_committed_revision(
-	#[future] capability_fixture: CoreFixture,
-) {
-	use reinhardt::query::{IntoValue as _, LockType, QueryStatementBuilder as _};
-	let c = Box::pin(capability_fixture).await;
-	let run = admit(&c).await;
-	let path = format!("/api/executions/{}/working-area", run.id);
-	let (status, before) = request(&c.app, &c.token, "GET", &path, Value::Null).await;
-	assert_eq!(status, 200, "{before}");
-	let area: Uuid = serde_json::from_value(before["id"].clone()).unwrap();
-	let revision = before["revision"].as_i64().unwrap() + 1;
-	let files = json!([{"file_id": Uuid::new_v4(), "path": "committed.txt", "digest": "a".repeat(64), "size": 1, "media_type": "text/plain", "scope": "working", "provenance": {}}]);
-	let mut writer = c.f.store.pool.fixture_driver().begin().await.unwrap();
-	sqlx::query(
-		&Query::select()
-			.column(Alias::new("id"))
-			.from(Alias::new("core_areas"))
-			.and_where(Expr::col(Alias::new("id")).eq(Expr::value(area)))
-			.lock(LockType::Update)
-			.to_string(PostgresQueryBuilder),
-	)
-	.fetch_one(&mut *writer)
-	.await
-	.unwrap();
-	sqlx::query(
-		&Query::insert()
-			.into_table(Alias::new("core_manifest_revisions"))
-			.columns(["tenant", "area_id", "revision", "manifest"].map(Alias::new))
-			.values(vec![
-				"acme".into(),
-				area.into(),
-				revision.into(),
-				files.clone().into_value(),
-			])
-			.unwrap()
-			.to_string(PostgresQueryBuilder),
-	)
-	.execute(&mut *writer)
-	.await
-	.unwrap();
-	sqlx::query(
-		&Query::update()
-			.table(Alias::new("core_areas"))
-			.value(Alias::new("revision"), revision)
-			.and_where(Expr::col(Alias::new("id")).eq(Expr::value(area)))
-			.to_string(PostgresQueryBuilder),
-	)
-	.execute(&mut *writer)
-	.await
-	.unwrap();
-	{
-		let blocker: i32 = sqlx::query_scalar(
-			&Query::select()
-				.expr(Expr::cust("pg_backend_pid()"))
-				.to_string(PostgresQueryBuilder),
-		)
-		.fetch_one(&mut *writer)
-		.await
-		.unwrap();
-		let reader = request(&c.app, &c.token, "GET", &path, Value::Null);
-		tokio::pin!(reader);
-		tokio::select! {
-			result = &mut reader => panic!("reader did not wait for the Area lock: {result:?}"),
-			_ = super::lifecycle_tests::wait_for_blocked_connection(c.f.store.pool.fixture_driver(), blocker) => {}
-		}
-		writer.commit().await.unwrap();
-		let (status, after) = reader.await;
-		assert_eq!(status, 200, "{after}");
-		assert_eq!(after["revision"], revision);
-		assert_eq!(after["manifest"], files);
-	}
-	sqlx::query(
-		&Query::delete()
-			.from_table(Alias::new("core_manifest_revisions"))
-			.and_where(Expr::col(Alias::new("area_id")).eq(Expr::value(area)))
-			.and_where(Expr::col(Alias::new("revision")).eq(Expr::value(revision)))
-			.to_string(PostgresQueryBuilder),
-	)
-	.execute(c.f.store.pool.fixture_driver())
-	.await
-	.unwrap();
-	let (status, _) = request(&c.app, &c.token, "GET", &path, Value::Null).await;
-	assert_ne!(status, 200, "a missing revision must fail closed");
-	c.close().await;
 }

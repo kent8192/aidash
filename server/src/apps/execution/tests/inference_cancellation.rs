@@ -242,7 +242,14 @@ async fn cancel_stalled_inference(
 		.snapshot(&TEST_FIXTURE, run.thread_id)
 		.await
 		.unwrap();
-	assert!(snapshot.artifacts.is_empty());
+	assert!(
+		snapshot
+			.messages
+			.into_iter()
+			.filter(|message| message.completion.is_some())
+			.collect::<Vec<_>>()
+			.is_empty()
+	);
 	assert!(!snapshot.events.iter().any(|e| e.kind == "model.completed"));
 	assert!(!harness.worker_once().await.unwrap());
 	cleanup(f, &url, &schema).await;

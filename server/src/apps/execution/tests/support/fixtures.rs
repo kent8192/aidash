@@ -811,6 +811,9 @@ async fn bootstrap_with_policy(
 	if read_only_tool {
 		agent_bindings.push(json!({"kind":"tool","target":{"registry_deployment":f.config.deployment,"id":"http-read","version":"1.0.0"},"alias":"plugin_1","narrow":{}}));
 	}
+	if semantic {
+		agent_bindings.push(json!({"kind":"source","target":{"registry_deployment":f.config.deployment,"id":"fixture-thread-retrieval","version":"1.0.0"},"narrow":{}}));
+	}
 	let tenant = aidash_domain::tenancy::TenantName::new("acme").unwrap();
 	let authorization = Authorization {
 		pool: f.store.pool.clone(),
@@ -831,15 +834,6 @@ async fn bootstrap_with_policy(
 			.await
 			.unwrap();
 	};
-	if semantic {
-		let memory = json!({"id":"semantic-memory","version":"1.0.0","kind":"memory","name":{"en":"Semantic Memory"},"description":{"en":"Explicit retrieval opt-in"},"schema":{},"config":{"schema_version":1,"source":{"adapter":"semantic_memory"}}});
-		f.registry
-			.register(&tenant, serde_json::from_value(memory).unwrap())
-			.await
-			.unwrap();
-		approve("semantic-memory").await;
-		agent_bindings.push(json!({"kind":"memory","target":{"registry_deployment":f.config.deployment,"id":"semantic-memory","version":"1.0.0"},"narrow":{}}));
-	}
 	// The model fixture is a Keyless endpoint on loopback (ADR 0036). An
 	// unreachable fixture address stays permitted so it keeps failing to connect.
 	f.store.keyless.permit_origin_of(endpoint).unwrap();
@@ -857,7 +851,7 @@ async fn bootstrap_with_policy(
 		(
 			"agent",
 			"research",
-			json!({"schema_version":1,"model":{"id":"model","version":"1.0.0"},"instructions":"Test approved work","bindings":agent_bindings,"remove_default":if files {json!([])} else {json!(["file_search","file_read"])} }),
+			json!({"model":{"id":"model","version":"1.0.0"},"instructions":"Test approved work","bindings":agent_bindings,"remove_default":if files {json!([])} else {json!(["file_search","file_read"])} }),
 		),
 	];
 	if read_only_tool {
@@ -867,6 +861,16 @@ async fn bootstrap_with_policy(
 				"tool",
 				"http-read",
 				json!({"registry_deployment":f.config.deployment,"provider":"integration.http@1","operation":"invoke","default_alias":"plugin_1","tier":"integration","transport":{"transport":"http","endpoint":format!("{endpoint}/read"),"replay":"read_only"}}),
+			),
+		);
+	}
+	if semantic {
+		definitions.insert(
+			1,
+			(
+				"source",
+				"fixture-thread-retrieval",
+				json!({"schema_version":1,"source":{"adapter":"workspace_retrieval"}}),
 			),
 		);
 	}

@@ -496,7 +496,7 @@ fn thread_read_chunks_fit_remaining_complete_request_budget() {
 		id: "read-1".into(),
 		name: "workspace_read".into(),
 		arguments: serde_json::json!({
-			"kind":"artifact",
+			"kind":"message",
 			"id":"00000000-0000-0000-0000-000000000001",
 			"offset":0,
 			"max_chars":16000
@@ -506,7 +506,7 @@ fn thread_read_chunks_fit_remaining_complete_request_budget() {
 	let record = serde_json::json!({"content":"界".repeat(20000)});
 	let output = aidash_domain::context::observation::chunk_record(
 		record,
-		"artifact",
+		"message",
 		"00000000-0000-0000-0000-000000000001",
 		0,
 		16000,
@@ -568,7 +568,7 @@ fn thread_read_fit_uses_the_persisted_request_window() {
 		id: "read-1".into(),
 		name: "workspace_read".into(),
 		arguments: serde_json::json!({
-			"kind":"artifact",
+			"kind":"message",
 			"id":"00000000-0000-0000-0000-000000000001",
 			"offset":0,
 			"max_chars":16000
@@ -577,7 +577,7 @@ fn thread_read_fit_uses_the_persisted_request_window() {
 	let context = aidash_domain::context::Context::default();
 	let output = aidash_domain::context::observation::chunk_record(
 		serde_json::json!({"content":"界".repeat(20000)}),
-		"artifact",
+		"message",
 		"00000000-0000-0000-0000-000000000001",
 		0,
 		16000,
@@ -828,7 +828,7 @@ fn zero_length_envelope_is_checked_before_deferring_a_read() {
 		id: "read-1".into(),
 		name: "workspace_read".into(),
 		arguments: serde_json::json!({
-			"kind":"artifact",
+			"kind":"message",
 			"id":"00000000-0000-0000-0000-000000000001",
 			"offset":0,
 			"max_chars":16000
@@ -838,7 +838,7 @@ fn zero_length_envelope_is_checked_before_deferring_a_read() {
 	let record = serde_json::json!({"content":"界".repeat(20000)});
 	let output = aidash_domain::context::observation::chunk_record(
 		record,
-		"artifact",
+		"message",
 		"00000000-0000-0000-0000-000000000001",
 		0,
 		16000,
@@ -911,15 +911,6 @@ fn referenced_run_message_requires_every_record_chunk() {
 	assert!(super::referenced_message_inferred(&context, id));
 }
 
-#[rstest::rstest]
-
-fn result_names_fit_for_ascii_and_multibyte_titles() {
-	for title in ["a".repeat(64_000), "界".repeat(21_333)] {
-		let name = super::result_artifact_name(&title);
-		assert!(name.len() <= 64_000);
-		assert!(name.ends_with(" result"));
-	}
-}
 #[rstest::rstest]
 fn declared_continuations_keep_approval_precedence() {
 	let human = aidash_domain::tool::builtin_contract("human_request").unwrap();

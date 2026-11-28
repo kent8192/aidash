@@ -786,6 +786,7 @@ function DutyEditor({
   const problems = formProblems(form);
   const set = <K extends keyof DutyForm>(key: K, value: DutyForm[K]) =>
     setForm((current) => ({ ...current, [key]: value }));
+  const { t } = useI18n();
   return (
     <form
       className="grid gap-3 rounded-md border border-border p-3"
@@ -812,6 +813,14 @@ function DutyEditor({
           rows={4}
           value={form.procedure}
           onChange={(event) => set("procedure", event.target.value)}
+        />
+      </Field>
+      <Field label={t("taskGoal")}>
+        <Textarea
+          rows={3}
+          maxLength={4000}
+          value={form.goal}
+          onChange={(event) => set("goal", event.target.value)}
         />
       </Field>
       <div className="grid gap-3 sm:grid-cols-2">

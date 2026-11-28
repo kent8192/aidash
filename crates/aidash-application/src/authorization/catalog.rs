@@ -2,7 +2,7 @@
 use crate::{Error, Result, ports::catalog::CatalogScope};
 use aidash_domain::{
 	identity::catalog::{CatalogRestriction, RestrictionChange},
-	registry::{EntityRef, Entry, Search},
+	registry::{EntityRef, Entry, Search, rules::REGISTRY_KINDS},
 };
 /// The admission key of a read check that decided `registry.read` without a Catalog Approval.
 /// It is separate from the `registry.read` admission of [`entry`] so that a read-only result
@@ -187,6 +187,9 @@ pub async fn list(scope: &mut dyn CatalogScope, search: &Search) -> Result<Vec<E
 	let mut entries = vec![];
 	for document in documents {
 		let entry: Entry = serde_json::from_value(document)?;
+		if !REGISTRY_KINDS.contains(&entry.kind.as_str()) {
+			continue;
+		}
 		let reference = EntityRef {
 			id: entry.id.clone(),
 			version: entry.version.clone(),
@@ -214,6 +217,9 @@ pub async fn list(scope: &mut dyn CatalogScope, search: &Search) -> Result<Vec<E
 }
 pub async fn get(scope: &mut dyn CatalogScope, reference: &EntityRef) -> Result<Entry> {
 	let entry = entry(scope, reference, "registry.read").await?;
+	if !REGISTRY_KINDS.contains(&entry.kind.as_str()) {
+		return Err(Error::Forbidden);
+	}
 	scope.check_pinned(&entry).await?;
 	Ok(entry)
 }

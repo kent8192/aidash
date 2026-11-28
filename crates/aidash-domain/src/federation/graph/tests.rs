@@ -5,8 +5,8 @@ fn options() -> GraphOptions {
 		scope_thread: None,
 		depth: 1,
 		mode: "mesh".into(),
-		kinds: vec!["thread".into(), "goal".into(), "task".into()],
-		relations: vec!["contains".into(), "goal".into()],
+		kinds: vec!["thread".into(), "task".into()],
+		relations: vec!["contains".into()],
 		hours: 24,
 		limit: 20,
 		cursor: None,
@@ -68,7 +68,6 @@ fn page() -> GraphPage {
 			version: None,
 			thread_id: Some(Uuid::from_u128(1)),
 			status: None,
-			goal_body: None,
 			at: None,
 		}],
 		edges: vec![],
@@ -83,7 +82,6 @@ fn page() -> GraphPage {
 #[case("key")]
 #[case("duplicate")]
 #[case("version")]
-#[case("goal_body")]
 #[case("generation")]
 #[case("cursor")]
 #[case("dangling_edge")]
@@ -100,7 +98,6 @@ fn remote_projection_cannot_forge_scope_or_references(#[case] field: &str) {
 		"key" => p.nodes[0].id = "forged".into(),
 		"duplicate" => p.nodes.push(p.nodes[0].clone()),
 		"version" => p.nodes[0].version = Some("1".into()),
-		"goal_body" => p.nodes[0].goal_body = Some("hidden".into()),
 		"generation" => p.generation = "sha256:bad".into(),
 		"cursor" => p.next_cursor = Some("x".repeat(4097)),
 		"dangling_activity" => p.activity.push(GraphActivity {

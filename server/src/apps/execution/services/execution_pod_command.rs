@@ -107,6 +107,9 @@ pub(crate) fn pod_settings(
 	policy: &ScratchOperatorPolicy,
 	default_image: &str,
 ) -> Result<ExecutionPodSettings> {
+	if space.wipe_pending() {
+		return Err(Error::Conflict("Scratch Space wipe is pending".into()));
+	}
 	if space.state != ScratchState::Active {
 		return Err(Error::Forbidden);
 	}
@@ -131,6 +134,7 @@ pub(crate) fn pod_settings(
 		));
 	}
 	Ok(ExecutionPodSettings {
+		command_slots: if space.is_default { 32 } else { 8 },
 		scratch_space_id: space.id.to_string(),
 		image: settings
 			.execution_image
@@ -199,6 +203,7 @@ mod tests {
 			.get_one::<Uuid>("space")
 			.unwrap();
 		let mut space = ScratchSpace {
+			is_default: false,
 			id,
 			node: aidash_domain::nodes::NodeName::derived("test"),
 			name: "test".into(),
@@ -207,6 +212,7 @@ mod tests {
 			state: ScratchState::Active,
 			revision: 0,
 			wipe_generation: 0,
+			wipe_completed_generation: 0,
 			settings: Default::default(),
 			created_at: now,
 			last_used_at: now,
@@ -268,6 +274,7 @@ mod tests {
 			credentials: Arc::new(Keys),
 		};
 		let settings = ExecutionPodSettings {
+			command_slots: 8,
 			scratch_space_id: id.to_string(),
 			image: "image".into(),
 			cpu: 2,

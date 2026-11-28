@@ -4,14 +4,12 @@ use crate::Result as NativeResult;
 use crate::apps::execution::generation::repositories::contracts::RequestAccess;
 use aidash_application::{
 	Result,
-	ports::authorization::visibility::{
-		provenance::{LocalOutputScope, OutputScope, ReadProvenanceScope, RecordedRead},
-		resources::ResourceEventScope,
+	ports::authorization::visibility::provenance::{
+		LocalOutputScope, OutputScope, ReadProvenanceScope, RecordedRead,
 	},
 };
 use aidash_domain::{
-	Artifact, Conversation, Message, RunMetadata, Task, generation::requests::Request,
-	registry::EntityRef,
+	Conversation, Message, RunMetadata, Task, generation::requests::Request, registry::EntityRef,
 };
 use async_trait::async_trait;
 use reinhardt::query::{
@@ -86,15 +84,6 @@ impl ReadProvenanceScope for Reads<'_> {
 			.received_semantic_visible(run)
 			.await
 			.map_err(Into::into)
-	}
-	async fn source_artifact(&mut self, id: Uuid, thread: Uuid) -> Result<Option<Artifact>> {
-		if let Some(row) = self.access.state_source_artifact(id, thread) {
-			return Ok(row);
-		}
-		if let Some(artifact) = self.access.read_lookups.artifact(id, thread) {
-			return Ok(artifact);
-		}
-		self.artifact(id, Some(thread)).await
 	}
 	fn first_visit(&mut self, run: Uuid) -> bool {
 		self.access.read_lookups.first_visit(run, false)
@@ -240,36 +229,14 @@ impl ReadProvenanceScope for Reads<'_> {
 		if let Some(sources) = self.access.state_sources(run) {
 			return Ok(sources);
 		}
-		let result: NativeResult<Vec<RecordedRead>> = async {
-			let this = &mut *self.access;
-			let sources: Vec<(Uuid, String, Uuid)> = {
-				let query_bind_1 = run;
-				crate::database::native::query_as(
-					&Query::select()
-						.column(Alias::new("thread_id"))
-						.column(Alias::new("resource_kind"))
-						.column(Alias::new("resource_id"))
-						.from(Alias::new("authorization_run_reads"))
-						.and_where(
-							reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("run_id"))).eq(
-								SimpleExpr::CustomWithExpr(
-									"(?)".to_owned(),
-									vec![Expr::value(query_bind_1.to_owned()).into()],
-								),
-							),
-						)
-						.order_by(Alias::new("resource_kind"), Order::Asc)
-						.order_by(Alias::new("resource_id"), Order::Asc)
-						.to_string(PostgresQueryBuilder),
-				)
-				.columns(&["thread_id", "resource_kind", "resource_id"])
-				.fetch_all(&mut **this.tx)
-				.await?
-			};
-			Ok(sources)
-		}
-		.await;
-		result.map_err(Into::into)
+		crate::apps::identity::models::AuthorizationRunRead::for_run(self.access.tx.as_mut(), run)
+			.await
+			.map_err(Into::into)
+	}
+	async fn drive_source_visible(&mut self, entry: Uuid) -> Result<bool> {
+		crate::apps::drives::repository::source_visible(self.access, entry)
+			.await
+			.map_err(Into::into)
 	}
 	async fn source_task(&mut self, id: Uuid, thread: Uuid) -> Result<Option<Task>> {
 		if let Some(row) = self.access.state_source_task(id, thread) {
@@ -456,6 +423,11 @@ impl ReadProvenanceScope for Reads<'_> {
 						.column(ColumnRef::Asterisk)
 						.from(Alias::new("conversations"))
 						.and_where(
+							crate::apps::workspaces::models::Conversation::current_target(
+								Expr::col("target_kind"),
+							),
+						)
+						.and_where(
 							Condition::all()
 								.add(
 									reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("id")))
@@ -601,6 +573,11 @@ impl ReadProvenanceScope for NativeReads<'_> {
 			.await
 			.map_err(Into::into)
 	}
+	async fn drive_source_visible(&mut self, entry: Uuid) -> Result<bool> {
+		crate::apps::drives::repository::source_visible(self.access, entry)
+			.await
+			.map_err(Into::into)
+	}
 	async fn source_task(&mut self, id: Uuid, thread: Uuid) -> Result<Option<Task>> {
 		if let Some(task) = self.access.read_lookups.task(id, thread) {
 			return Ok(task);
@@ -608,19 +585,6 @@ impl ReadProvenanceScope for NativeReads<'_> {
 		crate::apps::workspaces::models::Task::read_in(self.access.tx.as_mut(), id, thread)
 			.await
 			.map_err(Into::into)
-	}
-	async fn source_artifact(&mut self, id: Uuid, thread: Uuid) -> Result<Option<Artifact>> {
-		if let Some(artifact) = self.access.read_lookups.artifact(id, thread) {
-			return Ok(artifact);
-		}
-		crate::apps::workspaces::models::Artifact::read_in(
-			self.access.tx.as_mut(),
-			id,
-			thread,
-			false,
-		)
-		.await
-		.map_err(Into::into)
 	}
 	async fn source_message(&mut self, id: Uuid, thread: Uuid) -> Result<Option<Message>> {
 		if let Some(message) = self.access.read_lookups.message(id, thread) {

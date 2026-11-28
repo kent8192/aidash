@@ -14,7 +14,7 @@ import {
 import { classifyFilePreview } from "../src/file-preview/preview-kind.ts";
 import { SpreadsheetPreviewError } from "../src/file-preview/spreadsheet-types.ts";
 import { parseXlsx } from "../src/file-preview/xlsx.ts";
-import { resolveWorkingAreaPath } from "../src/file-preview/working-area-path.ts";
+import { resolveRelativeFilePath } from "../src/file-preview/relative-path.ts";
 import { previewTicketErrorKey } from "../src/capabilities/preview-errors.ts";
 import { remotePreviewUrl } from "../src/capabilities/remote-preview-url.ts";
 
@@ -280,24 +280,24 @@ test("Markdown bounds pathological syntax instead of stalling", () => {
   assert.ok(JSON.stringify(formatted).includes('"kind":"em"'));
 });
 
-test("Markdown image paths resolve inside the Working Area revision", () => {
+test("Markdown image paths resolve inside the file root", () => {
   assert.equal(
-    resolveWorkingAreaPath("docs/readme.md", "./img/a.png"),
+    resolveRelativeFilePath("docs/readme.md", "./img/a.png"),
     "docs/img/a.png",
   );
-  assert.equal(resolveWorkingAreaPath("readme.md", "img/a.png"), "img/a.png");
-  assert.equal(resolveWorkingAreaPath("docs/readme.md", "../a.png"), "a.png");
+  assert.equal(resolveRelativeFilePath("readme.md", "img/a.png"), "img/a.png");
+  assert.equal(resolveRelativeFilePath("docs/readme.md", "../a.png"), "a.png");
   assert.equal(
-    resolveWorkingAreaPath("docs/readme.md", "img/a.png?v=1#x"),
+    resolveRelativeFilePath("docs/readme.md", "img/a.png?v=1#x"),
     "docs/img/a.png",
   );
-  assert.equal(resolveWorkingAreaPath("readme.md", "../a.png"), null);
-  assert.equal(resolveWorkingAreaPath("docs/readme.md", "/a.png"), null);
+  assert.equal(resolveRelativeFilePath("readme.md", "../a.png"), null);
+  assert.equal(resolveRelativeFilePath("docs/readme.md", "/a.png"), null);
   assert.equal(
-    resolveWorkingAreaPath("docs/readme.md", "https://example.com/a.png"),
+    resolveRelativeFilePath("docs/readme.md", "https://example.com/a.png"),
     null,
   );
-  assert.equal(resolveWorkingAreaPath("docs/readme.md", "img\\a.png"), null);
+  assert.equal(resolveRelativeFilePath("docs/readme.md", "img\\a.png"), null);
 });
 
 test("preview ticket failures map to actionable states", () => {

@@ -128,6 +128,13 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 		200,
 		"application/json",
 	)?;
+	contracts.path(document, views::scratch::clear_thread, &["Uuid"])?;
+	contracts.response::<_, SentResponse>(
+		document,
+		views::scratch::clear_thread,
+		200,
+		"application/json",
+	)?;
 	contracts.path(document, views::scratch::remove_member, &["Uuid"])?;
 	contracts.response::<_, SentResponse>(
 		document,
@@ -136,7 +143,8 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 		"application/json",
 	)?;
 	contracts.path(document, views::scratch::clear, &["Uuid"])?;
-	contracts.response::<_, SentResponse>(
+	contracts.request::<_, super::scratch::ScratchClear>(document, views::scratch::clear)?;
+	contracts.response::<_, super::scratch::ScratchClearResult>(
 		document,
 		views::scratch::clear,
 		200,
@@ -159,6 +167,22 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 	contracts.response::<_, aidash_domain::threads::ThreadOpened>(
 		document,
 		views::management::thread_create,
+		200,
+		"application/json",
+	)?;
+	use crate::apps::workspaces::repositories::goals::{Change, Detail};
+	contracts.path(document, views::management::task_goal, &["Uuid"])?;
+	contracts.path(document, views::management::task_goal_change, &["Uuid"])?;
+	contracts.request::<_, Change>(document, views::management::task_goal_change)?;
+	contracts.response::<_, Detail>(
+		document,
+		views::management::task_goal,
+		200,
+		"application/json",
+	)?;
+	contracts.response::<_, Detail>(
+		document,
+		views::management::task_goal_change,
 		200,
 		"application/json",
 	)?;

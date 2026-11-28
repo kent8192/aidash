@@ -1,6 +1,7 @@
 //! Upload, immutable mounts, parser dispatch and receipt recovery share current authority.
 use crate::{
 	Error, Result,
+	capabilities::multipart,
 	ports::capabilities::references::{ReferenceRepository, ReferenceScope},
 };
 use aidash_domain::{
@@ -110,33 +111,28 @@ pub async fn chunk(scope: &mut dyn ReferenceScope, id: Uuid, input: Chunk) -> Re
 	if record.state != "uploading" || record.expires_at.is_some_and(|t| t <= Utc::now()) {
 		return Err(Error::Conflict("UPLOAD_UNAVAILABLE".into()));
 	}
-	let bytes = STANDARD
-		.decode(&input.data)
-		.map_err(|_| Error::Invalid("INVALID_CHUNK".into()))?;
 	let maximum = record.data["input"]["size"]
 		.as_u64()
 		.ok_or(Error::Forbidden)?;
-	if !lifecycle::valid_chunk(input.offset, maximum, &bytes) {
-		return Err(Error::Invalid("UPLOAD_CHUNK_LIMIT".into()));
-	}
 	let chunks = record.data["chunks"]
 		.as_array_mut()
 		.ok_or(Error::Forbidden)?;
-	if let Some(old) = chunks.iter().find(|c| c["offset"] == input.offset) {
-		if old["file"]["digest"] != format!("{:x}", sha2::Sha256::digest(&bytes))
-			|| old["file"]["size"] != bytes.len()
-		{
-			return Err(Error::Conflict("CHUNK_CHANGED".into()));
-		}
-		return Ok(lifecycle::view(&record)?);
-	}
 	let end: u64 = chunks
 		.iter()
 		.map(|c| c["file"]["size"].as_u64().unwrap_or(0))
 		.sum();
-	if input.offset != end {
-		return Err(Error::Conflict("UPLOAD_OFFSET_CHANGED".into()));
-	}
+	let previous = chunks
+		.iter()
+		.find(|c| c["offset"] == input.offset)
+		.map(|old| {
+			(
+				old["file"]["digest"].as_str().unwrap_or_default(),
+				old["file"]["size"].as_u64().unwrap_or_default(),
+			)
+		});
+	let Some(bytes) = multipart::next_chunk(&input, maximum, end, previous)? else {
+		return Ok(lifecycle::view(&record)?);
+	};
 	let (file_id, digest) = scope.put("reference_staging", &bytes).await?;
 	let file = FileEntry {
 		file_id,
@@ -152,6 +148,21 @@ pub async fn chunk(scope: &mut dyn ReferenceScope, id: Uuid, input: Chunk) -> Re
 	scope.update(&mut record).await?;
 	Ok(lifecycle::view(&record)?)
 }
+
+struct ReferenceAssembly<'a>(&'a mut dyn ReferenceScope);
+
+#[async_trait::async_trait]
+impl multipart::Assembly for ReferenceAssembly<'_> {
+	type Part = FileEntry;
+
+	async fn read_part(&mut self, part: Self::Part) -> Result<Vec<u8>> {
+		self.0.read(&part).await
+	}
+	async fn append(&mut self, bytes: &[u8]) -> Result<()> {
+		self.0.write_original(bytes).await
+	}
+}
+
 pub async fn commit(scope: &mut dyn ReferenceScope, id: Uuid) -> Result<Reference> {
 	let mut record = get(scope, id, "reference.upload").await?;
 	if record.state != "uploading" {
@@ -164,11 +175,13 @@ pub async fn commit(scope: &mut dyn ReferenceScope, id: Uuid) -> Result<Referenc
 		return Err(Error::Conflict("UPLOAD_INCOMPLETE_OR_EXPIRED".into()));
 	}
 	scope.begin_original(input.size).await?;
-	for chunk in record.data["chunks"].as_array().ok_or(Error::Forbidden)? {
-		let file: FileEntry = serde_json::from_value(chunk["file"].clone())?;
-		let bytes = scope.read(&file).await?;
-		scope.write_original(&bytes).await?;
-	}
+	let parts = record.data["chunks"]
+		.as_array()
+		.ok_or(Error::Forbidden)?
+		.iter()
+		.map(|chunk| serde_json::from_value(chunk["file"].clone()))
+		.collect::<serde_json::Result<Vec<_>>>()?;
+	multipart::assemble(&mut ReferenceAssembly(scope), parts).await?;
 	let (file_id, digest) = scope.finish_original(&input.digest).await?;
 	let original = FileEntry {
 		file_id,
@@ -333,20 +346,18 @@ pub async fn revoke(scope: &mut dyn ReferenceScope, id: Uuid, revision: i64) -> 
 /// already established that this person may run that version, whose Sources are
 /// approved, so neither the uploader nor a `reference.read` grant is asked for
 /// here (ADR 0114). Only a revoked or removed file stops it.
-pub async fn pin(scope: &mut dyn ReferenceScope, config: &AgentConfig) -> Result<()> {
+pub async fn bound_files(
+	scope: &mut dyn ReferenceScope,
+	config: &AgentConfig,
+) -> Result<Vec<FileEntry>> {
 	let limits = scope.limits()?;
-	let mut mounts = scope.mounts()?;
 	if config.reference_attachments.len() > limits.reference_files
 		|| (!config.reference_attachments.is_empty() && !config.core_capabilities.files)
 	{
 		return Err(Error::Invalid("REFERENCE_SET_LIMIT".into()));
 	}
-	let mut files = serde_json::from_value::<Vec<FileEntry>>(mounts.manifest.clone())?;
+	let mut files = Vec::new();
 	let mut text = 0;
-	let old = mounts.manifest.clone();
-	// A new Agent version replaces its Reference set. Existing working copies
-	// keep their conservative disclosure constraints; detaching is not declassification.
-	files.retain(|file| !file.is_reference_file());
 	let ids = config
 		.reference_attachments
 		.iter()
@@ -362,33 +373,18 @@ pub async fn pin(scope: &mut dyn ReferenceScope, config: &AgentConfig) -> Result
 		.map(|record| (record.id, record))
 		.collect::<std::collections::BTreeMap<_, _>>();
 	for attachment in &config.reference_attachments {
-		let record = records
+		let Some(record) = records
 			.get(&attachment.reference_id)
-			.filter(|record| !matches!(record.state.as_str(), "revoked" | "expired"))
-			.ok_or_else(|| {
-				Error::NotFound(format!("reference unavailable: {}", attachment.path))
-			})?;
-		if record.state != "ready" {
-			return Err(Error::Conflict("REFERENCE_NOT_READY".into()));
-		}
+			.filter(|record| record.state == "ready")
+		else {
+			continue;
+		};
 		let mut original: FileEntry = serde_json::from_value(record.data["original"].clone())?;
 		if original.size > limits.reference_bytes {
 			return Err(Error::Invalid("REFERENCE_SET_LIMIT".into()));
 		}
 		if original.digest != attachment.digest {
 			return Err(Error::Conflict("REFERENCE_CHANGED".into()));
-		}
-		// Blocks export from this Area. Unlike a copy's `reference` constraint it
-		// never locks the Area: a revoked file only stops the Runs that still bind it.
-		let constraint = json!({"kind":"reference_bound","id":record.id});
-		if !mounts
-			.constraints
-			.as_array()
-			.ok_or(Error::Forbidden)?
-			.contains(&constraint)
-		{
-			mounts.constraints.as_array_mut().unwrap().push(constraint);
-			scope.set_constraints(mounts.constraints.clone())?;
 		}
 		text += lifecycle::text_bytes(&record.data);
 		let path = format!("{REFERENCE_SET_ROOT}/{}", attachment.path);
@@ -407,16 +403,7 @@ pub async fn pin(scope: &mut dyn ReferenceScope, config: &AgentConfig) -> Result
 	if aidash_domain::capabilities::operations::has_input_path_collision(&files) {
 		return Err(Error::Invalid("REFERENCE_PATH_COLLISION".into()));
 	}
-	// Reconciliation reorders the manifest, which alone is not a new revision.
-	let ordered = |mut files: Vec<FileEntry>| {
-		files.sort_by_key(|file| file.file_id);
-		json!(files)
-	};
-	if ordered(files.clone()) != ordered(serde_json::from_value(old)?) {
-		scope.set_manifest(json!(files))?;
-		scope.publish().await?;
-	}
-	Ok(())
+	Ok(files)
 }
 pub async fn drive(repository: &dyn ReferenceRepository, id: Uuid) -> Result<()> {
 	let snapshot = repository.snapshot(id).await?;

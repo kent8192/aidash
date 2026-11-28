@@ -9,10 +9,7 @@ use crate::{
 	federation::Federation,
 	registry::AgentConfig,
 };
-use aidash_application::{
-	Result, capabilities::sessions::Initialization,
-	ports::authorization::worker_entry::WorkerEntryRepository,
-};
+use aidash_application::{Result, ports::authorization::worker_entry::WorkerEntryRepository};
 use async_trait::async_trait;
 pub(crate) struct Entries<'a> {
 	pub(crate) federation: &'a Federation,
@@ -40,12 +37,7 @@ impl WorkerEntryRepository<Access> for Entries<'_> {
 	async fn scratch_space(&self, scope: &mut Access, run: &Run) -> Result<uuid::Uuid> {
 		resolve_scratch_space(self.federation, scope, run).await
 	}
-	async fn initialize(
-		&self,
-		scope: &Access,
-		run: &Run,
-		agent: &AgentConfig,
-	) -> Result<Initialization> {
+	async fn initialize(&self, scope: &Access, run: &Run, agent: &AgentConfig) -> Result<()> {
 		let mut initialization = Access::under_lease(scope).await?;
 		let result = crate::capabilities::sessions::initialize(
 			&self.federation.store,
@@ -61,7 +53,7 @@ impl WorkerEntryRepository<Access> for Entries<'_> {
 		scope: &Access,
 		run: &Run,
 		agent: &AgentConfig,
-	) -> Result<Initialization> {
+	) -> Result<()> {
 		let mut initialization = Access::under_lease(scope).await?;
 		let result = crate::capabilities::sessions::initialize_remote(
 			&self.federation.store,

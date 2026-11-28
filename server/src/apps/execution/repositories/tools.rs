@@ -1,7 +1,7 @@
 //! Native, identity-bound ports for portable tool execution.
 use aidash_application::{Result, ports::tools::ToolOperations};
 use aidash_domain::{
-	Artifact, ArtifactInput, HumanRequest, NewTask, Task,
+	HumanRequest, NewTask, Task,
 	exposure::DirectSkill,
 	provider::ToolSpec,
 	registry::{EntityRef, Search, SkillFile},
@@ -292,6 +292,13 @@ impl ToolOperations for Operations {
 		}
 		Ok(json!(self.0.home.assign(id, policy, reason, draft).await?))
 	}
+	async fn set_child_goal(&self, key: &str, task: Uuid, goal: &str) -> Result<()> {
+		self.0
+			.home
+			.set_child_goal(key, task, goal)
+			.await
+			.map_err(Into::into)
+	}
 	async fn delegate_with_key(
 		&self,
 		key: &str,
@@ -303,8 +310,17 @@ impl ToolOperations for Operations {
 			self.0.home.delegate_with_key(key, id, node, agent).await?
 		))
 	}
-	async fn artifact(&self, key: &str, input: &ArtifactInput) -> Result<Artifact> {
-		self.0.home.artifact(key, input).await.map_err(Into::into)
+	async fn deliverable_note(
+		&self,
+		key: &str,
+		input: &aidash_domain::deliverable::OutsideVersion,
+	) -> Result<()> {
+		let scope = self.0.home.tenancy().await?;
+		self.0
+			.store
+			.record_outside_version(&scope, &self.0.run, key, input)
+			.await
+			.map_err(Into::into)
 	}
 	async fn message(&self, key: &str, content: &str) -> Result<()> {
 		self.0.home.message(key, content).await.map_err(Into::into)
@@ -408,49 +424,8 @@ impl ToolOperations for Operations {
 	}
 	async fn attachment_copy(&self, input: Value) -> Result<Value> {
 		if !self.0.run.is_local(self.0.store.deployment.as_str()) {
-			// Reach: the Home's Thread (ADR 0139, decision 20). The Home keeps the attachment
-			// and answers the receiver's pull; the bytes land where the Run's commands run.
-			let id: Uuid = serde_json::from_value(input["id"].clone())
-				.map_err(|_| aidash_application::Error::Invalid("invalid attachment id".into()))?;
-			let record = self
-				.0
-				.home
-				.read_record("attachment", &id.to_string())
-				.await?;
-			let message_id: Uuid = serde_json::from_value(record["message_id"].clone())
-				.map_err(|_| aidash_application::Error::Forbidden)?;
-			let digest = record["sha256"]
-				.as_str()
-				.ok_or(aidash_application::Error::Forbidden)?;
-			let media_type = record["attachment"]["media_type"]
-				.as_str()
-				.ok_or(aidash_application::Error::Forbidden)?
-				.to_owned();
-			// Fetched before any authority lease is taken: the pull is a Home request. It is
-			// bounded at 8 MiB by `/thread-attachment/1/fetch`, which is below the 100 MiB a
-			// Thread Attachment may be.
-			let (_, _, content) = self
-				.0
-				.home
-				.thread_attachment(id, message_id, digest)
-				.await?
-				.ok_or(aidash_application::Error::Forbidden)?;
-			let authority = self
-				.0
-				.home
-				.tool_authority()
-				.ok_or(aidash_application::Error::Forbidden)?;
-			return authority
-				.copy_pulled_thread_attachment(
-					&self.0.store,
-					&self.0.run,
-					input,
-					message_id,
-					media_type,
-					&content,
-				)
-				.await
-				.map_err(operation_error);
+			// The receiving Node's readers cannot inherit the Home's authority.
+			return Ok(aidash_application::scratch::copy_would_disclose());
 		}
 		let authority = self
 			.0
@@ -483,25 +458,6 @@ impl ToolOperations for Operations {
 		self.0
 			.home
 			.read_record_chunk(kind, id, offset, maximum)
-			.await
-			.map_err(Into::into)
-	}
-	async fn thread_image(
-		&self,
-		selection: &aidash_domain::media::WorkingImageSelection,
-		representation: &str,
-	) -> Result<Value> {
-		let ctx = &self.0;
-		if !ctx.run.is_local(ctx.store.deployment.as_str()) {
-			return Err(aidash_application::Error::Forbidden);
-		}
-		let authority = ctx
-			.home
-			.authority
-			.as_ref()
-			.ok_or(aidash_application::Error::Forbidden)?;
-		authority
-			.thread_image(&ctx.store, &ctx.run, selection, representation)
 			.await
 			.map_err(Into::into)
 	}

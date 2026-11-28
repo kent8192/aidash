@@ -1,10 +1,7 @@
 //! The Home's side of a delivery from a Run executing for another Home (ADR 0139, decision 20).
 //!
 //! A delivery is bound to a Remote Grant and the admission that grant started, exactly as a Home
-//! command is. The Home checks that binding, the tool of the Run's Binding that the Run
-//! called, and the task the grant belongs to, before it stages or stores anything. Where
-//! the bytes go is never in the request: the Home takes the Working Area of the Run that
-//! delegated, or the Thread of the grant's task, from its own records.
+//! command is. The Home checks the grant, Binding and Task before staging files for the Thread.
 use crate::{Error, Result, ports::authorization::commands::RemoteCommandScope};
 use aidash_domain::{
 	Task, TaskStatus,
@@ -32,8 +29,7 @@ pub struct Identity<'a> {
 /// Admit one request of a delivery, in the order a Home command is admitted: the live grant's
 /// Binding must be this admission's, the Home's own Request and the Run's Binding must hold the
 /// tool the Run called, and the grant's task must still be the executing Agent's and not
-/// finished. Returns the task, whose Thread and delegation the Home's records resolve the
-/// target from.
+/// finished. The Task identifies the destination Thread.
 pub async fn verify(
 	scope: &mut dyn RemoteCommandScope,
 	who: &Identity<'_>,
@@ -41,13 +37,18 @@ pub async fn verify(
 ) -> Result<Task> {
 	// A Workspace tool a saved Agent pins is its Thread tool here, as on the lists (#1008).
 	let tool = aidash_domain::tool::thread_tools::current(tool);
+	if tool != "thread_message" {
+		return Err(Error::Invalid("unknown delivery tool".into()));
+	}
 	let bound = scope.binding(who.grant_id).await?.ok_or(Error::Forbidden)?;
 	if bound.admission_id != who.admission_id {
 		return Err(Error::Forbidden);
 	}
 	// The Home stores what a delivery carries itself, so its own Request must name the tool the
 	// Run called, whatever the receiving Node checked (ADR 0139, decision 1).
-	crate::authorization::peer::tool_request::require_requested(who.request, tool)?;
+	if tool != "completion_attachments" {
+		crate::authorization::peer::tool_request::require_requested(who.request, tool)?;
+	}
 	if tool == "thread_message" {
 		// A delivered message always carries files, which the lists name with a key of their own
 		// besides the plain one: the default `thread_message` sends no files (decision 6).
@@ -57,7 +58,9 @@ pub async fn verify(
 			aidash_domain::federation::tool_lists::THREAD_MESSAGE_FILES,
 		)?;
 	}
-	scope.require_builtin(tool).await?;
+	if tool != "completion_attachments" {
+		scope.require_builtin(tool).await?;
+	}
 	let task = scope.task(bound.task_id).await?;
 	let owner = aidash_domain::agent_subject(who.node, who.agent, who.version);
 	if task.owner.as_deref().is_some_and(|saved| saved != owner) {

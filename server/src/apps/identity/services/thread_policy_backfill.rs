@@ -104,6 +104,10 @@ pub(crate) fn before_threads(
 			policy.actions.insert((*from).to_owned());
 		}
 	}
+	// Preserve grants that the Goal and Registry cutovers retired.
+	policy
+		.actions
+		.extend(["artifact.create", "artifact.read", "decision.invoke"].map(str::to_owned));
 	policy
 }
 

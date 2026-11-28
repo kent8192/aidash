@@ -414,14 +414,14 @@ impl RuntimeTasks {
 			),
 		);
 		tasks.spawn_service(
-			"observation",
-			runtime_task(crate::apps::execution::observation::run(
-				worker_runtime.clone(),
-			)),
-		);
-		tasks.spawn_service(
 			"semantic worker",
 			runtime_task(crate::semantic::worker::run(worker_runtime.clone())),
+		);
+		tasks.spawn_service(
+			"tenant re-embedding",
+			runtime_task(crate::semantic::worker::run_reembedding(
+				worker_runtime.store.clone(),
+			)),
 		);
 		if event_streams.is_some() {
 			tasks.spawn_service("event bus", runtime_task(EventBus::run(federation.clone())));
@@ -538,24 +538,12 @@ impl RuntimeTasks {
 			tasks.spawn_service("capabilities.references", async move {
 				capability_background_jobs(&jobs).references(stopping).await
 			});
-			let (jobs, stopping) = (store.clone(), receiver.clone());
-			tasks.spawn_service("capabilities.cleanup", async move {
-				capability_background_jobs(&jobs).cleanup(stopping).await
-			});
 			let (jobs, stopping) = (store, receiver.clone());
 			tasks.spawn_service("capabilities.reclamation", async move {
 				capability_background_jobs(&jobs)
 					.reclamation(stopping)
 					.await
 			});
-			let transfers = federation.for_runtime_workers().await?;
-			let stopping = receiver.clone();
-			tasks.spawn_service(
-				"capability transfer",
-				runtime_task(async move {
-					crate::capabilities::transfer::run(transfers, stopping).await
-				}),
-			);
 		}
 		if federation.config.dashboard_session().is_some() {
 			tasks.spawn_service(
@@ -1095,6 +1083,12 @@ impl aidash_application::ports::registry::CoreToolCatalog for NativeCoreToolCata
 	) -> std::collections::BTreeMap<String, aidash_domain::provider::ToolSpec> {
 		crate::capabilities::tools::legacy_specifications()
 	}
+	fn pre_scratch_specifications(
+		&self,
+	) -> std::collections::BTreeMap<String, aidash_domain::provider::ToolSpec> {
+		crate::capabilities::tools::pre_scratch_specifications()
+	}
+
 	fn specifications(
 		&self,
 		config: &aidash_domain::capabilities::CoreCapabilities,
@@ -2138,14 +2132,6 @@ impl aidash_application::ports::capabilities::processing::CapabilityBackgroundJo
 		.await
 		.map_err(Into::into)
 	}
-	async fn cleanup(
-		&self,
-		stopping: tokio::sync::watch::Receiver<bool>,
-	) -> aidash_application::Result<()> {
-		crate::apps::execution::capabilities::services::cleanup::run(self.store.clone(), stopping)
-			.await
-			.map_err(Into::into)
-	}
 	async fn reclamation(
 		&self,
 		stopping: tokio::sync::watch::Receiver<bool>,
@@ -2176,13 +2162,11 @@ pub(crate) fn reference_repository(
 pub(crate) fn reference_scope<'a>(
 	store: Option<&'a Store>,
 	access: &'a mut crate::authorization::access::Access,
-	area: Option<&'a mut crate::apps::execution::capabilities::serializers::contracts::Area>,
 ) -> crate::apps::execution::repositories::references::Scope<'a> {
 	use crate::apps::execution::repositories::references::{Authority, Scope};
 	Scope {
 		store,
 		authority: Authority::Borrowed(access),
-		area,
 		pending: None,
 	}
 }
@@ -2190,12 +2174,10 @@ pub(crate) fn reference_scope<'a>(
 pub(crate) fn approval_scope<'a>(
 	store: Option<&'a Store>,
 	access: &'a mut crate::authorization::access::Access,
-	area: Option<&'a crate::apps::execution::capabilities::serializers::contracts::Area>,
 ) -> crate::apps::execution::repositories::approvals::Scope<'a> {
 	crate::apps::execution::repositories::approvals::Scope {
 		store,
 		access,
-		area,
 		run: None,
 	}
 }
@@ -2213,35 +2195,12 @@ pub(crate) fn session_scope<'a>(
 	crate::apps::execution::repositories::sessions::Scope { store, access }
 }
 
-pub(crate) fn cleanup_scope<'a>(
-	store: Option<&'a Store>,
-	access: &'a mut crate::authorization::access::Access,
-) -> crate::apps::execution::repositories::cleanup::Scope<'a> {
-	crate::apps::execution::repositories::cleanup::Scope { store, access }
-}
-pub(crate) fn retention_scope<'a>(
-	store: Option<&'a Store>,
-	access: &'a mut crate::authorization::access::Access,
-) -> crate::apps::execution::repositories::retention::Scope<'a> {
-	crate::apps::execution::repositories::retention::Scope { store, access }
-}
-pub(crate) fn cleanup_repository(
-	store: &Store,
-) -> crate::apps::execution::repositories::cleanup::Repository<'_> {
-	crate::apps::execution::repositories::cleanup::Repository { store }
-}
-
 pub(crate) fn file_scope<'a>(
 	store: Option<&'a Store>,
 	access: &'a mut crate::authorization::access::Access,
 	run: Option<&'a crate::domain::Run>,
 ) -> crate::apps::execution::repositories::files::Scope<'a> {
-	crate::apps::execution::repositories::files::Scope {
-		store,
-		access,
-		run,
-		pending: None,
-	}
+	crate::apps::execution::repositories::files::Scope { store, access, run }
 }
 
 pub(crate) fn capability_configuration_scope<'a>(
@@ -2255,55 +2214,6 @@ pub(crate) fn skill_headroom(
 	store: &Store,
 ) -> crate::apps::execution::repositories::skills::Headroom<'_> {
 	crate::apps::execution::repositories::skills::Headroom { store }
-}
-
-pub(crate) fn transfer_repository(
-	federation: &crate::federation::Federation,
-) -> crate::apps::execution::repositories::transfer::Repository<'_> {
-	crate::apps::execution::repositories::transfer::Repository {
-		federation,
-		receiver: None,
-		delivery: None,
-	}
-}
-/// A transfer arriving at the Node `receiver`.
-pub(crate) fn transfer_receiver_repository(
-	federation: &crate::federation::Federation,
-	receiver: aidash_domain::nodes::NodeName,
-) -> crate::apps::execution::repositories::transfer::Repository<'_> {
-	crate::apps::execution::repositories::transfer::Repository {
-		federation,
-		receiver: Some(crate::apps::execution::repositories::transfer::Receiver {
-			address: federation
-				.config
-				.deployment
-				.node(receiver.clone())
-				.to_string(),
-			node: receiver,
-		}),
-		delivery: None,
-	}
-}
-/// A delivery from a Run executing for another Home, arriving at the Home Node `receiver`.
-pub(crate) fn home_delivery_repository(
-	federation: &crate::federation::Federation,
-	receiver: aidash_domain::nodes::NodeName,
-	delivery: crate::apps::execution::repositories::transfer::HomeDelivery,
-) -> crate::apps::execution::repositories::transfer::Repository<'_> {
-	let mut repository = transfer_receiver_repository(federation, receiver);
-	repository.delivery = Some(delivery);
-	repository
-}
-pub(crate) fn transfer_scope<'a>(
-	store: Option<&'a Store>,
-	access: &'a mut crate::authorization::access::Access,
-) -> crate::apps::execution::repositories::transfer::Scope<'a> {
-	crate::apps::execution::repositories::transfer::Scope {
-		store,
-		authority: crate::apps::execution::repositories::transfer::Authority::Borrowed(access),
-		receiving: None,
-		pending: None,
-	}
 }
 
 pub(crate) fn semantic_journal_repository(

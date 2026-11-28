@@ -1,6 +1,6 @@
 //! How many bytes of files Aidash stores for each Tenant: unique content blobs,
-//! channel attachments, Artifacts, Research snapshots and their originals, and
-//! Research page images. Database rows beyond those files do not count. A build
+//! Drive files and object-backed Thread Attachments contribute once per digest
+//! through core_blobs. Legacy inline files are counted separately. A build
 //! that meters usage takes a sample every day and hands it to its usage port.
 use crate::store::Store;
 use crate::{Error, Result};
@@ -16,10 +16,9 @@ use serde::Deserialize;
 use std::collections::BTreeMap;
 
 /// Each stored file's size, per table: a SQL expression over one row.
-const SOURCES: [(&str, &str); 3] = [
+const SOURCES: [(&str, &str); 2] = [
 	("core_blobs", "size"),
 	("channel_attachments", "size_bytes"),
-	("artifacts", "octet_length(content::text)"),
 ];
 
 #[derive(Deserialize)]

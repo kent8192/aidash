@@ -6,7 +6,6 @@ use crate::{
 	registry::Registry,
 	store::{RunStore, Store},
 };
-use aidash_application::ports::execution::completion;
 use aidash_application::tenancy::TenancyScope;
 use aidash_application::{
 	Result,
@@ -741,6 +740,15 @@ impl ExecutionHome for NativeHome {
 			.await
 			.map_err(Into::into)
 	}
+	async fn record_goal_verdict(
+		&self,
+		verdict: &aidash_domain::goal::VerdictRecord,
+	) -> Result<aidash_domain::goal::VerdictRecord> {
+		self.0
+			.record_goal_verdict(verdict)
+			.await
+			.map_err(Into::into)
+	}
 	async fn child_summary(&self, parent: Uuid) -> Result<ChildTaskSummary> {
 		Home::child_summary(&self.0, parent)
 			.await
@@ -749,10 +757,10 @@ impl ExecutionHome for NativeHome {
 	async fn complete(
 		&self,
 		key: &str,
-		artifact: &ArtifactInput,
+		completion: &aidash_domain::deliverable::Completion,
 		abandon: &[Uuid],
-	) -> Result<Task> {
-		Home::complete(&self.0, key, artifact, abandon)
+	) -> Result<aidash_domain::deliverable::Completion> {
+		Home::complete(&self.0, key, completion, abandon)
 			.await
 			.map_err(Into::into)
 	}
@@ -1007,145 +1015,6 @@ impl ExecutionAuthority for Authority<'_> {
 	}
 }
 
-impl Environment<'_> {
-	/// Completion Gate Checks run only under this node's own authority lease.
-	fn worker(&self) -> Option<crate::authorization::execution::WorkerAuthority> {
-		self.authority
-			.as_ref()
-			.and_then(|authority| authority.guard.local_authority())
-	}
-}
-
-#[async_trait]
-impl completion::CompletionChecks for Environment<'_> {
-	async fn content(&self, run: &Run) -> Result<Option<completion::MountedContent>> {
-		let worker = self.worker().ok_or(aidash_application::Error::Forbidden)?;
-		let Some(area) = worker.working_area(&self.federation.store, run).await? else {
-			return Ok(None);
-		};
-		let files: Vec<aidash_domain::capabilities::operations::MountedFile> =
-			serde_json::from_value(area.manifest.clone())?;
-		Ok(Some(completion::MountedContent {
-			digest: aidash_domain::completion::content_digest(&files),
-			revision: area.revision,
-			state: match area.state.as_str() {
-				"active" => completion::ContentState::Ready,
-				"running" => completion::ContentState::Busy,
-				state => {
-					completion::ContentState::Unavailable(format!("the Working Area is {state}"))
-				}
-			},
-		}))
-	}
-	async fn start(
-		&self,
-		run: &Run,
-		request: &completion::CheckRequest<'_>,
-	) -> Result<completion::CheckStart> {
-		let worker = self.worker().ok_or(aidash_application::Error::Forbidden)?;
-		let store = &self.federation.store;
-		// The Check's own timeout, or what an omitted shell argument gets:
-		// the shell Binding's ceiling, else the node default. One above the
-		// ceiling reaches the Binding's narrowing as declared, which refuses
-		// it; an admitted one is never longer than the Run's remaining
-		// verification time.
-		let ceiling = run
-			.context
-			.binding_snapshot
-			.as_deref()
-			.and_then(|snapshot| snapshot.operation(aidash_domain::completion::SHELL).ok())
-			.and_then(|binding| binding.narrow.limits.get("timeout_seconds").copied());
-		let declared = aidash_domain::completion::check_timeout(
-			request.timeout_seconds,
-			ceiling,
-			store.capabilities.0.operation_seconds,
-		);
-		let timeout_seconds = if ceiling.is_some_and(|ceiling| declared > ceiling) {
-			declared
-		} else {
-			declared.min(request.remaining_seconds)
-		};
-		let input = serde_json::json!({
-			"idempotency_key": request.key,
-			"command": request.command,
-			"timeout_seconds": timeout_seconds,
-			"expected_revision": request.revision,
-		});
-		check_started(
-			worker
-				.check(store, run, input, &request.key.to_string())
-				.await,
-			timeout_seconds,
-		)
-	}
-	async fn status(&self, run: &Run, operation: Uuid) -> Result<completion::CheckStatus> {
-		let worker = self.worker().ok_or(aidash_application::Error::Forbidden)?;
-		check_polled(
-			worker
-				.check_status(&self.federation.store, run, operation)
-				.await,
-		)
-	}
-}
-
-/// What starting a Check means to the Completion Gate.
-fn check_started(
-	result: crate::Result<serde_json::Value>,
-	timeout_seconds: u64,
-) -> Result<completion::CheckStart> {
-	match result {
-		Ok(result) => {
-			let operation_id = result["operation_id"]
-				.as_str()
-				.and_then(|id| id.parse().ok())
-				.ok_or_else(|| {
-					aidash_application::Error::Invalid("Check result has no operation".into())
-				})?;
-			Ok(completion::CheckStart::Started {
-				operation_id,
-				timeout_seconds,
-			})
-		}
-		// The content moved after it was read. An idempotency conflict means the
-		// same attempt was started at another revision before a process cut;
-		// the saved attempt count gives the next start a fresh key.
-		Err(crate::Error::Conflict(reason))
-			if ["AREA_REVISION_CHANGED", "AREA_BUSY", "IDEMPOTENCY_CONFLICT"]
-				.iter()
-				.any(|code| reason.starts_with(code)) =>
-		{
-			Ok(completion::CheckStart::Stale)
-		}
-		Err(crate::Error::Forbidden | crate::Error::Unauthorized) => Ok(
-			completion::CheckStart::Denied("the shell capability is not authorized".into()),
-		),
-		// The shell Binding's narrowing refused the policy's command or limits:
-		// a decision of its authority, not an inability to run.
-		Err(crate::Error::Invalid(reason)) if reason.contains("exceeds Binding") => {
-			Ok(completion::CheckStart::Denied(reason))
-		}
-		Err(
-			crate::Error::Invalid(reason)
-			| crate::Error::Conflict(reason)
-			| crate::Error::NotFound(reason),
-		) => Ok(completion::CheckStart::Unavailable(reason)),
-		Err(error) => Err(error.into()),
-	}
-}
-
-/// What a polled Check means to the Completion Gate.
-fn check_polled(result: crate::Result<serde_json::Value>) -> Result<completion::CheckStatus> {
-	match result {
-		Ok(result) => Ok(completion::CheckStatus::of(&result)),
-		Err(crate::Error::NotFound(reason)) => Ok(completion::CheckStatus::Unavailable(reason)),
-		// Revoked authority stops the Run as it does any other step.
-		Err(error) => Err(error.into()),
-	}
-}
-
-#[cfg(test)]
-#[path = "../tests/agent_completion_checks.rs"]
-mod completion_check_tests;
 #[cfg(test)]
 #[path = "../tests/agent_step_tenant.rs"]
 mod step_tenant_tests;
@@ -1200,8 +1069,7 @@ impl Environment<'_> {
 		)?;
 		Ok(aidash_application::ports::decision::DecisionPorts {
 			authority: Box::new(
-				crate::apps::execution::repositories::decisions::CatalogAuthority {
-					guard: authority.guard,
+				crate::apps::execution::repositories::decisions::ApprovalAuthority {
 					config: decider.config.clone(),
 				},
 			),
@@ -1443,24 +1311,76 @@ impl ExecutionEnvironment for Environment<'_> {
 			reference_files: config.reference_attachments.len(),
 			tools: config.tools,
 			skills: config.skills,
-			// Runs have no step limit (#1009, ADR 0141); an Agent definition's
-			// `max_steps` is accepted for stored definitions and ignored.
-			max_steps: i32::MAX,
-			allow_task_creation: config.allow_task_creation,
 			conversation_memory: config.conversation_memory,
-			context_policy: config.context_policy,
-			tool_parallelism: usize::from(config.tool_parallelism),
+			context_policy: None,
+			tool_parallelism: usize::from(aidash_domain::registry::bindings::MAX_TOOL_PARALLELISM),
 			harness_contract: aidash_domain::registry::execution_contract(
 				config.projection_version,
 				config.harness_contract,
 			)
 			.map_err(aidash_application::Error::ProjectionRetired)?,
 			prompt_cache: config.prompt_cache.unwrap_or_default(),
-			completion: config.completion,
 		})
 	}
 	fn tool_slots(&self) -> Option<&ToolSlots> {
 		Some(&self.federation.store.tool_slots)
+	}
+	async fn collect_deliverable(
+		&self,
+		run: &Run,
+		completion: &mut aidash_domain::deliverable::Completion,
+		attachments: &[String],
+	) -> Result<()> {
+		use aidash_application::deliverables::DeliverablePort;
+		completion.deliverable.outside_versions = self
+			.federation
+			.store
+			.outside_versions(&self.run_store.scope, run.task_id)
+			.await?;
+		if run.is_local(self.federation.store.deployment.as_str()) {
+			let tenant = self
+				.run_store
+				.scope
+				.tenant_name()
+				.ok_or(aidash_application::Error::Forbidden)?;
+			completion.deliverable.drive_versions = super::deliverables::DriveVersions {
+				store: &self.federation.store,
+				tenant: tenant.as_str(),
+			}
+			.published_versions(run.task_id)
+			.await?;
+		}
+		if !attachments.is_empty() {
+			let home = self.native_home();
+			let authority = home
+				.tool_authority()
+				.ok_or(aidash_application::Error::Forbidden)?;
+			completion.attachments = authority
+				.completion_attachments(
+					&self.federation.store,
+					run,
+					&home,
+					completion.message_id,
+					attachments,
+				)
+				.await?;
+		}
+
+		Ok(())
+	}
+	async fn goal_judge_model(&self, run: &Run) -> Result<Option<Entry>> {
+		use crate::apps::identity::repositories::goal_judge;
+		let scope = self.federation.store.run_tenancy(run.id).await?;
+		let Some(tenant) = scope.tenant_name() else {
+			return Ok(None);
+		};
+		let mut tx = self.federation.store.pool.begin(&scope).await?;
+		let result = match goal_judge::read(&mut *tx, tenant.as_str()).await? {
+			Some(reference) => goal_judge::registered(&mut *tx, &reference).await?,
+			None => None,
+		};
+		tx.commit().await?;
+		Ok(result)
 	}
 	fn provider(&self, model: ModelConfig) -> Result<Arc<dyn ModelProvider>> {
 		// Carries this node's Cache Salt Keys for Native Runs.
@@ -1563,7 +1483,7 @@ impl ExecutionEnvironment for Environment<'_> {
 		_token: Uuid,
 	) -> Result<Option<aidash_application::ports::decision::DecisionPorts<'_>>> {
 		use crate::apps::execution::repositories::decisions::{ChainAllowance, RunDecisionJournal};
-		use aidash_domain::decision::{BoundDecider, DeciderConfig, DeciderPin, Hook};
+		use aidash_domain::decision::{BoundDecider, DeciderConfig, DeciderPin};
 		// Only a worker holding the Run's authority on its home Node may call a
 		// Decider for it. A Run executing for another Node asks that Node.
 		let Some(authority) = &self.authority else {
@@ -1572,41 +1492,14 @@ impl ExecutionEnvironment for Environment<'_> {
 		if authority.guard.local_authority().is_none() {
 			return Ok(None);
 		}
-		let reference = authority.guard.approval_decider_reference().await?;
-		// The Decider runs only under its Catalog Approval for this exact version.
-		let definition = match authority.guard.decider_entry(&reference).await {
-			Ok(entry) => entry,
-			Err(crate::Error::Forbidden | crate::Error::NotFound(_)) => return Ok(None),
-			Err(error) => return Err(error.into()),
-		};
-		let Ok(config) = serde_json::from_value::<DeciderConfig>(definition.config.clone()) else {
-			return Ok(None);
-		};
-		if definition.kind != "decider" || config.hook != Hook::Approval {
-			return Ok(None);
-		}
+		let definition = aidash_application::registry::system::approval_decider()?;
+		let config: DeciderConfig = serde_json::from_value(definition.config.clone())?;
 		let identity = aidash_domain::registry::bindings::QualifiedRef {
 			registry_deployment: self.node_id().to_owned(),
 			id: definition.id.clone(),
 			version: definition.version.clone(),
 		};
-		// An Agent's Binding can only make the chosen Decider's thresholds
-		// stricter: its narrowing applies whichever Decider the Tenant chose,
-		// and the Decider it names is never the judge.
-		let restrictions = match &self.step_run.context.binding_snapshot {
-			Some(snapshot) => snapshot
-				.bound_decider(Hook::Approval)?
-				.map(|(bound, _)| bound.restrictions)
-				.unwrap_or_default(),
-			None => Default::default(),
-		};
-		if restrictions.validate(&config).is_err() {
-			tracing::warn!(
-				decider = %identity.id,
-				"the Agent's Binding narrows the approval Decider beyond its version; a person is asked"
-			);
-			return Ok(None);
-		}
+		let restrictions = Default::default();
 		let decider = BoundDecider {
 			pin: DeciderPin {
 				definition_digest: aidash_domain::registry::rules::digest(&serde_json::to_value(
@@ -1620,8 +1513,6 @@ impl ExecutionEnvironment for Environment<'_> {
 			config,
 			restrictions,
 		};
-		// The pin is constant for the step: a withdrawn Catalog Approval is
-		// caught by the Decision Authority before every dispatch.
 		let journal = RunDecisionJournal::new(
 			&self.federation.store,
 			run.clone(),
@@ -1631,11 +1522,6 @@ impl ExecutionEnvironment for Environment<'_> {
 		self.decision_ports(authority, run, decider, definition, Box::new(journal))
 			.await
 			.map(Some)
-	}
-	fn completion_checks(&self) -> Option<&dyn completion::CompletionChecks> {
-		self.worker()
-			.is_some()
-			.then_some(self as &dyn completion::CompletionChecks)
 	}
 
 	async fn recheck_source_observation(&self, run: &Run, content: &Value) -> Result<()> {

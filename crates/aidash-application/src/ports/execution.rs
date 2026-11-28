@@ -45,9 +45,6 @@ pub struct ExecutionAgent {
 	pub reference_files: usize,
 	pub tools: Vec<EntityRef>,
 	pub skills: Vec<EntityRef>,
-	/// No longer a limit (#1009, ADR 0141): always `i32::MAX`.
-	pub max_steps: i32,
-	pub allow_task_creation: Option<bool>,
 	pub conversation_memory: bool,
 	/// Opt-in Context Policy from the immutable Agent version.
 	pub context_policy: Option<aidash_domain::context::policy::ContextPolicy>,
@@ -59,9 +56,6 @@ pub struct ExecutionAgent {
 	/// Pinned through the Run's Binding snapshot; `off` when the definition
 	/// names none (ADR 0019).
 	pub prompt_cache: aidash_domain::projection::PromptCache,
-	/// Pinned through the Run's Binding snapshot; `None` requires no
-	/// verification before the Run completes (#112).
-	pub completion: Option<aidash_domain::completion::CompletionPolicy>,
 }
 /// One External service a Run's Scratch Space can use now (#738), as its
 /// starting instructions describe it.
@@ -235,9 +229,7 @@ pub trait ExecutionStore: Send + Sync {
 		Ok(aidash_domain::duties::scripts::TaskScript::Model)
 	}
 	async fn run_inputs(&self, run: Uuid) -> Result<Vec<aidash_domain::run_input::RunInput>>;
-	/// The commit fence before Task completion. Unless a newer input is
-	/// accepted, it also persists the Run's Completion Gate progress, so a Task
-	/// completed before the Run's own save keeps its Completion Basis.
+	/// Establish the commit fence before Task completion if no newer input arrived.
 	async fn begin_final_completion(&self, run: &Run, token: Uuid) -> Result<bool>;
 	async fn human_request(
 		&self,
@@ -498,11 +490,21 @@ pub trait ExecutionHome: Send + Sync {
 		limit: usize,
 		fits: &ObservationFit<'_>,
 	) -> Result<Option<(usize, Value)>>;
+	async fn record_goal_verdict(
+		&self,
+		verdict: &aidash_domain::goal::VerdictRecord,
+	) -> Result<aidash_domain::goal::VerdictRecord> {
+		Ok(verdict.clone())
+	}
 	async fn child_summary(&self, parent: Uuid) -> Result<ChildTaskSummary>;
 	/// Complete the Task, abandoning `abandon` in the same transaction: the
 	/// Unassigned children the Run created that nobody has been given.
-	async fn complete(&self, key: &str, artifact: &ArtifactInput, abandon: &[Uuid])
-	-> Result<Task>;
+	async fn complete(
+		&self,
+		key: &str,
+		completion: &aidash_domain::deliverable::Completion,
+		abandon: &[Uuid],
+	) -> Result<aidash_domain::deliverable::Completion>;
 	/// Abandon those of `ids` that are still Unassigned Tasks of `parent`
 	/// created by a Run of it, without completing the parent. Returns only
 	/// the Task IDs changed by this operation.
@@ -750,6 +752,17 @@ pub trait ExecutionEnvironment: Send + Sync {
 	fn tool_slots(&self) -> Option<&ToolSlots> {
 		None
 	}
+	async fn collect_deliverable(
+		&self,
+		_run: &Run,
+		_completion: &mut aidash_domain::deliverable::Completion,
+		_attachments: &[String],
+	) -> Result<()> {
+		Ok(())
+	}
+	async fn goal_judge_model(&self, _run: &Run) -> Result<Option<Entry>> {
+		Ok(None)
+	}
 	fn provider(&self, model: ModelConfig) -> Result<Arc<dyn ModelProvider>>;
 	/// The approval Decider the Tenant chose for `run`, with the Agent Binding's
 	/// narrowing of its thresholds, and the ports its decisions use under the
@@ -788,11 +801,6 @@ pub trait ExecutionEnvironment: Send + Sync {
 	}
 	/// Ends the Run's MCP sessions with its plugin servers. Their absence never fails a Run.
 	async fn close_plugin_sessions(&self, _run: Uuid) {}
-	/// Runs Completion Gate Checks. `None` makes every applicable Check
-	/// unavailable, so a Run with a Completion Policy pauses for a person.
-	fn completion_checks(&self) -> Option<&dyn completion::CompletionChecks> {
-		None
-	}
 	/// Compile the ordered lifecycle plan from this Run's admitted declarations.
 	/// No unbound provider is collected simply because the host implements it.
 	fn context_source_plan(&self, run: &Run) -> Result<Vec<PlannedContextSource>>;

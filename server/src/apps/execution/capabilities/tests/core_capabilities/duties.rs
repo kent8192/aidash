@@ -148,11 +148,12 @@ async fn a_tick_starts_one_run_as_its_requester_across_two_schedulers(
 			task.id,
 			owner,
 			"duty-completion",
-			&aidash_server::domain::ArtifactInput {
-				kind: "text".into(),
-				name: "Digest".into(),
-				content: json!("No changes"),
-			},
+			&aidash_domain::deliverable::Completion::new(
+				task.id,
+				"duty-completion",
+				"No changes".into(),
+				None,
+			),
 		)
 		.await
 		.unwrap();
@@ -299,7 +300,7 @@ async fn a_duty_works_in_its_own_thread_and_stops_when_it_is_deleted(
 	assert_eq!(threads, vec![own, own]);
 	// The Tasks left Working Areas in the Thread; the person keeps them.
 	let areas: Vec<(Uuid, i64)> =
-		sqlx::query_as("SELECT id, revision FROM core_areas WHERE thread_id = $1")
+		sqlx::query_as("SELECT id, revision FROM core_execution_scopes WHERE thread_id = $1")
 			.bind(own)
 			.fetch_all(c.f.store.pool.fixture_driver())
 			.await
@@ -1201,12 +1202,42 @@ async fn script_task(c: &CoreFixture, duty: Uuid, role: &str) -> (Uuid, String) 
 /// its result. No Execution Pod runs in these tests; the harness side is
 /// covered by `aidash-harness`'s duty_script tests.
 async fn finish_script(c: &CoreFixture, task: Uuid, stdout: &str) {
-	let driver = c.f.store.pool.fixture_driver();
-	sqlx::query("INSERT INTO artifacts (id, tenant, thread_id, task_id, kind, name, content, created_by, idempotency_key) SELECT $1, tenant, thread_id, id, 'text', 'Script result', to_jsonb($2::text), 'test', $1::text FROM tasks WHERE id = $3")
-		.bind(Uuid::new_v4())
-		.bind(stdout)
-		.bind(task)
-		.execute(driver)
+	use aidash_domain::deliverable::{Completion, CompletionDetails, Deliverable};
+	use reinhardt::query::{Alias, Expr, PostgresQueryBuilder, Query, QueryStatementBuilder};
+	let task_record = c.f.store.task(&TEST_FIXTURE, task).await.unwrap();
+	let details = CompletionDetails {
+		task_id: task,
+		verdict: None,
+		attachments: Vec::new(),
+		deliverable: Deliverable::default(),
+	};
+	let insert = Query::insert()
+		.into_table(Alias::new("messages"))
+		.columns(
+			[
+				"id",
+				"tenant",
+				"thread_id",
+				"sender",
+				"content",
+				"idempotency_key",
+				"completion",
+			]
+			.map(Alias::new),
+		)
+		.values_expr(vec![
+			Expr::value(Completion::message_id(task, "script")).into(),
+			Expr::value("acme").into(),
+			Expr::value(task_record.thread_id).into(),
+			Expr::value("test").into(),
+			Expr::value(stdout).into(),
+			Expr::value(format!("script:{task}")).into(),
+			Expr::value(serde_json::to_value(details).unwrap()).into(),
+		])
+		.unwrap()
+		.to_string(PostgresQueryBuilder);
+	sqlx::query(&insert)
+		.execute(c.f.store.pool.fixture_driver())
 		.await
 		.unwrap();
 	finish_task(c, task).await;
@@ -2141,7 +2172,7 @@ async fn a_successor_takes_over_the_dutys_thread_and_its_bookings_go(
 		.await;
 	assert_ne!(status, 200, "alice no longer owns the Duty's Thread");
 	let areas: Vec<(Uuid, i64)> =
-		sqlx::query_as("SELECT id, revision FROM core_areas WHERE thread_id = $1")
+		sqlx::query_as("SELECT id, revision FROM core_execution_scopes WHERE thread_id = $1")
 			.bind(own)
 			.fetch_all(driver)
 			.await

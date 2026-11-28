@@ -26,8 +26,6 @@ OUTPUT_STATE = Path("/tmp/output.state")
 OUTPUT_LIMIT = int(os.environ["AIDASH_OUTPUT_BYTES"])
 # The last bytes of the output, kept even after the stored prefix is full: a
 # Completion Check's failure summary comes at the end of a long run.
-OUTPUT_TAIL = Path("/tmp/output.tail")
-TAIL_LIMIT = 16384
 # Present once the liveness deadline expired while the command still ran. Only
 # that failing probe stops a command at its deadline, so this, not the measured
 # runtime, says whether a Check timed out. The probe records it, and so does the
@@ -163,31 +161,6 @@ def hydrate():
     print(json.dumps({"accepted": True, "started_at": started_at}))
 
 
-def export():
-    # The execution container has stopped before this is called. A refusal
-    # (link, alias, quota, unsafe name) is printed as data and exits cleanly,
-    # so the runner fails only this operation; it never prints an empty list.
-    directory = str(Path(__file__).resolve().parent)
-    if directory not in sys.path:
-        sys.path.insert(0, directory)
-    from working_export import collect
-
-    def open_file(root, relative):
-        parts = path_parts(relative)
-        fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
-        try:
-            for part in parts[:-1]:
-                child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
-                os.close(fd)
-                fd = child
-            result = os.open(parts[-1], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=fd)
-            return os.fdopen(result, "rb")
-        finally:
-            os.close(fd)
-
-    json.dump(collect(ROOTS["working"], int(sys.argv[2]), open_file), sys.stdout, separators=(",", ":"))
-
-
 def write_input():
     if REQUEST.exists():
         raise ValueError("execution already started")
@@ -237,11 +210,6 @@ def append_output(data, connections=0):
             if captured:
                 output.flush()
                 os.fsync(output.fileno())
-        if data:
-            tail = (OUTPUT_TAIL.read_bytes() if OUTPUT_TAIL.exists() else b"") + data
-            temporary = OUTPUT_TAIL.with_suffix(".new")
-            temporary.write_bytes(tail[-TAIL_LIMIT:])
-            os.replace(temporary, OUTPUT_TAIL)
         if data or connections:
             save(OUTPUT_STATE, state)
         return state
@@ -272,24 +240,20 @@ def logs(limit):
         time.sleep(0.01)
         state = append_output(b"")
     offset = 0
-    if "tail" in sys.argv:
-        data = OUTPUT_TAIL.read_bytes()[-min(limit, TAIL_LIMIT):] if OUTPUT_TAIL.exists() else b""
-        cut = state["total"] > len(data)
-    else:
-        with OUTPUT.open("rb") as output:
-            if "window" in sys.argv:
-                offset = max(0, state["stored"] - min(limit, OUTPUT_LIMIT))
-                before = max(0, offset - 3)
-                output.seek(before)
-                data = output.read(min(limit, OUTPUT_LIMIT) + offset - before)
-                position = offset - before
-                while not output_boundary(data, position):
-                    position += 1
-                    offset += 1
-                data = data[position:]
-            else:
-                data = output.read(min(limit, OUTPUT_LIMIT))
-        cut = state["total"] > OUTPUT_LIMIT
+    with OUTPUT.open("rb") as output:
+        if "window" in sys.argv:
+            offset = max(0, state["stored"] - min(limit, OUTPUT_LIMIT))
+            before = max(0, offset - 3)
+            output.seek(before)
+            data = output.read(min(limit, OUTPUT_LIMIT) + offset - before)
+            position = offset - before
+            while not output_boundary(data, position):
+                position += 1
+                offset += 1
+            data = data[position:]
+        else:
+            data = output.read(min(limit, OUTPUT_LIMIT))
+    cut = state["total"] > OUTPUT_LIMIT
     print(json.dumps({"stdout": base64.b64encode(data).decode(), "bytes": state["stored"],
                       "offset": offset,
                       "truncated": cut or ("final" in sys.argv and state["connections"] > 0),
@@ -391,8 +355,6 @@ if __name__ == "__main__":
         stage_journal(sys.argv[2], int(sys.argv[3]), sys.stdin.buffer.read(4194305))
     elif mode == "journal-commit":
         commit_journal(sys.argv[2], int(sys.argv[3]), sys.argv[4])
-    elif mode == "export":
-        export()
     elif mode == "write":
         write_input()
     elif mode == "read":

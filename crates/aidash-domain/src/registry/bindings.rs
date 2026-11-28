@@ -22,14 +22,8 @@ const HISTORICAL_DEFAULT_SETS: u8 = 8;
 /// Default file tools whose builtin moved to 1.0.1 with the Execution Pod
 /// (#745). Every historical default set bound them at 1.0.0.
 const POD_FILE_TOOLS: &[&str] = &["file_read", "file_search", "attachment_copy"];
-/// Upper bound for an Agent definition's Run Tool Parallelism ceiling.
+/// Maximum Tool Parallelism for a Run.
 pub const MAX_TOOL_PARALLELISM: u8 = 64;
-fn sequential_tools() -> u8 {
-	1
-}
-fn is_sequential_tools(value: &u8) -> bool {
-	*value == 1
-}
 pub const REQUIRED_TOOLS: &[&str] = &["thread_read", "human_request"];
 pub const DEFAULT_TOOLS: &[&str] = &[
 	"connection_request",
@@ -40,11 +34,12 @@ pub const DEFAULT_TOOLS: &[&str] = &[
 	"skill_load",
 	"skill_read",
 	"file_search",
+	"drive_search",
 	"file_read",
 	"task_create",
 	"task_delegate",
 	"agent_discover",
-	"artifact_publish",
+	"deliverable_note",
 	"thread_message",
 	"attachment_copy",
 	"memory_mutate",
@@ -117,10 +112,6 @@ pub fn definition_references(
 				};
 				result.push((normalized.binding.target, kind.into()));
 			}
-		}
-		"cluster" => {
-			let config: super::ClusterConfig = serde_json::from_value(entry.config.clone())?;
-			result.push((local(&config.coordinator), "agent".into()));
 		}
 		"bundle" => {
 			let config: BundleConfig = serde_json::from_value(entry.config.clone())?;
@@ -220,7 +211,6 @@ pub fn reference_kind_matches(expected: &str, actual: &str) -> bool {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct AgentBindings {
-	pub schema_version: u8,
 	pub model: EntityRef,
 	/// Exact immutable embedding definition for private reference images.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
@@ -231,18 +221,6 @@ pub struct AgentBindings {
 	pub bindings: Vec<Binding>,
 	#[serde(default)]
 	pub remove_default: Vec<String>,
-	#[serde(default = "super::max_steps")]
-	pub max_steps: i32,
-	/// Opt-in Context Policy; absent keeps the legacy prune-only behavior.
-	#[serde(default, skip_serializing_if = "Option::is_none")]
-	pub context_policy: Option<crate::context::policy::ContextPolicy>,
-	/// The Run Tool Parallelism ceiling, fixed with the Run's Binding snapshot.
-	/// Omitted at one so definitions written before this field keep their digest.
-	#[serde(
-		default = "sequential_tools",
-		skip_serializing_if = "is_sequential_tools"
-	)]
-	pub tool_parallelism: u8,
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub exposure: Option<ExposurePolicy>,
 	/// Projection Version this Agent version's Runs render with (ADR 0015).
@@ -260,10 +238,6 @@ pub struct AgentBindings {
 	/// Omitted means `off` and is not serialized, like `projection_version`.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub prompt_cache: Option<crate::projection::PromptCache>,
-	/// Completion Policy every Run of this Agent version pins (#112). Omitted
-	/// means no verification and is not serialized, like `prompt_cache`.
-	#[serde(default, skip_serializing_if = "Option::is_none")]
-	pub completion: Option<crate::completion::CompletionPolicy>,
 	/// The Agent Plugin copies this Agent version takes in (ADR 0072). Omitted when empty, so
 	/// definitions without plugins keep their bytes and digests.
 	#[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -281,7 +255,7 @@ impl AgentBindings {
 			.iter()
 			.any(|plugin| !plugin.skills.is_empty())
 	}
-	/// The resolved Exposure policy; absent means `legacy@1`.
+	/// The resolved Exposure policy; omitted uses immediate exposure.
 	pub fn exposure_policy(&self) -> ExposurePolicy {
 		self.exposure.unwrap_or_default()
 	}
@@ -289,10 +263,7 @@ impl AgentBindings {
 		let policy = self.exposure_policy();
 		policy.validate()?;
 		let defaults = policy.default_tools();
-		if self.schema_version != BINDING_SCHEMA
-			|| !(1..=1000).contains(&self.max_steps)
-			|| !(1..=MAX_TOOL_PARALLELISM).contains(&self.tool_parallelism)
-			|| self.bindings.len() > MAX_BINDINGS
+		if self.bindings.len() > MAX_BINDINGS
 			|| self.instructions.trim().is_empty()
 				&& !self.has_plugin_skills()
 				&& !self
@@ -313,6 +284,11 @@ impl AgentBindings {
 		let mut targets = BTreeSet::new();
 		for binding in &self.bindings {
 			binding.validate()?;
+			if matches!(binding.kind, BindingKind::Memory | BindingKind::Decider) {
+				return Err(Error::Invalid(
+					"memory and approval judging are built in".into(),
+				));
+			}
 			if binding.exposure.is_some()
 				&& (!policy.is_deferred()
 					|| !matches!(
@@ -337,12 +313,6 @@ impl AgentBindings {
 			return Err(Error::Invalid(
 				"bound Skills require Skill support tools".into(),
 			));
-		}
-		if let Some(policy) = &self.context_policy {
-			policy.validate()?;
-		}
-		if let Some(policy) = &self.completion {
-			policy.validate()?;
 		}
 		self.validate_agent_plugins()?;
 		Ok(())
@@ -381,11 +351,8 @@ impl AgentBindings {
 			self.exposure_policy().is_deferred(),
 		)
 	}
-	fn has_memory_binding(&self) -> bool {
-		self.bindings.iter().any(|b| b.kind == BindingKind::Memory)
-	}
 	pub fn normalize(&self, node: &str) -> Result<Vec<NormalizedBinding>> {
-		self.normalize_mode(node, 0)
+		self.normalize_mode(node, 0, false)
 	}
 	/// `mode % HISTORICAL_DEFAULT_SETS` picks the default Tool set an Agent
 	/// version was normalized with (0 today, 1–7 historical, where 5 is
@@ -395,7 +362,13 @@ impl AgentBindings {
 	/// #1008 replaced the Workspace tools, which every historical set binds);
 	/// `mode >= HISTORICAL_DEFAULT_SETS` also binds `memory_mutate` and
 	/// `subnode_task` at the 1.0.0 they had before they moved to 1.1.0.
-	fn normalize_mode(&self, node: &str, mode: u8) -> Result<Vec<NormalizedBinding>> {
+	/// `previous_scratch_tools` checks snapshots with the old file declarations.
+	fn normalize_mode(
+		&self,
+		node: &str,
+		mode: u8,
+		previous_scratch_tools: bool,
+	) -> Result<Vec<NormalizedBinding>> {
 		self.validate()?;
 		let previous_builtin_versions = mode >= HISTORICAL_DEFAULT_SETS;
 		let mode = mode % HISTORICAL_DEFAULT_SETS;
@@ -442,6 +415,9 @@ impl AgentBindings {
 				continue;
 			}
 			let mut target = QualifiedRef::builtin(node, operation);
+			if previous_scratch_tools && let Some(version) = pre_scratch_tool_version(operation) {
+				target.version = version.into();
+			}
 			// Mode 2 predates image retrieval and mode 4 predates Thread
 			// Attachment images (#622). `workspace_read` keeps the version each
 			// pinned; `workspace_message` and `workspace_search` move to 1.1.0,
@@ -458,6 +434,8 @@ impl AgentBindings {
 				"workspace_read" if matches!(mode, 0 | 3 | 4 | 5) => &["1.0.0", "1.0.1", "1.1.0"],
 				"workspace_message" if matches!(mode, 0 | 5) => &["1.0.0", "1.0.1", "1.1.0"],
 				"workspace_search" if matches!(mode, 0 | 5) => &["1.0.0", "1.1.0"],
+				"file_read" | "file_search" | "attachment_copy" => &["1.0.0", "1.0.1"],
+				"thread_read" | "thread_search" | "thread_message" => &["1.0.0"],
 				_ => &[],
 			};
 			if let Some(binding) = self.bindings.iter().find(|b| {
@@ -466,16 +444,8 @@ impl AgentBindings {
 					&& pinned.contains(&b.target.version.as_str())
 			}) {
 				target = binding.target.clone();
-			} else if POD_FILE_TOOLS.contains(operation)
-				&& let Some(binding) = self.bindings.iter().find(|b| {
-					b.target.id == target.id
-						&& b.target.registry_deployment == node
-						&& b.target.version == "1.0.0"
-				}) {
-				// An Agent that binds the declaration from before #745 keeps it as
-				// its default rather than gaining a second one under the same alias.
-				target = binding.target.clone();
 			}
+
 			if previous_builtin_versions && matches!(*operation, "memory_mutate" | "subnode_task") {
 				target.version = "1.0.0".into();
 			}
@@ -513,9 +483,7 @@ impl AgentBindings {
 			}
 		}
 		source_defaults::add_workspace_observation(node, &mut result)?;
-		if !self.has_memory_binding() {
-			result.push(memory_defaults::binding(node));
-		}
+		result.push(memory_defaults::binding(node));
 		if result.len() > MAX_BINDINGS {
 			return Err(Error::Invalid(
 				"expanded Bindings exceed 128 entries".into(),
@@ -563,9 +531,11 @@ impl Entry {
 			// versions it would bind today.
 			let saved_bindings = upgraded(node, saved.bindings.clone());
 			let matches = |mode: u8| {
-				config
-					.normalize_mode(node, mode)
-					.is_ok_and(|expected| upgraded(node, expected) == saved_bindings)
+				[false, true].into_iter().any(|previous_scratch_tools| {
+					config
+						.normalize_mode(node, mode, previous_scratch_tools)
+						.is_ok_and(|expected| upgraded(node, expected) == saved_bindings)
+				})
 			};
 			if !(0..2 * HISTORICAL_DEFAULT_SETS).any(matches) {
 				return Err(Error::Invalid(
@@ -620,7 +590,7 @@ fn upgraded(node: &str, mut bindings: Vec<NormalizedBinding>) -> Vec<NormalizedB
 fn attachment_selection_tool(identity: &QualifiedRef, narrow: &Narrowing, node: &str) -> bool {
 	identity.registry_deployment == node
 		&& (identity.id == "aidash.workspace_read"
-			&& matches!(identity.version.as_str(), "1.0.1" | "1.1.0")
+			&& matches!(identity.version.as_str(), "1.0.1" | "1.1.0" | "1.2.0")
 			|| identity.id == "aidash.thread_read")
 		&& [("kind", "attachment"), ("representation", "model_input")]
 			.iter()
@@ -639,6 +609,16 @@ pub struct QualifiedRef {
 	pub id: String,
 	pub version: String,
 }
+/// The immutable revisions published before Working Area file access was retired.
+pub fn pre_scratch_tool_version(operation: &str) -> Option<&'static str> {
+	match operation {
+		"workspace_read" | "workspace_search" | "workspace_message" => Some("1.1.0"),
+		"file_read" | "file_search" | "attachment_copy" => Some("1.0.1"),
+		"thread_read" | "thread_search" | "thread_message" => Some("1.0.0"),
+		_ => None,
+	}
+}
+
 impl QualifiedRef {
 	pub fn validate(&self) -> Result<()> {
 		DeploymentId::parse(&self.registry_deployment)?;
@@ -671,26 +651,14 @@ impl QualifiedRef {
 		Self {
 			registry_deployment: node.into(),
 			id: format!("aidash.{operation}"),
-			version: if matches!(
-				operation,
-				"workspace_read"
-					| "workspace_search"
-					| "workspace_message"
-					| "memory_mutate"
-					| "subnode_task"
-					// Gained `draft` for free-form generation (#1012).
-					| "task_assign"
-					// Gained `on_trigger` and a 30-day wait (#1011).
-					| "workspace_wait"
-			) {
-				"1.1.0"
-			} else if matches!(
-				operation,
-				"workspace_observe" | "file_read" | "file_search" | "attachment_copy"
-			) {
-				"1.0.1"
-			} else {
-				"1.0.0"
+			version: match operation {
+				"workspace_read" => "1.3.0",
+				"workspace_search" | "workspace_message" | "subnode_task" | "thread_read"
+				| "file_read" | "file_search" => "1.2.0",
+				"workspace_observe" | "thread_observe" | "task_create" | "task_delegate"
+				| "thread_search" | "thread_message" | "attachment_copy" | "memory_mutate"
+				| "task_assign" | "workspace_wait" => "1.1.0",
+				_ => "1.0.0",
 			}
 			.into(),
 		}
@@ -1364,7 +1332,7 @@ impl BindingSnapshot {
 				names.iter().any(|name| {
 					let identity = QualifiedRef::builtin(&self.agent.registry_deployment, name);
 					(binding.identity == identity
-						|| (*name == "workspace_read"
+						|| (matches!(*name, "workspace_read" | "thread_read")
 							&& binding.identity.registry_deployment
 								== identity.registry_deployment
 							&& binding.identity.id == identity.id

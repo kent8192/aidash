@@ -43,6 +43,7 @@ async fn world(fixture: common::ApplicationFixture) -> World {
 			&aidash_server::domain::NewTask {
 				title: "Work".into(),
 				description: "A Run whose owner stops it".into(),
+				goal: None,
 				requirements: json!({}),
 				dependencies: vec![],
 				parent_id: None,
@@ -62,12 +63,12 @@ async fn world(fixture: common::ApplicationFixture) -> World {
 		(
 			"agent",
 			"fixture-agent",
-			json!({"schema_version":1,"model":{"id":"fixture-model","version":"1.0.0"},"instructions":"Fixture","bindings":[],"remove_default":[]}),
+			json!({"model":{"id":"fixture-model","version":"1.0.0"},"instructions":"Fixture","bindings":[],"remove_default":[]}),
 		),
 		(
 			"agent",
 			LISTED,
-			json!({"schema_version":1,"model":{"id":"fixture-model","version":"1.0.0"},"instructions":"Listed","bindings":[],"remove_default":[]}),
+			json!({"model":{"id":"fixture-model","version":"1.0.0"},"instructions":"Listed","bindings":[],"remove_default":[]}),
 		),
 	] {
 		registered.push(
@@ -451,6 +452,7 @@ async fn a_new_child_run_does_not_inherit_the_parent_decision(
 				&aidash_domain::NewTask {
 					title: "Child".into(),
 					description: "Child task".into(),
+					goal: None,
 					requirements: json!({}),
 					dependencies: vec![],
 					parent_id: Some(w.task.id),

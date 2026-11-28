@@ -35,7 +35,7 @@ impl Fixture {
 			(
 				"agent",
 				"reporter",
-				json!({"schema_version":1,"model":{"id":"reporter-model","version":"1.0.0"},"instructions":"Report","bindings":[],"remove_default":[]}),
+				json!({"model":{"id":"reporter-model","version":"1.0.0"},"instructions":"Report","bindings":[],"remove_default":[]}),
 			),
 		] {
 			let entry: aidash_server::registry::Entry = serde_json::from_value(json!({"id":key,"version":"1.0.0","kind":kind,"name":{"en":key},"description":{"en":"Duty template fixture"},"schema":{},"config":config})).unwrap();

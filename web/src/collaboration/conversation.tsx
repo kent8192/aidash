@@ -30,10 +30,6 @@ import {
 } from "../generated/aidash";
 import type { ChannelAttachment, ChannelCitation } from "../generated/models";
 import { AttachmentCard } from "./attachments";
-import { useFileCitations } from "./file-citations";
-import { fileCitationPayload } from "./file-citation-model";
-import { useFilePreview } from "../capabilities/file-preview-pane";
-import { ApiError } from "../transport";
 import type { State, Discovery } from "../types";
 import { useI18n, useAgentLabel } from "../ui";
 import { cn } from "../lib/utils";
@@ -126,7 +122,6 @@ export function MessageText({ text }: { text: string }) {
 /** Cited File versions under a message. Unavailable ones never become links. */
 function MessageCitations({ citations }: { citations: ChannelCitation[] }) {
   const { t } = useI18n();
-  const preview = useFilePreview();
   if (citations.length === 0) return null;
   const reason = (value: string | null | undefined) =>
     value === "forbidden"
@@ -140,12 +135,6 @@ function MessageCitations({ citations }: { citations: ChannelCitation[] }) {
       className="mt-1.5 flex flex-wrap gap-1.5"
     >
       {citations.map((citation) => {
-        const canOpen =
-          citation.available &&
-          Boolean(citation.digest) &&
-          Boolean(citation.media_type) &&
-          citation.size !== null &&
-          citation.size !== undefined;
         const label = (
           <>
             <FileText aria-hidden className="size-3 shrink-0" />
@@ -162,42 +151,13 @@ function MessageCitations({ citations }: { citations: ChannelCitation[] }) {
             key={`${citation.area_id}:${citation.file_id}`}
             className="min-w-0"
           >
-            {canOpen ? (
-              <button
-                type="button"
-                className="inline-flex h-6 max-w-full items-center gap-1.5 rounded-sm border border-brand-line bg-surface px-2 text-[11px] text-brand transition-colors hover:bg-accent"
-                title={citation.path}
-                onClick={() =>
-                  preview.open({
-                    run: citation.run_id ?? undefined,
-                    area: citation.area_id,
-                    file: {
-                      file_id: citation.file_id,
-                      path: citation.path,
-                      digest: citation.digest ?? "",
-                      size: citation.size ?? 0,
-                      media_type: citation.media_type ?? "",
-                      scope: "working",
-                    },
-                    revision: citation.revision ?? undefined,
-                    files: citation.run_id
-                      ? undefined
-                      : preview.manifestFor(citation.area_id),
-                    cited: true,
-                  })
-                }
-              >
-                {label}
-              </button>
-            ) : (
-              <span
-                className="inline-flex h-6 max-w-full items-center gap-1.5 rounded-sm border border-border bg-surface px-2 text-[11px] text-faint"
-                title={citation.path}
-              >
-                {label}
-                <span className="shrink-0">· {reason(citation.reason)}</span>
-              </span>
-            )}
+            <span
+              className="inline-flex h-6 max-w-full items-center gap-1.5 rounded-sm border border-border bg-surface px-2 text-[11px] text-faint"
+              title={citation.path}
+            >
+              {label}
+              <span className="shrink-0">· {reason(citation.reason)}</span>
+            </span>
           </li>
         );
       })}
@@ -265,10 +225,7 @@ function ConversationFeed({
   const warnedAttachments = useRef<string | null>(null);
   const [sending, setSending] = useState(false),
     [uploading, setUploading] = useState(false),
-    [mentioning, setMentioning] = useState(false),
-    [quota, setQuota] = useState("");
-  const fileCitations = useFileCitations();
-  const citations = fileCitations.citationsFor(target);
+    [mentioning, setMentioning] = useState(false);
   const [error, setError] = useState(""),
     [sent, setSent] = useState(false);
   const [readabilityNotice, setReadabilityNotice] = useState(false);
@@ -312,7 +269,7 @@ function ConversationFeed({
     if (visible && follow.current) scrollToLatest();
   }, [latestMessageId, visible, scrollToLatest]);
 
-  async function send(omitCitations = false) {
+  async function send() {
     if (
       (!draft.text.trim() && draft.files.length === 0) ||
       inFlight.current ||
@@ -330,12 +287,10 @@ function ConversationFeed({
       setError(words.imageDescriptionTooLong);
       return;
     }
-    const cited = omitCitations ? [] : citations;
     inFlight.current = true;
     setSending(true);
     setError("");
     setReadabilityNotice(false);
-    setQuota("");
     setSent(false);
     try {
       const attachmentIds: string[] = [];
@@ -389,20 +344,15 @@ function ConversationFeed({
         draft.text,
         () => crypto.randomUUID(),
         attachmentIds,
-        cited.map((citation) => citation.key),
       );
       pending.set(target, submission);
       await channelMessageCreate(thread, {
         content: submission.content,
         idempotency_key: submission.key,
         attachment_ids: submission.attachments,
-        ...(cited.length > 0
-          ? { file_versions: fileCitationPayload(cited) }
-          : {}),
       });
       updateDraft(() => ({ text: "", files: [] }));
       warnedAttachments.current = null;
-      fileCitations.clear(target);
       pending.delete(target);
       setSent(true);
       follow.current = true;
@@ -412,15 +362,7 @@ function ConversationFeed({
       ]);
     } catch (reason) {
       const message = reason instanceof Error ? reason.message : String(reason);
-      if (
-        reason instanceof ApiError &&
-        reason.status === 409 &&
-        message.includes("FILE_VERSION_QUOTA_EXCEEDED")
-      ) {
-        setQuota(message);
-      } else {
-        setError(`${copy.failed} ${message}`);
-      }
+      setError(`${copy.failed} ${message}`);
     } finally {
       inFlight.current = false;
       setSending(false);
@@ -647,6 +589,38 @@ function ConversationFeed({
                       <p className="whitespace-pre-wrap break-words text-[13px] leading-relaxed text-foreground">
                         <MessageText text={message.content} />
                       </p>
+                      {message.completion && (
+                        <div className="mt-2 grid gap-1 rounded-md border border-border px-3 py-2 text-xs">
+                          <strong>
+                            {locale === "ja-JP"
+                              ? "完了メッセージ"
+                              : "Completion Message"}
+                          </strong>
+                          {message.completion.verdict && (
+                            <p>
+                              {message.completion.verdict.verdict} ·{" "}
+                              {message.completion.verdict.reason}
+                            </p>
+                          )}
+                          {message.completion.deliverable.drive_versions.map(
+                            (version) => (
+                              <p key={`${version.drive_id}:${version.version}`}>
+                                Drive v{version.version} ·{" "}
+                                {version.paths.join(", ")}
+                              </p>
+                            ),
+                          )}
+                          {message.completion.deliverable.outside_versions.map(
+                            (version, index) => (
+                              <p key={index}>
+                                {version.system} · {version.item} ·{" "}
+                                {version.version}
+                                {version.url ? ` · ${version.url}` : ""}
+                              </p>
+                            ),
+                          )}
+                        </div>
+                      )}
                       {entry.citations && entry.citations.length > 0 && (
                         <MessageCitations citations={entry.citations} />
                       )}
@@ -684,23 +658,6 @@ function ConversationFeed({
               <ArrowDown />
               {copy.newMessages}
             </Button>
-          )}
-          {quota && (
-            <Alert className="mx-4 mb-2">
-              <div className="grid gap-2">
-                <span>{t("fileCitationQuota")}</span>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  type="button"
-                  className="w-fit"
-                  disabled={sending || busy}
-                  onClick={() => void send(true)}
-                >
-                  {t("fileCitationSendWithout")}
-                </Button>
-              </div>
-            </Alert>
           )}
           {error && <Alert className="mx-4 mb-2">{error}</Alert>}
           {readabilityNotice && (
@@ -753,40 +710,6 @@ function ConversationFeed({
                     }
                   }}
                 />
-                {citations.length > 0 && (
-                  <ul
-                    aria-label={t("fileCitationChips")}
-                    className="flex flex-wrap gap-1.5 px-2 pt-2"
-                  >
-                    {citations.map((citation) => (
-                      <li
-                        key={citation.key}
-                        className="inline-flex h-6 max-w-full items-center gap-1.5 rounded-sm border border-brand-line bg-surface pl-2 text-[11px]"
-                      >
-                        <FileText aria-hidden className="size-3 text-brand" />
-                        <span className="truncate font-mono">
-                          {citation.path}
-                        </span>
-                        {citation.digest && (
-                          <span className="shrink-0 font-mono text-faint">
-                            {citation.digest.slice(0, 8)}
-                          </span>
-                        )}
-                        <button
-                          type="button"
-                          className="grid size-6 place-items-center text-faint hover:text-foreground disabled:opacity-50"
-                          disabled={busy}
-                          aria-label={`${t("fileCitationRemove")}: ${citation.path}`}
-                          onClick={() =>
-                            fileCitations.remove(target, citation.key)
-                          }
-                        >
-                          <X className="size-3" />
-                        </button>
-                      </li>
-                    ))}
-                  </ul>
-                )}
                 {draft.files.length > 0 && (
                   <ul className="flex flex-wrap gap-1.5 px-2 pb-2">
                     {draft.files.map((entry) => (

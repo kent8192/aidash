@@ -1,3 +1,4 @@
+import { moveNodeDrive } from "./drive";
 import { useEffect, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Alert, Hint, Loading, Pager, RowList } from "./components/patterns";
@@ -98,7 +99,7 @@ export function NodeLifecycleSettings({
         : offering === "dedicated"
           ? "nodeStorageDedicated"
           : "nodeStorageOfferingUnknown";
-  const act = async (action: () => Promise<NodeRecord>, restoring = false) => {
+  const act = async (action: () => Promise<unknown>, restoring = false) => {
     if (busy) return;
     setBusy(true);
     setError("");
@@ -215,6 +216,26 @@ export function NodeLifecycleSettings({
                           {t("nodeDelete")}
                         </Button>
                       )}
+                    {canUpdate && restorable && tenantAdministration && (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        disabled={busy}
+                        onClick={() => {
+                          const destination = window
+                            .prompt(
+                              `${t("driveMoveWarning")} ${t("driveMoveDestination")}`,
+                            )
+                            ?.trim();
+                          if (destination)
+                            void act(() =>
+                              moveNodeDrive(node.name, destination),
+                            );
+                        }}
+                      >
+                        {t("driveMove")}
+                      </Button>
+                    )}
                     {canDelete && restorable && tenantAdministration && (
                       <Button
                         size="sm"

@@ -7,7 +7,7 @@ use aidash_application::{
 		ResourceAccessScope, ResourceEventScope, ResourceVisibilityScope,
 	},
 };
-use aidash_domain::{Artifact, HumanRequest, Message, Task, policy::Resource};
+use aidash_domain::{HumanRequest, Message, Task, policy::Resource};
 use async_trait::async_trait;
 use reinhardt::query::{
 	Alias, ColumnRef, Condition, Expr, ExprTrait as _, PostgresQueryBuilder, Query,
@@ -40,58 +40,6 @@ impl ResourceVisibilityScope for Reads<'_> {
 	}
 	fn remember_human(&mut self, id: Uuid, allowed: bool) {
 		self.access.cached_humans.insert(id, allowed);
-	}
-	async fn artifact_task(&mut self, artifact: &Artifact) -> Result<Option<Task>> {
-		if let Some(task) = self
-			.access
-			.state_source_task(artifact.task_id, artifact.thread_id)
-		{
-			return Ok(task);
-		}
-		if let Some(task) = self
-			.access
-			.read_lookups
-			.task(artifact.task_id, artifact.thread_id)
-		{
-			return Ok(task);
-		}
-		let result: NativeResult<Option<Task>> = async {
-			let this = &mut *self.access;
-			let task: Option<Task> = {
-				let query_bind_1 = artifact.task_id;
-				let query_bind_2 = artifact.thread_id;
-				aidash_server::database::query_as(
-					&Query::select()
-						.column(ColumnRef::Asterisk)
-						.from(Alias::new("tasks"))
-						.and_where(
-							Condition::all()
-								.add(
-									reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("id")))
-										.eq(SimpleExpr::CustomWithExpr(
-											"(?)".to_owned(),
-											vec![Expr::value(query_bind_1.to_owned()).into()],
-										)),
-								)
-								.add(
-									reinhardt::query::SimpleExpr::from(Expr::col(Alias::new(
-										"thread_id",
-									)))
-									.eq(SimpleExpr::CustomWithExpr(
-										"(?)".to_owned(),
-										vec![Expr::value(query_bind_2.to_owned()).into()],
-									)),
-								),
-						)
-						.to_string(PostgresQueryBuilder),
-				)
-				.fetch_optional(&mut **this.tx)
-				.await?
-			};
-			Ok(task)
-		}
-		.await;
-		result.map_err(Into::into)
 	}
 	async fn humans(&mut self, thread: Uuid, run: Uuid) -> Result<Vec<HumanRequest>> {
 		if let Some(requests) = self.access.state_humans(thread, run) {
@@ -163,22 +111,6 @@ impl ResourceVisibilityScope for NativeReads<'_> {
 	}
 	fn remember_human(&mut self, id: Uuid, allowed: bool) {
 		self.access.remember_human(id, allowed);
-	}
-	async fn artifact_task(&mut self, artifact: &Artifact) -> Result<Option<Task>> {
-		if let Some(task) = self
-			.access
-			.read_lookups
-			.task(artifact.task_id, artifact.thread_id)
-		{
-			return Ok(task);
-		}
-		crate::apps::workspaces::models::Task::read_in(
-			self.access.tx.as_mut(),
-			artifact.task_id,
-			artifact.thread_id,
-		)
-		.await
-		.map_err(Into::into)
 	}
 	async fn humans(&mut self, thread: Uuid, run: Uuid) -> Result<Vec<HumanRequest>> {
 		crate::apps::execution::models::HumanRequest::for_run(self.access.tx.as_mut(), run, thread)
@@ -256,45 +188,6 @@ impl ResourceEventScope for Reads<'_> {
 				.await?
 			};
 			Ok(task)
-		}
-		.await;
-		result.map_err(Into::into)
-	}
-	async fn artifact(&mut self, id: Uuid, thread: Option<Uuid>) -> Result<Option<Artifact>> {
-		let result: NativeResult<Option<Artifact>> = async {
-			let this = &mut *self.access;
-			let artifact: Option<Artifact> = {
-				let query_bind_1 = id;
-				let query_bind_2 = thread;
-				aidash_server::database::query_as(
-					&Query::select()
-						.column(ColumnRef::Asterisk)
-						.from(Alias::new("artifacts"))
-						.and_where(
-							Condition::all()
-								.add(
-									reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("id")))
-										.eq(SimpleExpr::CustomWithExpr(
-											"(?)".to_owned(),
-											vec![Expr::value(query_bind_1.to_owned()).into()],
-										)),
-								)
-								.add(
-									reinhardt::query::SimpleExpr::from(Expr::col(Alias::new(
-										"thread_id",
-									)))
-									.eq(SimpleExpr::CustomWithExpr(
-										"(?)".to_owned(),
-										vec![Expr::value(query_bind_2.to_owned()).into()],
-									)),
-								),
-						)
-						.to_string(PostgresQueryBuilder),
-				)
-				.fetch_optional(&mut **this.tx)
-				.await?
-			};
-			Ok(artifact)
 		}
 		.await;
 		result.map_err(Into::into)

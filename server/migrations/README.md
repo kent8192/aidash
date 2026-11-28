@@ -89,6 +89,29 @@ Reversal recreates the empty receipt table and restores its database-only
 constraints, index, and forced Tenant policy. Reinhardt cannot express the
 row-level policy, so the migration uses SQL assets.
 
+`execution/0170_goal_judge_calls` through `0173_authorization_read_model_state`
+add Goal judgment and Outside Versions and retire the Completion Gate. The
+Goal registry validator runs after Registry pruning at `registry/0094`;
+`identity/0123_goal_judge_model` follows the Tenant embedding settings at
+`identity/0122`.
+
+`execution/0175_node_drives` through `0179_drive_tool_contract` add Node Drives,
+versioned manifests, trash, resumable uploads, publication jobs and read
+dependencies. The migration backfills Drive ownership for existing Nodes,
+and the Node insert trigger creates a Drive for each new Node. `knowledge/0062_drive_index` and
+`0063_drive_index_state` add the Drive index and its model state. SQL assets
+define the Node trigger, forced Tenant row policies and PostgreSQL validators
+because Reinhardt has no typed operations for them. Reversing the tool
+contract requires removing persisted Drive tool definitions and Agent
+configurations that remove the `drive_search` default.
+
+`execution/0180_unorder_runs` through `0184_retire_area_holds` follow the Drive
+tool contract at `0179`. They retire the Working Area queue and file manifests
+while retaining the fileless execution scopes. `workspaces/0072_node_scratch_spaces`
+through `0074_thread_scratch_wipes` follow Completion Messages at `0071` and
+replace the former Scratch Space allocation with shared default and named
+Node Scratch Spaces.
+
 `registry/0056_attachment_tools` (after `registry/0055_remove_structured_harness_contracts`) extends the existing PostgreSQL descriptor
 and Agent default validators for the built-in `attachment_copy` operation.
 The function bodies use SQL assets because Reinhardt has no typed operation

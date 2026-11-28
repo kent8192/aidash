@@ -265,7 +265,7 @@ fn native_provenance_retains_exact_support_without_claim_bodies(mut receipt: Rec
 		participant: None,
 	};
 	let unit: crate::memory::Unit = serde_json::from_value(json!({"id":Uuid::from_u128(100),"bank":bank,"revision":7,
-        "content":{"text":"private native claim","kind":"world","learning":"fact","verification":"unverified","mental_model":null,"occurred":null,"entities":[],"evidence":[{"kind":"artifact","id":Uuid::from_u128(101),"revision":2,"digest":"source-digest"}],"links":[]},
+        "content":{"text":"private native claim","kind":"world","learning":"fact","verification":"unverified","mental_model":null,"occurred":null,"entities":[],"evidence":[{"kind":"message","id":Uuid::from_u128(101),"revision":2,"digest":"source-digest"}],"links":[]},
         "learned_at":receipt.retrieved_at,"updated_at":receipt.retrieved_at,"deleted":false,"stale":false})).unwrap();
 	let digest = crate::registry::rules::digest(&json!(unit.content));
 	receipt.memory = Some(super::super::NativeContext {

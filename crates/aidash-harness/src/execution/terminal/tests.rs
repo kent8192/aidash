@@ -63,6 +63,7 @@ fn task(scope: &Scope, status: TaskStatus) -> Task {
 		title: "fixture".into(),
 		description: String::new(),
 		status,
+		goal: None,
 		requirements: serde_json::json!({}),
 		owner: None,
 		created_by: "fixture".into(),

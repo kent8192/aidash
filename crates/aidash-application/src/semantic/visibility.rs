@@ -8,7 +8,9 @@ pub async fn permits(
 	entry: &Entry,
 	action: &str,
 ) -> Result<bool> {
-	if !permits_resource(scope, entry, action).await? {
+	if aidash_domain::semantic::retired_working_image(&entry.source)
+		|| !permits_resource(scope, entry, action).await?
+	{
 		return Ok(false);
 	}
 	if scope.scoped() && action == "semantic.read" && !entry.deleted {
@@ -18,7 +20,7 @@ pub async fn permits(
 			Source::AttachmentImage { message_id, .. } => Source::Message { id: message_id },
 			other => other,
 		};
-		if !matches!(decoded, Source::Memory { .. } | Source::WorkingImage { .. })
+		if !matches!(decoded, Source::Memory { .. })
 			&& source(scope, entry.thread_id, &decoded).await?.is_none()
 		{
 			return Ok(false);
@@ -65,17 +67,8 @@ pub async fn source(
 	match source {
 		Source::Unit { id } => scope.unit(*id, thread).await,
 		// Images are disclosed only as pointers, through their own read paths.
-		Source::WorkingImage { .. } | Source::AttachmentImage { .. } => Ok(None),
+		Source::AttachmentImage { .. } => Ok(None),
 		Source::Memory { text } => Ok(Some(text.clone())),
-		Source::Artifact { id } => {
-			let Some(row) = scope.artifact(*id, thread).await? else {
-				return Ok(None);
-			};
-			if scope.scoped() && !scope.artifact_visible(&row).await? {
-				return Ok(None);
-			}
-			Ok(Some(serde_json::to_string(&row.content)?))
-		}
 		Source::Message { id } => {
 			let Some(row) = scope.message(*id, thread).await? else {
 				return Ok(None);

@@ -20,7 +20,6 @@ pub async fn record(
 	let mut snapshot = ThreadSnapshot {
 		thread: scope.thread_row(thread_id).await?,
 		tasks: vec![],
-		artifacts: vec![],
 		events: vec![],
 		messages: vec![],
 		unconfirmed: vec![],
@@ -37,16 +36,6 @@ pub async fn record(
 			}
 			snapshot.tasks.push(task.clone());
 			json!(task)
-		}
-		"artifact" => {
-			let Some(artifact) = scope.artifact_record(thread_id, id).await? else {
-				return Err(scope.missing_record(kind, id).await?);
-			};
-			if !scope.artifact_visible(&artifact).await? {
-				return Err(Error::Forbidden);
-			}
-			snapshot.artifacts.push(artifact.clone());
-			json!(artifact)
 		}
 		"message" => {
 			let Some(message) = scope.message_record(thread_id, id).await? else {

@@ -27,62 +27,28 @@ fn message(descriptions: &[(&str, &str)]) -> Purpose {
 }
 
 #[rstest]
-fn a_file_share_keeps_the_deployments_share_limits() {
-	let files = vec![
-		file("a.txt", 100 * 1024 * 1024),
-		file("b.txt", 100 * 1024 * 1024),
-	];
-	assert_eq!(
-		validate(&Purpose::FileShare, &files, share()).unwrap(),
-		200 * 1024 * 1024
-	);
-}
-#[rstest]
-#[case::empty(vec![], "SHARE_FILE_LIMIT")]
-#[case::too_large(vec![file("a.txt", 100 * 1024 * 1024 + 1)], "SHARE_FILE_LIMIT")]
-#[case::duplicate(vec![file("a.txt", 1), file("a.txt", 1)], "SHARE_FILE_LIMIT")]
-fn a_file_share_over_a_budget_is_refused(#[case] files: Vec<File>, #[case] code: &str) {
-	assert!(
-		matches!(validate(&Purpose::FileShare, &files, share()), Err(Error::Invalid(got)) if got == code)
-	);
-}
-#[rstest]
-fn more_than_sixty_four_files_are_refused() {
-	let files: Vec<File> = (0..65).map(|i| file(&format!("f{i}.txt"), 1)).collect();
-	assert!(matches!(
-		validate(&Purpose::FileShare, &files, share()),
-		Err(Error::Invalid(_))
-	));
-}
-#[rstest]
-fn the_total_may_not_pass_the_byte_budget() {
-	let files = vec![
-		file("a", 100 * 1024 * 1024),
-		file("b", 100 * 1024 * 1024),
-		file("c", 100 * 1024 * 1024),
-	];
-	assert!(
-		matches!(validate(&Purpose::FileShare, &files, share()), Err(Error::Invalid(got)) if got == "SHARE_BYTE_LIMIT")
-	);
-}
-#[rstest]
 #[case::path("../a.txt")]
 #[case::absolute("/a.txt")]
 #[case::backslash("a\\b")]
 fn a_path_that_leaves_its_directory_is_refused(#[case] path: &str) {
-	assert!(validate(&Purpose::FileShare, &[file(path, 1)], share()).is_err());
+	assert!(validate(&message(&[]), &[file(path, 1)], share()).is_err());
 }
 #[rstest]
 fn a_digest_must_be_lowercase_sha256_hex() {
 	let mut bad = file("a.txt", 1);
 	bad.digest = "A".repeat(64);
-	assert!(validate(&Purpose::FileShare, &[bad], share()).is_err());
+	assert!(validate(&message(&[]), &[bad], share()).is_err());
 }
 #[rstest]
 fn a_message_keeps_the_local_attachment_limits() {
 	let nine: Vec<File> = (0..9).map(|i| file(&format!("f{i}.txt"), 1)).collect();
 	assert!(validate(&message(&[]), &nine, share()).is_err());
 	let big = vec![file("a.txt", MESSAGE_BYTES + 1)];
+	let total = vec![file("a.txt", MESSAGE_BYTES), file("b.txt", 1)];
+	assert!(validate(&message(&[]), &total, share()).is_err());
+	let duplicate = vec![file("same.txt", 1), file("same.txt", 2)];
+	assert!(validate(&message(&[]), &duplicate, share()).is_err());
+	assert!(validate(&message(&[]), &[], share()).is_err());
 	assert!(validate(&message(&[]), &big, share()).is_err());
 	assert_eq!(
 		validate(&message(&[]), &[file("a.txt", MESSAGE_BYTES)], share()).unwrap(),
@@ -134,31 +100,29 @@ fn the_same_key_names_the_same_delivery_and_another_admission_names_another() {
 	);
 }
 #[rstest]
-fn the_input_digest_binds_the_purpose_the_manifest_and_the_grant() {
+fn the_input_digest_binds_the_message_the_manifest_and_the_grant() {
 	let (grant, admission) = (Uuid::new_v4(), Uuid::new_v4());
 	let files = vec![file("a.txt", 1)];
-	let base = input_digest(grant, admission, "k", &Purpose::FileShare, &files);
+	let base = input_digest(grant, admission, "k", &message(&[]), &files);
 	assert_eq!(
-		base,
-		input_digest(grant, admission, "k", &Purpose::FileShare, &files)
-	);
-	assert_ne!(
 		base,
 		input_digest(grant, admission, "k", &message(&[]), &files)
 	);
+	let different = Purpose::Message {
+		content: "different".into(),
+		descriptions: BTreeMap::new(),
+	};
 	assert_ne!(
 		base,
-		input_digest(
-			grant,
-			admission,
-			"k",
-			&Purpose::FileShare,
-			&[file("b.txt", 1)]
-		)
+		input_digest(grant, admission, "k", &different, &files)
 	);
 	assert_ne!(
 		base,
-		input_digest(Uuid::new_v4(), admission, "k", &Purpose::FileShare, &files)
+		input_digest(grant, admission, "k", &message(&[]), &[file("b.txt", 1)])
+	);
+	assert_ne!(
+		base,
+		input_digest(Uuid::new_v4(), admission, "k", &message(&[]), &files)
 	);
 }
 #[rstest]

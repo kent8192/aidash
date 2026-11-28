@@ -17,11 +17,11 @@ pub const SANDBOXED_GROUPS: &[(&str, &[&str])] = &[
 	),
 	("outbound_get", &["outbound_get"]),
 	("apply_patch", &["apply_patch"]),
-	("file_share", &["file_share"]),
 	("live_preview", &["live_preview_start", "live_preview_stop"]),
-	// Execution Pod groups (#745): their own groups, so adding them changes no
-	// existing group's definitions.
-	("scratch_files", &["file_save", "file_remove", "file_copy"]),
+	(
+		"drive_publication",
+		&["drive_publish", "drive_publish_status"],
+	),
 	(
 		"background_processes",
 		&["process_list", "process_log", "process_stop"],
@@ -98,14 +98,13 @@ pub fn declarations(validation: &DefinitionValidation, node: &str) -> Result<Vec
 						binding_normalization: None,
 						installation: None,
 						id: format!("aidash.{operation}"),
-						version: "1.0.0".into(),
+						version: if matches!(*name, "apply_patch" | "live_preview") { "1.1.0" } else { "1.0.0" }.into(),
 						kind: "tool".into(),
 						name: BTreeMap::from([("en".into(), operation.to_string())]),
 						description: BTreeMap::from([("en".into(), spec.description.clone())]),
 						capabilities: vec![operation.to_string()],
 						tags: vec!["sandboxed".into()],
 						languages: vec![],
-						skills: vec![],
 						schema: spec.parameters.clone(),
 						config: serde_json::to_value(descriptor)?,
 					})
@@ -139,7 +138,6 @@ pub fn declarations(validation: &DefinitionValidation, node: &str) -> Result<Vec
 						capabilities: vec![format!("research.{operation}")],
 						tags: vec!["research".into()],
 						languages: vec![],
-						skills: vec![],
 						schema: spec.parameters,
 						config: serde_json::to_value(descriptor)?,
 					})
@@ -161,7 +159,7 @@ pub fn declarations(validation: &DefinitionValidation, node: &str) -> Result<Vec
                 id: tool.id.trim_end_matches("@1").into(), version: "1.0.0".into(), kind: "tool".into(),
                 name: BTreeMap::from([("en".into(),tool.tool_type.into())]),
                 description: BTreeMap::from([("en".into(),"Provider tool activity is not Research evidence. Parameters and spending caps are pinned by the Agent Binding.".into())]),
-                capabilities: vec![tool.alias.into()], tags: if tool.warning { vec!["provider".into(), "warning".into()] } else { vec!["provider".into()] }, languages: vec![], skills: vec![],
+                capabilities: vec![tool.alias.into()], tags: if tool.warning { vec!["provider".into(), "warning".into()] } else { vec!["provider".into()] }, languages: vec![],
                 schema: tool.binding_schema(), config: serde_json::to_value(descriptor)?,
             };
             Ok(PackageGroup { name: tool.alias.into(), bundle: bundle_entry(node,tool.alias,"provider",std::slice::from_ref(&entry))?, operations:vec![entry] })
@@ -174,10 +172,10 @@ fn bundle_entry(node: &str, name: &str, tag: &str, operations: &[Entry]) -> Resu
 		binding_normalization: None,
 		installation: None,
 		id: format!("aidash.bundle.{name}"),
-		version: if name == "research_page" {
-			PAGE_READING_VERSION
-		} else {
-			"1.0.0"
+		version: match name {
+			"research_page" => PAGE_READING_VERSION,
+			"apply_patch" | "live_preview" => "1.1.0",
+			_ => "1.0.0",
 		}
 		.into(),
 		kind: "bundle".into(),
@@ -189,7 +187,6 @@ fn bundle_entry(node: &str, name: &str, tag: &str, operations: &[Entry]) -> Resu
 			.collect(),
 		tags: vec![tag.into()],
 		languages: vec![],
-		skills: vec![],
 		schema: json!({}),
 		config: serde_json::to_value(BundleConfig {
 			members: operations

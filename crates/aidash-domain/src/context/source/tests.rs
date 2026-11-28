@@ -79,7 +79,8 @@ fn explicit_policy_rejects_duplicate_tools_and_required_home_enforcement() {
 		mode: Mode::Shadow,
 		decider: QualifiedRef::builtin("aidash://node", "selection"),
 	};
-	declaration.validate().unwrap();
+	assert!(declaration.validate().is_err());
+	declaration.pin = PinPolicy::Always;
 	assert!(
 		SourceBatch {
 			candidates: vec![],

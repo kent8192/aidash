@@ -18,6 +18,7 @@ async fn space_and_settings_are_tenant_scoped_and_transactional(
 	let tenant_b = database.tenant("scratch-b").await;
 	let now = Utc::now();
 	let mut space = ScratchSpace {
+		is_default: false,
 		id: Uuid::new_v4(),
 		node: NodeName::derived("scratch-a"),
 		name: "Project".into(),
@@ -25,6 +26,7 @@ async fn space_and_settings_are_tenant_scoped_and_transactional(
 		state: ScratchState::Active,
 		revision: 4,
 		wipe_generation: 3,
+		wipe_completed_generation: 3,
 		settings: ScratchSettings::default(),
 		members: BTreeSet::from(["bob".into()]),
 		created_at: now,
@@ -118,7 +120,7 @@ async fn space_and_settings_are_tenant_scoped_and_transactional(
 	assert_eq!(loaded.revision, 4);
 	assert_eq!(loaded.wipe_generation, 3);
 	space.members.insert("carol".into());
-	space.settings.idle_expiry_days = None;
+	space.settings.cpu_millis = 2000;
 	space.tombstone();
 	save(&mut *tx, "scratch-a", &space).await.unwrap();
 	tx.rollback().await.unwrap();
@@ -128,7 +130,7 @@ async fn space_and_settings_are_tenant_scoped_and_transactional(
 		.unwrap()
 		.unwrap();
 	assert_eq!(loaded.members, BTreeSet::from(["bob".into()]));
-	assert_eq!(loaded.settings.idle_expiry_days, Some(14));
+	assert_eq!(loaded.settings.cpu_millis, 4000);
 	assert_eq!(loaded.state, ScratchState::Active);
 	// Purge orders physical foreign keys, including the fixed conversation
 	// binding, before deleting a Tenant's Scratch Spaces and Nodes.
@@ -197,50 +199,6 @@ async fn space_and_settings_are_tenant_scoped_and_transactional(
 }
 
 #[test]
-fn remote_space_identity_is_stable_and_scoped_to_the_receiver_and_person() {
-	let node = NodeName::derived("receiver");
-	let thread = Uuid::new_v4();
-	let id = remote_space_id("tenant", &node, "aidash://home/node", thread, "alice");
-	assert_eq!(
-		id,
-		remote_space_id("tenant", &node, "aidash://home/node", thread, "alice")
-	);
-	assert_ne!(
-		id,
-		remote_space_id("other", &node, "aidash://home/node", thread, "alice")
-	);
-	assert_ne!(
-		id,
-		remote_space_id(
-			"tenant",
-			&NodeName::derived("other"),
-			"aidash://home/node",
-			thread,
-			"alice"
-		)
-	);
-	assert_ne!(
-		id,
-		remote_space_id("tenant", &node, "aidash://home/node", thread, "bob")
-	);
-	assert_ne!(
-		id,
-		remote_space_id("tenant", &node, "aidash://other/node", thread, "alice")
-	);
-	assert_ne!(
-		id,
-		remote_space_id(
-			"tenant",
-			&node,
-			"aidash://home/node",
-			Uuid::new_v4(),
-			"alice"
-		)
-	);
-	assert_eq!(id.get_version_num(), 8);
-}
-
-#[test]
 fn effective_operator_policy_applies_tenant_docker_and_host_restrictions() {
 	let mut policy = crate::config::ScratchOperatorPolicy::default();
 	let (limits, hosts) = effective_policy(&policy, "a");
@@ -264,7 +222,7 @@ fn effective_operator_policy_applies_tenant_docker_and_host_restrictions() {
 
 #[rstest]
 #[tokio::test]
-async fn delegated_space_belongs_to_mapped_person_for_node_and_service_peers(
+async fn remote_runs_share_the_receiving_node_default(
 	#[future] database: DatabaseFixture,
 	#[values("user", "service", "agent")] mapped_kind: &str,
 ) {
@@ -495,7 +453,7 @@ async fn delegated_space_belongs_to_mapped_person_for_node_and_service_peers(
 		}
 		assert_eq!(starter, mapped);
 		let space = adapter.load_for_update(id).await.unwrap();
-		assert_eq!(space.creator, mapped);
+		assert!(space.is_default);
 		assert!(space.may_use(mapped));
 		// Outside delegated allocation, users and services may own a space.
 		adapter.person_override = None;
@@ -507,13 +465,12 @@ async fn delegated_space_belongs_to_mapped_person_for_node_and_service_peers(
 			let dedicated = aidash_application::scratch::select_for_thread(
 				&mut adapter,
 				&node,
-				"Service thread",
 				None,
 				Utc::now(),
 			)
 			.await
 			.unwrap();
-			assert_eq!(adapter.load(dedicated).await.unwrap().creator, peer);
+			assert_eq!(dedicated, id);
 		}
 		spaces.push(id);
 		drop(adapter);
@@ -544,10 +501,7 @@ async fn delegated_space_belongs_to_mapped_person_for_node_and_service_peers(
 		}
 		services.clear_contents(&mut access, id).await.unwrap();
 		let reloaded = load(&mut **access.tx, tenant, id).await.unwrap().unwrap();
-		assert_eq!(
-			reloaded.wipe_generation as usize,
-			spaces.len() + usize::from(spaces.len() == 2)
-		);
+		assert_eq!(reloaded.wipe_generation as usize, spaces.len());
 		assert_eq!(reloaded.state, ScratchState::Active);
 		access.finish(Ok(())).await.unwrap();
 	}
@@ -571,6 +525,7 @@ async fn thread_run_loses_scratch_authority_when_starter_is_removed(
 	let thread = Uuid::new_v4();
 	let now = Utc::now();
 	let mut space = ScratchSpace {
+		is_default: false,
 		id: Uuid::new_v4(),
 		node: node.clone(),
 		name: "Shared".into(),
@@ -578,6 +533,7 @@ async fn thread_run_loses_scratch_authority_when_starter_is_removed(
 		state: ScratchState::Active,
 		revision: 0,
 		wipe_generation: 0,
+		wipe_completed_generation: 0,
 		settings: ScratchSettings::default(),
 		members: BTreeSet::from(["bob".into()]),
 		created_at: now,
@@ -698,6 +654,7 @@ async fn listing_filters_by_membership_and_loads_members(#[future] database: Dat
 	let tenant = database.tenant("scratch-list").await;
 	let now = Utc::now();
 	let mut space = ScratchSpace {
+		is_default: false,
 		id: Uuid::new_v4(),
 		node: NodeName::derived("scratch-list"),
 		name: "Private".into(),
@@ -705,6 +662,7 @@ async fn listing_filters_by_membership_and_loads_members(#[future] database: Dat
 		state: ScratchState::Active,
 		revision: 0,
 		wipe_generation: 0,
+		wipe_completed_generation: 0,
 		settings: ScratchSettings::default(),
 		members: BTreeSet::new(),
 		created_at: now,

@@ -17,7 +17,6 @@ import {
   givenBy,
   modeAllowed,
   modeReason,
-  needsApprovalDecider,
   preferencesUpdate,
   refusedBy,
   ruleInput,
@@ -217,7 +216,7 @@ test("a card says what refused an approval, with Auto's reason in words", () => 
     beyond_request: "goes beyond your request",
     injected: "driven by content the Run read",
     boundary: "contradicts a boundary you stated",
-    unavailable: "the Decider was unavailable",
+    unavailable: "the approval judge was unavailable",
   };
   assert.deepEqual(Object.keys(blocked), [...blockReasons]);
   for (const [reason, words_] of Object.entries(blocked))
@@ -239,20 +238,19 @@ test("every copy names every block reason and mode reason in both languages", ()
       "decider_unapproved",
       "no_decider",
     ]) {
-      assert.ok(words.modeReason[reason]("aidash.approval-decider@1.0.0"));
+      assert.ok(words.modeReason[reason], reason);
       assert.ok(words.threadUnavailable[reason], reason);
     }
   }
 });
 
-test("a mode's reason names the Decider only when it is known", () => {
-  const words = approvalCopy["en-US"].modeReason;
+test("Approval Settings describe Auto as using the built-in judge", () => {
+  assert.match(approvalCopy["en-US"].modes.auto.description, /built-in judge/);
+  assert.match(approvalCopy["ja-JP"].modes.auto.description, /組み込み/);
   assert.match(
-    words.decider_unapproved("aidash.approval-decider@1.0.0"),
-    /\(aidash\.approval-decider@1\.0\.0\) has no Catalog Approval/,
+    approvalCopy["en-US"].modeReason.not_accepted,
+    /first choose it as your default/,
   );
-  assert.doesNotMatch(words.decider_unapproved(""), /\(/);
-  assert.match(words.not_accepted(""), /first choose it as your default/);
 });
 
 const view = (mode, allowed = ["manual", "auto", "dont_ask", "bypass"]) => ({
@@ -299,7 +297,7 @@ test("Bypass stays unavailable in a Thread until the person accepted its risk", 
   assert.equal(bypass.unavailable, "not_accepted");
 });
 
-test("Auto is unavailable in a Thread for the Decider's reason, not the policy's", () => {
+test("a Thread preserves the reported reason when the approval judge is unavailable", () => {
   for (const reason of ["decider_unapproved", "no_decider"]) {
     const { options } = threadModeOptions({
       ...view(null),
@@ -319,18 +317,6 @@ test("a mode's availability and reason come from the server's choices", () => {
   assert.equal(modeReason(modes, "dont_ask"), "policy");
   assert.equal(modeReason(modes, "manual"), null);
   assert.equal(modeReason([], "manual"), null);
-});
-
-test("only a mode held back by the approval Decider asks for its name", () => {
-  const without = choices(["manual", "dont_ask"]);
-  assert.equal(needsApprovalDecider(without), false);
-  for (const reason of ["decider_unapproved", "no_decider"])
-    assert.equal(
-      needsApprovalDecider(
-        choices(["manual", "dont_ask", "bypass"], { auto: reason }),
-      ),
-      true,
-    );
 });
 
 test("a Thread mode is set by name and cleared by the default", () => {
@@ -478,9 +464,12 @@ test("a deadline shows with its date, since it can be days away", () => {
 test("both locales explain the Answer Deadline and its limits", () => {
   const english = approvalCopy["en-US"].deadline;
   const japanese = approvalCopy["ja-JP"].deadline;
-  assert.match(english.help, /continues on its own judgment/);
-  assert.match(english.help, /never applies to Completion Reviews/);
-  assert.match(japanese.help, /Completion Review/);
+  assert.match(english.help, /continues on the Agent's judgment/);
+  assert.match(english.help, /paused by Goal judgment waits for a reply/);
+  assert.match(
+    japanese.help,
+    /ゴールの判定で一時停止した Run は、回答があるまで待機/,
+  );
   assert.deepEqual(
     Object.keys(english.problems),
     Object.keys(japanese.problems),

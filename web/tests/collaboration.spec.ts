@@ -3,6 +3,78 @@ import { setup, fixture } from "./collaboration-fixture";
 import { defaultNode } from "./registry-fixture";
 import type { ChannelMessagePage } from "../src/generated/models";
 
+test("the requester can resume an impossible Goal from the Task detail", async ({
+  page,
+}) => {
+  const { errors } = await setup(page, { subject: true, locale: "en-US" });
+  const data = fixture();
+  const { tasks, threads } = data;
+  const [task] = tasks;
+  task.status = "FAILED";
+  task.created_by = "alice";
+  const initialGoal = "Find evidence in the expired archive.";
+  const rewrittenGoal = "Verify the evidence in the current archive.";
+  let goal = initialGoal;
+  const verdict = {
+    run_id: "run-0",
+    response_epoch: 0,
+    goal: initialGoal,
+    judgment: {
+      verdict: "impossible",
+      reason: "The archive was deleted.",
+    },
+    model: { id: "goal-judge", version: "1.0.0" },
+    cost_nanocredits: 1000000,
+    judged_at: "2026-09-22T10:12:00Z",
+  };
+  const saved: Record<string, unknown>[] = [];
+  await page.route("**/api/threads/thread-one", (route) =>
+    route.fulfill({
+      json: { thread: threads[0], tasks: [task], messages: [], events: [] },
+    }),
+  );
+  await page.route("**/api/tasks/task-0/goal", async (route) => {
+    if (route.request().method() === "PATCH") {
+      const change = route.request().postDataJSON();
+      saved.push(change);
+      goal = change.goal;
+      task.status = "RUNNING";
+    }
+    return route.fulfill({
+      json: {
+        goal,
+        verdicts: [verdict],
+        edits: [
+          { goal: initialGoal, edited_at: task.created_at, edited_by: "alice" },
+        ],
+      },
+    });
+  });
+  await page.goto("/collaboration?channel=thread-one");
+  await page.getByRole("button", { name: "Tasks and results" }).click();
+  await page
+    .getByRole("dialog")
+    .getByRole("button")
+    .filter({ hasText: "Collect evidence" })
+    .click();
+  const history = page.getByRole("list", { name: "Verdict history" });
+  await expect(history.getByText("The archive was deleted.")).toBeVisible();
+  await expect(history.getByText("goal-judge@1.0.0")).toBeVisible();
+  await expect(history.getByText("0.001 credits")).toBeVisible();
+  await page.getByText("Edit history", { exact: true }).click();
+  await expect(page.getByText(initialGoal, { exact: true })).toHaveCount(2);
+  await page.getByRole("button", { name: "Edit Goal" }).click();
+  await page
+    .getByRole("textbox", { name: "Goal", exact: true })
+    .fill(rewrittenGoal);
+  await page.getByRole("button", { name: "Save and resume" }).click();
+  await expect(page.getByText(rewrittenGoal, { exact: true })).toBeVisible();
+  expect(saved).toEqual([
+    { goal: rewrittenGoal, expected_revision: task.revision, resume: true },
+  ]);
+  expect(errors).toEqual([]);
+});
+
 for (const locale of ["en-US", "ja-JP"] as const) {
   for (const { native, failure } of [
     { native: false, failure: "none" },
@@ -690,8 +762,8 @@ for (const locale of ["en-US", "ja-JP"] as const) {
                         verification: "unverified",
                         evidence: [
                           {
-                            kind: "artifact",
-                            id: "supporting-artifact",
+                            kind: "message",
+                            id: "supporting-message",
                             revision: 2,
                             digest: "sha256:source",
                           },
@@ -1964,8 +2036,8 @@ for (const locale of ["en-US", "ja-JP"] as const) {
     });
     await expect(pause).toBeVisible();
     for (const name of ja
-      ? ["タスクと成果物", "成果物", "実行履歴"]
-      : ["Tasks and results", "Artifacts", "Execution history"]) {
+      ? ["タスクと成果物", "ファイル", "実行履歴"]
+      : ["Tasks and results", "Files", "Execution history"]) {
       await nav.getByRole("tab", { name, exact: true }).click();
       await expect(pause).toHaveCount(0);
       await nav
@@ -3627,7 +3699,6 @@ test("pending requests continue within the selected node", async ({ page }) => {
           title: "Older thread",
         },
         tasks: [],
-        artifacts: [],
         events: [],
         messages: [],
       },
@@ -3708,7 +3779,6 @@ test("an opened older thread survives a fresh state window", async ({
           title: "Older thread",
         },
         tasks: [],
-        artifacts: [],
         events: [],
         messages: [],
       },
@@ -3792,7 +3862,6 @@ test("failed task can be abandoned even when older runs exist", async ({
       json: {
         thread: data.threads[0],
         tasks: [task],
-        artifacts: [],
         events: [],
         messages: [],
       },

@@ -1,7 +1,7 @@
 //! Thread-owned reads and bounded public task discovery.
-use super::{Artifact, Message, Task, Thread, child_flags};
+use super::{Message, Task, Thread, child_flags};
 use crate::apps::workspaces::serializers::{
-	entities::{Artifact as ArtifactContract, Message as MessageContract, Task as TaskContract},
+	entities::{Message as MessageContract, Task as TaskContract},
 	services::ChildTaskSummary,
 	tasks::TaskPage,
 };
@@ -46,12 +46,6 @@ impl Thread {
 				.first_with_db(db)
 				.await?
 				.map(|row| json!(TaskContract::from(row))),
-			"artifact" => Artifact::objects()
-				.filter(Artifact::field_id().eq(id))
-				.filter(Artifact::field_thread_id().eq(thread))
-				.first_with_db(db)
-				.await?
-				.map(|row| json!(ArtifactContract::from(row))),
 			"message" => {
 				let row = Message::objects()
 					.filter(Message::field_id().eq(id))
@@ -182,16 +176,6 @@ impl Task {
 				return Ok(summary);
 			}
 		}
-	}
-}
-
-impl Artifact {
-	pub(crate) async fn for_thread<E: OrmExecutor>(db: &mut E, thread: Uuid) -> Result<Vec<Self>> {
-		Ok(Self::objects()
-			.filter(Self::field_thread_id().eq(thread))
-			.order_by(&["created_at", "id"])
-			.all_with_db(db)
-			.await?)
 	}
 }
 

@@ -54,9 +54,9 @@ appear in the Tenant's Budgets panel.
 
 ## What stays with the Task
 
-The Context Journal, the delegation chain and requester, the Completion Gate's
+The Context Journal, the delegation chain and requester, Goal judgment
 progress, people's pause and cancel, budgets and grants that last until the next
-user input live with the Task's execution record and carry across Stints: a
+user input live with the Task's execution record and carry across Stints. A
 woken Agent continues where it slept.
 
 ## Limits

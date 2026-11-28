@@ -1,4 +1,9 @@
 use reinhardt::db::backends::DatabaseConnection as BackendConnection;
+// Some isolated test binaries use just this fixture and others use both.
+#[allow(clippy::duplicate_mod)]
+#[path = "default_scratch.rs"]
+mod default_scratch;
+
 use reinhardt::db::migrations::{FilesystemSource, MigrationSource};
 use reinhardt::db::orm::connection::DatabaseConnectionLease;
 use reinhardt::query::QueryStatementBuilder as _;
@@ -210,6 +215,13 @@ impl DatabaseFixture {
 			}
 		}
 		tx.commit().await.unwrap();
+		let pool = self.server_pool();
+		let mut fixture =
+			aidash_server::database::scope::begin_fixture_deployment(pool.fixture_driver())
+				.await
+				.unwrap();
+		default_scratch::seed(&mut fixture, name, &node).await;
+		fixture.commit().await.unwrap();
 		aidash_application::tenancy::TenancyScope::tenant(name).unwrap()
 	}
 

@@ -143,10 +143,11 @@ pub fn validate_upload(input: &Upload, maximum: u64) -> Result<()> {
 	}
 	Ok(())
 }
+pub const CHUNK_BYTES: u64 = 4 << 20;
+
 pub fn valid_chunk(offset: u64, maximum: u64, bytes: &[u8]) -> bool {
 	!bytes.is_empty()
-		&& bytes.len() <= 4 << 20
-		&& bytes.len() as u64 == maximum.saturating_sub(offset).min(4 << 20)
+		&& bytes.len() as u64 == maximum.saturating_sub(offset).min(CHUNK_BYTES)
 		&& offset
 			.checked_add(bytes.len() as u64)
 			.is_some_and(|end| end <= maximum)

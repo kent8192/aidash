@@ -17,6 +17,7 @@ pub(crate) async fn definition<E: OrmExecutor>(
 ) -> Result<Definition> {
 	Definition::objects()
 		.filter(Definition::field_tenant().eq(tenant.as_str().to_owned()))
+		.filter(Definition::field_kind().is_in(DefinitionKind::ALL))
 		.filter(Definition::field_id().eq(id.to_owned()))
 		.filter(Definition::field_version().eq(version.to_owned()))
 		.first_with_db(db)
@@ -33,9 +34,13 @@ pub(crate) async fn definitions<E: OrmExecutor>(
 ) -> Result<Vec<Definition>> {
 	let mut query = Definition::objects()
 		.filter(Definition::field_tenant().eq(tenant.as_str().to_owned()))
+		.filter(Definition::field_kind().is_in(DefinitionKind::ALL))
 		.order_by(&["id", "version"])
 		.offset(offset);
 	if let Some(kind) = kind {
+		if !aidash_domain::registry::rules::registry_kind(kind) {
+			return Ok(Vec::new());
+		}
 		let Ok(kind) = serde_json::from_value::<DefinitionKind>(Value::String(kind.to_owned()))
 		else {
 			return Ok(Vec::new());

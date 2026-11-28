@@ -19,6 +19,7 @@ fn definition(trigger: Trigger) -> Definition {
 		title: "Daily report".into(),
 		mission: "Summarize yesterday's merged pull requests.".into(),
 		procedure: String::new(),
+		goal: None,
 		agent: EntityRef {
 			id: "reporter".into(),
 			version: "1.0.0".into(),
