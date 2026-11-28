@@ -2,8 +2,9 @@
 use crate::capabilities::endpoints as api;
 use crate::http::json::Json;
 use api::*;
+use reinhardt::di::params::PathStruct;
 use reinhardt::http::ViewResult;
-use reinhardt::{Depends, Path, PathStruct, Query, Request, Response, get, post};
+use reinhardt::{Depends, Path, Query, Request, Response, get, post};
 use uuid::Uuid;
 
 #[post(
