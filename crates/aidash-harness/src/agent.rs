@@ -2322,7 +2322,7 @@ impl<'a> Executor<'a> {
 					.map_err(|_| unreducible(guard))?;
 				let source_delivery = fit_source_delivery(&context,&pinned,&request,&source_instruction_slots,guard.is_some_and(|authority|authority.is_remote()) || run.context.binding_snapshot.as_ref().is_some_and(|snapshot|snapshot.remote))?;
                 let source_request_digest=aidash_domain::registry::rules::digest(&serde_json::to_value(&request)?);
-                let goal_transcript = request.context.clone();
+                let goal_transcript = Box::new(request.context.clone());
                 let provider_tools_enabled = !request.provider_tools.is_empty();
 				let request_estimate = request.request_estimate();
 				let request_tokens = request_estimate.tokens as usize;
@@ -2999,7 +2999,7 @@ connection: None,
 							}
 						};
 						let judged_goal = home.task().await?.goal;
-						let Some(verdict) = self.judge_goal(run, token, &agent, home.as_ref(), visibility, &result.text).await? else {
+						let Some(verdict) = Box::pin(self.judge_goal(run, token, &agent, home.as_ref(), visibility, &result.text)).await? else {
 							return Ok(());
 						};
 						// What people and coordinating Agents read says what was
@@ -3025,7 +3025,7 @@ connection: None,
 						// The completion's outcome is saved with it: a cancel after this
 						// point settles exactly these abandonments.
 						run.state.tool_mut()?.abandoning = abandoning.clone();
-						run.context.final_completion = Some(completion.clone());
+						run.context.final_completion = Some(Box::new(completion.clone()));
 						if !store.begin_final_completion(run, token).await? {
 							run.state = RunState::Thinking(ThinkingState::default());
 

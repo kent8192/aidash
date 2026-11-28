@@ -39,9 +39,15 @@ impl Executor<'_> {
 		let store = self.environment.store();
 		let epoch = run.state.tool()?.response_epoch;
 		let mut last_error = None;
-		let mut record = run.context.goal_judging.last.clone().filter(|last| {
-			last.run_id == run.id && last.response_epoch == epoch && last.goal == goal
-		});
+		let mut record = run
+			.context
+			.goal_judging
+			.last
+			.as_deref()
+			.filter(|last| {
+				last.run_id == run.id && last.response_epoch == epoch && last.goal == goal
+			})
+			.cloned();
 		if record.is_none() {
 			for _ in 0..2 {
 				match self
@@ -86,7 +92,7 @@ impl Executor<'_> {
 				Err(error) => return Err(error),
 			};
 			if record.judgment.verdict != Verdict::NotYet {
-				run.context.goal_judging.last = Some(record.clone());
+				run.context.goal_judging.last = Some(Box::new(record.clone()));
 				return Ok(Some(Some(record.judgment)));
 			}
 			let progress = &mut run.context.goal_judging;
@@ -101,7 +107,7 @@ impl Executor<'_> {
 				progress.consecutive_not_yet += 1;
 			}
 			let reason = record.judgment.reason.clone();
-			progress.last = Some(record);
+			progress.last = Some(Box::new(record));
 			record_model_turn(run, answer, &[])?;
 			let instruction = format!("The Goal is not yet met. Judge guidance: {reason}");
 			run.context.push(ContextEvent::GoalFeedback { instruction });

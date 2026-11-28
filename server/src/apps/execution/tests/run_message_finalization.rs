@@ -880,12 +880,12 @@ async fn the_commit_fence_persists_the_completion_basis(
 		.await
 		.unwrap();
 	let mut leased = f.store.lease_run(worker, 30).await.unwrap().unwrap();
-	leased.context.final_completion = Some(aidash_domain::deliverable::Completion::new(
+	leased.context.final_completion = Some(Box::new(aidash_domain::deliverable::Completion::new(
 		run.task_id,
 		&leased.completion_key(),
 		"Done.".into(),
 		None,
-	));
+	)));
 	assert!(
 		f.store
 			.begin_final_completion(&TEST_FIXTURE, &leased, worker)

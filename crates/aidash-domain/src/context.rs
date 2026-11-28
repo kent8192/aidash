@@ -142,10 +142,12 @@ pub struct Context {
 		skip_serializing_if = "crate::goal::JudgingProgress::is_empty"
 	)]
 	pub goal_judging: crate::goal::JudgingProgress,
+	// Keep Goal payloads off the stack of every worker step, including steps
+	// that run deep tool calls without ever judging or completing the Task.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
-	pub goal_transcript: Option<crate::provider::ModelContext>,
+	pub goal_transcript: Option<Box<crate::provider::ModelContext>>,
 	#[serde(default, skip_serializing_if = "Option::is_none")]
-	pub final_completion: Option<crate::deliverable::Completion>,
+	pub final_completion: Option<Box<crate::deliverable::Completion>>,
 	#[serde(default, skip_serializing_if = "is_zero_u32")]
 	pub completion_attempt: u32,
 	#[serde(default, skip_serializing_if = "Option::is_none")]
@@ -215,9 +217,9 @@ struct StoredContext {
 	#[serde(default)]
 	goal_judging: crate::goal::JudgingProgress,
 	#[serde(default)]
-	goal_transcript: Option<crate::provider::ModelContext>,
+	goal_transcript: Option<Box<crate::provider::ModelContext>>,
 	#[serde(default)]
-	final_completion: Option<crate::deliverable::Completion>,
+	final_completion: Option<Box<crate::deliverable::Completion>>,
 	#[serde(default)]
 	completion_attempt: u32,
 	#[serde(default)]

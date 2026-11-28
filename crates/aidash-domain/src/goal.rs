@@ -70,7 +70,7 @@ pub struct Edit {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 pub struct JudgingProgress {
 	pub consecutive_not_yet: u8,
-	pub last: Option<VerdictRecord>,
+	pub last: Option<Box<VerdictRecord>>,
 }
 
 impl JudgingProgress {

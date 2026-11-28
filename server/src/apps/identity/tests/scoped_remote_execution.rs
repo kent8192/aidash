@@ -9858,7 +9858,7 @@ async fn node_deletion_blocks_cached_home_but_preserves_exact_finalization(
 	let task = home.task().await.unwrap();
 	let artifact =
 		aidash_domain::deliverable::Completion::new(task.id, &run.completion_key(), text, None);
-	run.context.final_completion = Some(artifact.clone());
+	run.context.final_completion = Some(Box::new(artifact.clone()));
 	if saved_failure {
 		run.state = aidash_domain::RunState::Waiting(Box::new(
 			aidash_domain::WaitingState::FailureDelivery {
