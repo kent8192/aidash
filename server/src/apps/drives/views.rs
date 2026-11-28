@@ -138,9 +138,8 @@ async fn browse_inner(
 		let mut drive_bytes = 0_u64;
 		for entry in db::rows::<db::Entry>(access.tx.as_mut(), &meter).await? {
 			let version = entry.file.added_in_version;
-			if !visible.contains_key(&version) {
-				visible.insert(
-					version,
+			if let std::collections::btree_map::Entry::Vacant(slot) = visible.entry(version) {
+				slot.insert(
 					db::producer_readable(&mut access, &grant.tenant, drive.id, version).await?,
 				);
 			}

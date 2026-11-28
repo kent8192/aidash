@@ -48,15 +48,10 @@ impl Tool for CoreTool {
 		// A Run executing here for another Home reaches the Home's person and the Home's Run
 		// through the Home, not through this Node's own people and Areas (ADR 0139). Neither
 		// call holds a transaction across its Federation requests.
-		if !ctx.run.is_local(ctx.store.deployment.as_str()) {
-			match self.name {
-				"outbound_get" => {
-					return authority
-						.outbound_to_home(&ctx.store, &ctx.run, &ctx.home, input, key)
-						.await;
-				}
-				_ => {}
-			}
+		if self.name == "outbound_get" && !ctx.run.is_local(ctx.store.deployment.as_str()) {
+			return authority
+				.outbound_to_home(&ctx.store, &ctx.run, &ctx.home, input, key)
+				.await;
 		}
 		if crate::apps::drives::tools::handles(self.name, &input) {
 			return authority

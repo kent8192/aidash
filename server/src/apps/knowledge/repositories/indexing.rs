@@ -762,13 +762,15 @@ impl SemanticCleanupSession for Cleanup {
 	}
 }
 
+type ReplacementPoint = (Vec<f32>, String);
+
 /// Prepare a replacement for a Ready source without changing its live point.
 pub(super) fn reembed<'a>(
 	store: &'a Store,
 	tenant: &'a str,
 	entry: &'a Entry,
 	spec: &'a IndexingSpec,
-) -> futures_util::future::BoxFuture<'a, crate::Result<Option<(Vec<f32>, String)>>> {
+) -> futures_util::future::BoxFuture<'a, crate::Result<Option<ReplacementPoint>>> {
 	Box::pin(reembed_source(store, tenant, entry, spec))
 }
 
@@ -777,7 +779,7 @@ async fn reembed_source(
 	tenant: &str,
 	entry: &Entry,
 	spec: &IndexingSpec,
-) -> crate::Result<Option<(Vec<f32>, String)>> {
+) -> crate::Result<Option<ReplacementPoint>> {
 	let sql = Query::select()
 		.column(Alias::new("authority"))
 		.from(Alias::new("semantic_entries"))

@@ -479,7 +479,7 @@ impl aidash_application::provider_access::ProviderAccess for AdmittedAccess {
 		network_policy: &serde_json::Value,
 	) -> Result<String> {
 		if context.observation.is_some() {
-			return Err(Error::Forbidden.into());
+			return Err(Error::Forbidden);
 		}
 		super::data_protection::current(&self.store, context)
 			.await?
@@ -509,7 +509,7 @@ impl aidash_application::provider_access::ProviderAccess for AdmittedAccess {
 		source: &aidash_application::provider_access::Source,
 	) -> Result<aidash_application::provider_access::Access> {
 		if context.observation.is_some() {
-			return Err(Error::Forbidden.into());
+			return Err(Error::Forbidden);
 		}
 		use aidash_application::provider_access::Source;
 		let policy = super::data_protection::current(&self.store, context).await?;
@@ -563,7 +563,7 @@ impl aidash_application::provider_access::ProviderAccess for AdmittedAccess {
 		source: &aidash_application::provider_access::Source,
 	) -> Result<()> {
 		if context.observation.is_some() {
-			return Err(Error::Forbidden.into());
+			return Err(Error::Forbidden);
 		}
 		use aidash_application::provider_access::Source;
 		let policy = super::data_protection::current(&self.store, context).await?;

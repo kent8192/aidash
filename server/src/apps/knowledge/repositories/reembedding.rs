@@ -126,7 +126,7 @@ async fn tenant_indexes(tx: &mut dyn TransactionExecutor, tenant: &str) -> Resul
 		.and_where(embedding_settings::live_thread("semantic_indexes"))
 		.order_by(Alias::new("thread_id"), Order::Asc)
 		.to_string(PostgresQueryBuilder);
-	Ok(native::query_as(&sql).fetch_all(tx).await?)
+	native::query_as(&sql).fetch_all(tx).await
 }
 
 struct Point {

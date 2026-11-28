@@ -179,9 +179,8 @@ async fn files(store: &Store, access: &mut Access, run: &Run, input: Value) -> R
 		let mut readable = BTreeMap::new();
 		for entry in db::rows::<db::Entry>(access.tx.as_mut(), &query).await? {
 			let version = entry.file.added_in_version;
-			if !readable.contains_key(&version) {
-				let allowed = db::producer_readable(access, &tenant, drive.id, version).await?;
-				readable.insert(version, allowed);
+			if let std::collections::btree_map::Entry::Vacant(slot) = readable.entry(version) {
+				slot.insert(db::producer_readable(access, &tenant, drive.id, version).await?);
 			}
 			if !readable[&version] {
 				continue;

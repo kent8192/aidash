@@ -593,9 +593,9 @@ pub(crate) async fn running_tasks_in_default(
 		)
 		.order_by(Alias::new("task_id"), reinhardt::query::Order::Asc)
 		.to_string(PostgresQueryBuilder);
-	Ok(crate::database::native::query_scalar(&sql)
+	crate::database::native::query_scalar(&sql)
 		.scalar_all(&mut **access.tx)
-		.await?)
+		.await
 }
 
 /// Process one wipe while holding the row. The acknowledgment follows physical

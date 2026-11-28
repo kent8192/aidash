@@ -188,7 +188,6 @@ fn nonterminal_run() -> reinhardt::query::SimpleExpr {
 	Expr::col(("r", "phase"))
 		.is_not_in(["COMPLETED", "FAILED", "CANCELLED"])
 		.and(Expr::col(("r", "control")).ne("CANCELLED"))
-		.into()
 }
 
 #[async_trait]

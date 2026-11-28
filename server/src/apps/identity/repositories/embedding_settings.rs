@@ -124,9 +124,9 @@ async fn count(tx: &mut dyn TransactionExecutor, table: &'static str, tenant: &s
 	if table == "semantic_entries" {
 		query.and_where(Expr::col("deleted").eq(false));
 	}
-	Ok(native::query_scalar(&query.to_string(PostgresQueryBuilder))
+	native::query_scalar(&query.to_string(PostgresQueryBuilder))
 		.scalar_one(tx)
-		.await?)
+		.await
 }
 
 pub(crate) fn live_thread(index_table: &'static str) -> reinhardt::query::SimpleExpr {
@@ -205,7 +205,7 @@ async fn drive_files(tx: &mut dyn TransactionExecutor, tenant: &str) -> Result<i
 		.and_where(Expr::col("indexed").eq(true))
 		.and_where(Expr::col("removed_in_version").is_null())
 		.to_string(PostgresQueryBuilder);
-	Ok(native::query_scalar(&sql).scalar_one(tx).await?)
+	native::query_scalar(&sql).scalar_one(tx).await
 }
 
 pub(crate) async fn drive_reembedding_ready(
