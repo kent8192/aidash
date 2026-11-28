@@ -112,7 +112,7 @@ async fn scratch_patch_claim_survives_runner_reply_loss(
 	let run = admit(&c).await;
 	let path = format!("/api/executions/{}/patch", run.id);
 	let input = json!({
-		"idempotency_key":Uuid::new_v4(), "expected_revision":1, "preconditions":{},
+		"idempotency_key":Uuid::new_v4(),
 		"patch":"*** Begin Patch\n*** Add File: notes.txt\n+once\n*** End Patch",
 	});
 	{
