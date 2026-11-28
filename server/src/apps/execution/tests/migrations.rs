@@ -198,11 +198,19 @@ const TENANT_REGISTRY_MIGRATIONS: &[(&str, &str)] = &[
 	("identity", "0113_budget_notice_delivery"),
 	("identity", "0114_policy_revision_backfill"),
 	("identity", "0115_suspension_resume_refusal"),
+	("identity", "0120_tenant_embedding_settings"),
+	("identity", "0121_tenant_embedding_settings_rls"),
+	("identity", "0122_tenant_embedding_settings_guard"),
 	("knowledge", "0058_threads"),
 	("knowledge", "0059_threads_state"),
 	("federation", "0030_threads"),
 	("registry", "0081_thread_tools"),
 	("registry", "0082_thread_source_scope"),
+	("registry", "0090_prune_definition_fields"),
+	("registry", "0091_thread_target_kinds"),
+	("registry", "0092_registry_kind_check"),
+	("registry", "0093_registry_kind_state"),
+	("registry", "0094_thread_target_kind_state"),
 ];
 
 /// Exclude the content-store cutover to seed legacy data for its migration test.
@@ -272,9 +280,17 @@ const CONTENT_STORE_CUTOVER_MIGRATIONS: &[(&str, &str)] = &[
 	("identity", "0113_budget_notice_delivery"),
 	("identity", "0114_policy_revision_backfill"),
 	("identity", "0115_suspension_resume_refusal"),
+	("identity", "0120_tenant_embedding_settings"),
+	("identity", "0121_tenant_embedding_settings_rls"),
+	("identity", "0122_tenant_embedding_settings_guard"),
 	("knowledge", "0058_threads"),
 	("knowledge", "0059_threads_state"),
 	("federation", "0030_threads"),
+	("registry", "0090_prune_definition_fields"),
+	("registry", "0091_thread_target_kinds"),
+	("registry", "0092_registry_kind_check"),
+	("registry", "0093_registry_kind_state"),
+	("registry", "0094_thread_target_kind_state"),
 ];
 
 /// Reversing the whole graph grows with the history; the bound only catches a
@@ -495,6 +511,17 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 							.as_deref()
 							.unwrap()
 							.contains("DROP CONSTRAINT registry_no_compaction_decider")
+					);
+				} else if (migration.app_label.as_str(), migration.name.as_str())
+					== ("registry", "0092_registry_kind_check")
+				{
+					assert!(sql.starts_with(
+						"ALTER TABLE public.registry ADD CONSTRAINT registry_active_kind"
+					));
+					assert!(sql.contains("NOT VALID"));
+					assert_eq!(
+						reverse_sql.as_deref().map(str::trim),
+						Some("ALTER TABLE public.registry DROP CONSTRAINT registry_active_kind;")
 					);
 				} else if sql.starts_with("ALTER TABLE") {
 					// These PostgreSQL JSONB CHECK replacements use reversible SQL
@@ -2535,11 +2562,19 @@ async fn registry_upgrade_keeps_existing_compaction_decider(
 			("identity", "0113_budget_notice_delivery"),
 			("identity", "0114_policy_revision_backfill"),
 			("identity", "0115_suspension_resume_refusal"),
+			("identity", "0120_tenant_embedding_settings"),
+			("identity", "0121_tenant_embedding_settings_rls"),
+			("identity", "0122_tenant_embedding_settings_guard"),
 			("knowledge", "0058_threads"),
 			("knowledge", "0059_threads_state"),
 			("federation", "0030_threads"),
 			("registry", "0081_thread_tools"),
 			("registry", "0082_thread_source_scope"),
+			("registry", "0090_prune_definition_fields"),
+			("registry", "0091_thread_target_kinds"),
+			("registry", "0092_registry_kind_check"),
+			("registry", "0093_registry_kind_state"),
+			("registry", "0094_thread_target_kind_state"),
 		])
 		.await;
 	fixture.tenant_root("acme").await;
@@ -5213,6 +5248,9 @@ const THREAD_MIGRATIONS: &[(&str, &str)] = &[
 	("identity", "0113_budget_notice_delivery"),
 	("identity", "0114_policy_revision_backfill"),
 	("identity", "0115_suspension_resume_refusal"),
+	("identity", "0120_tenant_embedding_settings"),
+	("identity", "0121_tenant_embedding_settings_rls"),
+	("identity", "0122_tenant_embedding_settings_guard"),
 	("knowledge", "0058_threads"),
 	("knowledge", "0059_threads_state"),
 	("federation", "0030_threads"),
@@ -5228,6 +5266,11 @@ const THREAD_MIGRATIONS: &[(&str, &str)] = &[
 	("execution", "0161_generation_subnode_cleanup"),
 	("execution", "0162_scope_host_debits"),
 	("execution", "0163_scope_host_debit_state"),
+	("registry", "0090_prune_definition_fields"),
+	("registry", "0091_thread_target_kinds"),
+	("registry", "0092_registry_kind_check"),
+	("registry", "0093_registry_kind_state"),
+	("registry", "0094_thread_target_kind_state"),
 ];
 
 struct SourceLifetimeMigration {
