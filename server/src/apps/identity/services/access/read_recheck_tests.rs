@@ -608,8 +608,8 @@ async fn running_targets(fixture: &Fixture) -> (Uuid, Uuid) {
 		.execute(driver).await.unwrap();
 	let preview = Uuid::new_v4();
 	let now = chrono::Utc::now();
-	sqlx::query("INSERT INTO core_live_previews (id,tenant,run_id,area_id,revision,port,state,idle_seconds,absolute_seconds,started_at,last_request_at,expires_at) VALUES ($1,'acme',$2,$3,1,3000,'running',900,7200,$4,$4,$5)")
-		.bind(preview).bind(fixture.run).bind(area).bind(now).bind(now + chrono::Duration::hours(2))
+	sqlx::query("INSERT INTO core_live_previews (id,tenant,run_id,port,state,idle_seconds,absolute_seconds,started_at,last_request_at,expires_at) VALUES ($1,'acme',$2,3000,'running',900,7200,$3,$3,$4)")
+		.bind(preview).bind(fixture.run).bind(now).bind(now + chrono::Duration::hours(2))
 		.execute(driver).await.unwrap();
 	(operation, preview)
 }

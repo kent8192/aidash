@@ -213,7 +213,7 @@ pub fn ownership(name: &str) -> Result<Ownership> {
 		"message_file_versions" => Link("message_id", Message),
 		"core_previews" => Either("area_id", Area, "live_preview_id", LivePreview),
 		"core_preview_tickets" | "core_preview_sessions" => Link("preview_id", Preview),
-		"core_live_previews" => Either("run_id", Run, "area_id", Area),
+		"core_live_previews" => Link("run_id", Run),
 		"events" => Event,
 		"atomic_authority_attempts"
 		| "atomic_coordinators"

@@ -1,6 +1,5 @@
 //! Live preview limits, startup and termination.
 use super::*;
-use aidash_domain::capabilities::sessions::Area;
 use std::collections::BTreeMap;
 
 #[derive(Default)]
@@ -8,41 +7,17 @@ struct Fake {
 	domain: Option<String>,
 	ceilings: Limits,
 	tenant: Option<Limits>,
-	area: Option<Area>,
 	current: Option<LivePreview>,
 	rows: BTreeMap<Uuid, LivePreview>,
 }
 
 impl Fake {
 	fn new() -> Self {
-		let area = area(3);
 		Self {
 			domain: Some("aidashusercontent.app".into()),
 			ceilings: Limits::default(),
-			area: Some(area),
 			..Self::default()
 		}
-	}
-}
-
-fn area(revision: i64) -> Area {
-	Area {
-		id: Uuid::nil(),
-		tenant: "acme".into(),
-		home_node: "node".into(),
-		thread_id: Uuid::now_v7(),
-		agent_id: "agent".into(),
-		owner: "owner".into(),
-		generation: 1,
-		revision,
-		epoch: 1,
-		state: "active".into(),
-		manifest: serde_json::json!([
-			{"file_id":"00000000-0000-0000-0000-0000000000aa","path":"index.html","digest":"a","size":10,"media_type":"text/html","scope":"working","provenance":{}},
-			{"file_id":"00000000-0000-0000-0000-0000000000bb","path":"app.js","digest":"b","size":20,"media_type":"text/javascript","scope":"working","provenance":{}}
-		]),
-		constraints: serde_json::json!({}),
-		next_sequence: 0,
 	}
 }
 
@@ -61,11 +36,7 @@ impl Scope for Fake {
 		Ok(RunFacts {
 			id: Uuid::now_v7(),
 			tenant: "acme".into(),
-			area_id: Uuid::nil(),
 		})
-	}
-	async fn area(&mut self) -> Result<Area> {
-		self.area.clone().ok_or(Error::NotFound("no area".into()))
 	}
 	async fn current(&mut self, _run: Uuid) -> Result<Option<LivePreview>> {
 		Ok(self.current.clone())

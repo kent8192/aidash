@@ -1,8 +1,7 @@
 //! Live previews serve directly from their Run's Execution Pod.
 use crate::{Error, Result};
-use aidash_domain::{
-	capabilities::sessions::Area,
-	preview::live::{Limits, LivePreview, START_SECONDS, State, StopReason, startup_tail},
+use aidash_domain::preview::live::{
+	Limits, LivePreview, START_SECONDS, State, StopReason, startup_tail,
 };
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -23,8 +22,6 @@ pub struct Status {
 	pub id: Uuid,
 	pub state: State,
 	pub stop_reason: Option<StopReason>,
-	pub area_id: Uuid,
-	pub revision: i64,
 	pub port: u16,
 	pub limits: Limits,
 	pub started_at: DateTime<Utc>,
@@ -38,8 +35,6 @@ impl Status {
 			id: preview.id,
 			state: preview.state,
 			stop_reason: preview.stop_reason,
-			area_id: preview.area_id,
-			revision: preview.revision,
 			port: preview.port,
 			limits: preview.limits.clone(),
 			started_at: preview.started_at,
@@ -62,8 +57,6 @@ pub struct Started {
 pub struct RunFacts {
 	pub id: Uuid,
 	pub tenant: String,
-	/// The Run's Working Area.
-	pub area_id: Uuid,
 }
 
 /// The authority and persistence a preview needs.
@@ -75,7 +68,6 @@ pub trait Scope: Send {
 	/// The Tenant's lowered values, when it set any.
 	async fn tenant_limits(&mut self, tenant: &str) -> Result<Option<Limits>>;
 	async fn run(&mut self) -> Result<RunFacts>;
-	async fn area(&mut self) -> Result<Area>;
 	/// The Run's latest Live preview, whatever its state.
 	async fn current(&mut self, run: Uuid) -> Result<Option<LivePreview>>;
 	async fn by_id(&mut self, id: Uuid) -> Result<Option<LivePreview>>;
@@ -101,23 +93,10 @@ pub async fn start(scope: &mut dyn Scope, request: &Start) -> Result<LivePreview
 		return Err(Error::Conflict("PREVIEW_UNAVAILABLE".into()));
 	}
 	let run = scope.run().await?;
-	let area = scope.area().await?;
-	if area.id != run.area_id || area.tenant != run.tenant {
-		return Err(Error::Forbidden);
-	}
 	let limits = effective(scope, &run.tenant).await?;
 	let id = Uuid::new_v4();
 	let now = Utc::now();
-	let preview = LivePreview::starting(
-		id,
-		run.tenant.clone(),
-		run.id,
-		area.id,
-		area.revision,
-		request.port,
-		limits,
-		now,
-	)?;
+	let preview = LivePreview::starting(id, run.tenant.clone(), run.id, request.port, limits, now)?;
 	if request.command.trim().is_empty() {
 		return Err(Error::Invalid("live preview command is empty".into()));
 	}

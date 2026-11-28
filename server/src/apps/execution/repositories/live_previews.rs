@@ -1,9 +1,6 @@
 //! A Live preview's persistence, Runner dispatch and lifecycle stops (ADR 0070).
 //!
-//! A start takes the holds over the revision, records a `starting` row and then
-//! dispatches the Runner's long-lived `serve` operation outside any authority
-//! transaction, because waiting for a port must not hold one. Stops settle a
-//! row and release its holds only after the Runner proves the Pod is gone.
+//! Persist start and stop state independently of Runner dispatch.
 use crate::{
 	Error as NativeError, Result as NativeResult,
 	apps::execution::capabilities::models::{CoreLivePreviews, CorePreviewLimits},
@@ -29,8 +26,6 @@ pub(crate) fn domain(row: Row) -> NativeResult<LivePreview> {
 		id: row.id,
 		tenant: row.tenant,
 		run_id: row.run_id,
-		area_id: row.area_id,
-		revision: row.revision,
 		port,
 		state: State::parse(&row.state)?,
 		stop_reason: row
@@ -56,8 +51,6 @@ pub(crate) fn to_row(preview: &LivePreview) -> Row {
 		.id(preview.id)
 		.tenant(preview.tenant.clone())
 		.run_id(preview.run_id)
-		.area_id(preview.area_id)
-		.revision(preview.revision)
 		.port(i32::from(preview.port))
 		.state(preview.state.as_str().to_owned())
 		.stop_reason(preview.stop_reason.map(|reason| reason.as_str().to_owned()))
@@ -116,7 +109,7 @@ impl application::Scope for Scope<'_> {
 		}))
 	}
 	async fn run(&mut self) -> aidash_application::Result<RunFacts> {
-		let area = aidash_application::capabilities::sessions::for_run(
+		aidash_application::capabilities::sessions::for_run(
 			&mut crate::bootstrap::session_scope(None, self.access),
 			&self.run.metadata(),
 		)
@@ -133,17 +126,7 @@ impl application::Scope for Scope<'_> {
 		Ok(RunFacts {
 			id: self.run.id,
 			tenant: self.access.identity.tenant.clone(),
-			area_id: area.id,
 		})
-	}
-	async fn area(
-		&mut self,
-	) -> aidash_application::Result<aidash_domain::capabilities::sessions::Area> {
-		aidash_application::capabilities::sessions::for_run(
-			&mut crate::bootstrap::session_scope(None, self.access),
-			&self.run.metadata(),
-		)
-		.await
 	}
 	async fn current(&mut self, run: Uuid) -> aidash_application::Result<Option<LivePreview>> {
 		let rows = Row::objects()

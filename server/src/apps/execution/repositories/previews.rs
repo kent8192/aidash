@@ -326,11 +326,11 @@ impl application::Scope for Scope<'_> {
 		if !matches!(live.state, LiveState::Running | LiveState::Stale) {
 			return Err(NativeError::NotFound("live preview unavailable".into()).into());
 		}
-		self.authorize_area(live.area_id)
+		authorize_live(self.access, live.run_id)
 			.await
 			.map_err(|error| match error {
-				aidash_application::Error::Forbidden | aidash_application::Error::NotFound(_) => {
-					aidash_application::Error::NotFound("live preview unavailable".into())
+				NativeError::Forbidden | NativeError::NotFound(_) => {
+					NativeError::NotFound("live preview unavailable".into())
 				}
 				error => error,
 			})?;
@@ -346,6 +346,11 @@ impl application::Scope for Scope<'_> {
 			},
 		})
 	}
+}
+
+async fn authorize_live(access: &mut Access, run: Uuid) -> NativeResult<()> {
+	let run = access.run_for_reads(run).await?;
+	sessions::for_run(access, &run).await.map(drop)
 }
 
 struct StoredPreview {
@@ -983,8 +988,8 @@ impl Gateway {
 			if live.unconfirmed_since.is_some() {
 				return Err(NativeError::Conflict("PREVIEW_UNAVAILABLE".into()));
 			}
-			// The cookie is not authority: the same Working Area read decides.
-			if let Err(error) = sessions::load(&mut access, live.area_id).await {
+			// Recheck the Run and its current file authority before proxying.
+			if let Err(error) = authorize_live(&mut access, live.run_id).await {
 				live.stopping(StopReason::RunAuthorityRevoked);
 				CoreLivePreviews::objects()
 					.save_with_executor(&mut **access.tx, &super::live_previews::to_row(&live))

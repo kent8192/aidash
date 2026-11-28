@@ -46910,10 +46910,6 @@
                 "format": "int64",
                 "type": "integer"
               },
-              "area_id": {
-                "format": "uuid",
-                "type": "string"
-              },
               "expires_at": {
                 "format": "date-time",
                 "type": "string"
@@ -46936,10 +46932,6 @@
                 "minimum": 0,
                 "type": "integer"
               },
-              "revision": {
-                "format": "int64",
-                "type": "integer"
-              },
               "started_at": {
                 "format": "date-time",
                 "type": "string"
@@ -46955,8 +46947,6 @@
               "id",
               "state",
               "stop_reason",
-              "area_id",
-              "revision",
               "port",
               "idle_seconds",
               "absolute_seconds",
@@ -47011,10 +47001,6 @@
                 "format": "int64",
                 "type": "integer"
               },
-              "area_id": {
-                "format": "uuid",
-                "type": "string"
-              },
               "expires_at": {
                 "format": "date-time",
                 "type": "string"
@@ -47037,10 +47023,6 @@
                 "minimum": 0,
                 "type": "integer"
               },
-              "revision": {
-                "format": "int64",
-                "type": "integer"
-              },
               "started_at": {
                 "format": "date-time",
                 "type": "string"
@@ -47056,8 +47038,6 @@
               "id",
               "state",
               "stop_reason",
-              "area_id",
-              "revision",
               "port",
               "idle_seconds",
               "absolute_seconds",
