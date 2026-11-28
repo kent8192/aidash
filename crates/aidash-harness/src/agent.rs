@@ -1742,6 +1742,7 @@ impl<'a> Executor<'a> {
 					}
 				}
 				// Appended after the composed text so the slot ranges above stay valid.
+				append_thread_language(&mut instructions, &task.description);
 				if let Some(pinned) = &run.context.plugin_tools {
 					let resources: std::collections::BTreeSet<_> = pinned
 						.findings
@@ -4871,6 +4872,20 @@ fn thread_tool_names(
 		("workspace_read", "workspace_observe")
 	} else {
 		("thread_read", "thread_observe")
+	}
+}
+
+/// Set the reply language before the provider can emit its first progress text.
+fn append_thread_language(instructions: &mut String, task: &str) {
+	// Inspect a bounded prefix of the authorized Task description. Short or
+	// ambiguous text leaves language selection to the model.
+	let end = task.char_indices().nth(4096).map_or(task.len(), |(i, _)| i);
+	let detected = whatlang::detect(&task[..end]).filter(whatlang::Info::is_reliable);
+	instructions.push_str("\n\n# Thread language\n\nFollow explicit reply-language instructions. Otherwise use the requesting person's language for every message they see, including the first progress update, questions, and the final reply.");
+	if let Some(info) = detected {
+		instructions.push_str("\nDetected Task language: ");
+		instructions.push_str(info.lang().eng_name());
+		instructions.push('.');
 	}
 }
 

@@ -173,7 +173,7 @@ async fn issue_file(
 		.ok_or_else(|| Error::Conflict("PREVIEW_UNAVAILABLE".into()))?
 		.to_owned();
 	let version = scope.authorize_file(area_id, file_id).await?;
-	let base = media_type(&version.media_type);
+	let base = media_type(file_media_type(&version.path, &version.media_type));
 	if !federated
 		&& !matches!(
 			base,
@@ -232,6 +232,16 @@ pub mod live;
 /// The media type without its parameters.
 pub fn media_type(value: &str) -> &str {
 	value.split(';').next().unwrap_or(value).trim()
+}
+
+/// Older generated files can have generic metadata. Resolve their type using
+/// the same extension rules at ticket issue and when the gateway serves them.
+pub fn file_media_type<'a>(path: &str, value: &'a str) -> &'a str {
+	if media_type(value) == "application/octet-stream" {
+		aidash_domain::provider::generated_file_media_type(path, &[]).unwrap_or(value)
+	} else {
+		value
+	}
 }
 
 #[cfg(test)]

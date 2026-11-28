@@ -25,6 +25,11 @@ pub enum Refusal {
 }
 
 pub fn validate(media_type: &str, bytes: &[u8]) -> Result<Measurements, Refusal> {
+	// SVG attachments are served as opaque files. The File preview handles
+	// them as images, and model inputs still require a supported raster format.
+	if media_type == "image/svg+xml" {
+		return Ok(Measurements::default());
+	}
 	if (media_type.starts_with("image/") || media_type.starts_with("audio/"))
 		&& aidash_domain::provider::ContentPart::from_media(media_type, bytes.to_vec()).is_err()
 	{
@@ -426,6 +431,12 @@ mod tests {
 				"{mime}: {original} {rendered}"
 			);
 		}
+	}
+
+	#[test]
+	fn svg_attachments_can_be_stored_without_raster_measurements() {
+		let svg = br#"<svg xmlns="http://www.w3.org/2000/svg" width="2" height="3"/>"#;
+		assert_eq!(validate("image/svg+xml", svg), Ok(Measurements::default()));
 	}
 
 	#[test]

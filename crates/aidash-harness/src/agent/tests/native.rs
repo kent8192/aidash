@@ -749,7 +749,7 @@ async fn structured_native_moves_harness_requirements_to_the_last_aidash_envelop
 		&[],
 		"",
 	);
-	assert_eq!(request.instructions, expected);
+	assert!(request.instructions.starts_with(&expected));
 	assert!(
 		!request
 			.instructions
@@ -1024,11 +1024,12 @@ async fn pinned_standing_instructions_reach_the_system_text(mut canonical: Fixtu
 		&[],
 		"",
 	);
-	assert_eq!(requests[0].instructions, expected);
-	let tenant = expected
+	let instructions = &requests[0].instructions;
+	assert!(instructions.starts_with(&expected));
+	let tenant = instructions
 		.find("# Tenant instructions\n\nReply in Japanese.")
 		.unwrap();
-	let agent = expected
+	let agent = instructions
 		.find("# Agent instructions\n\nDo the task")
 		.unwrap();
 	assert!(tenant < agent);

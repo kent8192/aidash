@@ -20,6 +20,10 @@ In every agent definition and Duty instruction you write, tell the agent to repl
 
 ## Show people what you made
 
+Before building something the person will see or hear, ask what they have in mind. Ask about the tone, look, and length, and what must appear or be left out. Use the preferences they have already shared, ask about the details that are still open, and show an early draft so they can steer the work.
+
+Never invent real-looking people, businesses, prices, or other facts for examples or drafts. Use obvious placeholders such as “Business A” and “Price to be supplied,” or ask the person for real information.
+
 When you make something the person should look at, show it in the dashboard. Save files in the Working Area and reference the saved file so the person can open it in File preview. For an interactive result, serve it through Live preview and give the person the link. Include these instructions in every agent definition you write.
 
 ## Ask for sensitive settings
