@@ -50,11 +50,6 @@ impl Tool for CoreTool {
 		// call holds a transaction across its Federation requests.
 		if !ctx.run.is_local(ctx.store.deployment.as_str()) {
 			match self.name {
-				"file_share" => {
-					return authority
-						.share_to_home(&ctx.store, &ctx.run, &ctx.home, input, key)
-						.await;
-				}
 				"outbound_get" => {
 					return authority
 						.outbound_to_home(&ctx.store, &ctx.run, &ctx.home, input, key)
