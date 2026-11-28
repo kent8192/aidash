@@ -1013,17 +1013,20 @@ async fn nonempty_generation_reads_sql_assets_and_replays_only_logical_state(
 	let root = fixture.directory.path().join("migrations");
 	let history = root.join("workspaces/0007_model_state.rs");
 	let original = std::fs::read_to_string(&history).unwrap();
+	let model = "name: \"tasks\".to_string(),";
+	let (prefix, task_state) = original.split_once(model).unwrap();
 	let field = concat!(
-		"name: \"artifacts\".to_string(),\n",
-		"\t\t\tcolumns: vec![\n",
-		"\t\t\t\tColumnDefinition::new(\"content\", FieldType::Jsonb)\n",
+		"ColumnDefinition::new(\"description\", FieldType::Text)\n",
 		"\t\t\t\t\t.with_not_null(true)",
 	);
-	assert_eq!(original.matches(field).count(), 1);
-	let edited = original.replacen(
-		field,
-		&field.replace(".with_not_null(true)", ".with_not_null(false)"),
-		1,
+	assert_eq!(task_state.matches(field).count(), 1);
+	let edited = format!(
+		"{prefix}{model}{}",
+		task_state.replacen(
+			field,
+			&field.replace(".with_not_null(true)", ".with_not_null(false)"),
+			1,
+		)
 	);
 	std::fs::write(&history, &edited).unwrap();
 	let before = FilesystemSource::new(&root).all_migrations().await.unwrap();
@@ -1031,7 +1034,7 @@ async fn nonempty_generation_reads_sql_assets_and_replays_only_logical_state(
 	let predecessor = build_state_from_files(&FilesystemSource::new(&root))
 		.await
 		.unwrap();
-	assert!(predecessor.find_model_by_table("artifacts").unwrap().fields["content"].nullable);
+	assert!(predecessor.find_model_by_table("tasks").unwrap().fields["description"].nullable);
 	let mut input_files = Vec::new();
 	let mut directories = vec![root.clone()];
 	while let Some(directory) = directories.pop() {
@@ -1058,7 +1061,7 @@ async fn nonempty_generation_reads_sql_assets_and_replays_only_logical_state(
 			"--state-source",
 			"files",
 			"--name",
-			"content_probe",
+			"task_description_probe",
 		])
 		.stdin(Stdio::null());
 
@@ -1091,7 +1094,7 @@ async fn nonempty_generation_reads_sql_assets_and_replays_only_logical_state(
 	let generated = after
 		.iter()
 		.find(|migration| {
-			migration.app_label == "workspaces" && migration.name == "0075_content_probe"
+			migration.app_label == "workspaces" && migration.name == "0075_task_description_probe"
 		})
 		.unwrap();
 	assert_eq!(
@@ -1111,12 +1114,12 @@ async fn nonempty_generation_reads_sql_assets_and_replays_only_logical_state(
 	else {
 		panic!("the generated migration must repair one column");
 	};
-	assert_eq!(table, "artifacts");
-	assert_eq!(column, "content");
+	assert_eq!(table, "tasks");
+	assert_eq!(column, "description");
 	assert!(new_definition.not_null);
 	assert_eq!(
 		new_definition.type_definition,
-		reinhardt::db::migrations::FieldType::Jsonb
+		reinhardt::db::migrations::FieldType::Text
 	);
 
 	// Replay the same edited history plus the saved repair through the real CLI.
@@ -1433,7 +1436,7 @@ async fn preserved_baseline_does_not_generate_table_recreation(
 			.iter()
 			.filter(|migration| migration.state_only)
 			.count(),
-		141
+		143
 	);
 }
 
