@@ -124,7 +124,6 @@ pub enum CapabilityResult {
 	Patch(PatchResult),
 	Skills(SkillListResult),
 	Skill(SkillReadResult),
-	Share(ShareResult),
 	Outbound(OutboundResult),
 	/// Scratch Space reads and searches, saves, copies and Background
 	/// processes (#745). Last, so it only takes what no other result shape fits.
@@ -234,27 +233,6 @@ pub struct SkillReadResult {
 	pub next_offset: Option<usize>,
 	pub truncated: bool,
 	pub files: Option<Vec<SkillInventoryEntry>>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema, reinhardt::Validate)]
-pub struct FileReceipt {
-	pub id: Uuid,
-	pub node_id: Option<String>,
-	pub area_id: Uuid,
-	pub revision: i64,
-	pub manifest_digest: Option<String>,
-	pub files: Vec<FileEntry>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema, reinhardt::Validate)]
-pub struct ShareResult {
-	pub snapshot_id: Option<Uuid>,
-	pub transfer_id: Uuid,
-	pub manifest_digest: String,
-	pub recipient: super::sharing::Recipient,
-	pub receipt: Option<FileReceipt>,
-	pub error: Option<super::errors::CapabilityError>,
-	pub effects_may_have_occurred: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema, reinhardt::Validate)]

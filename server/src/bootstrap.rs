@@ -2186,55 +2186,6 @@ pub(crate) fn skill_headroom(
 	crate::apps::execution::repositories::skills::Headroom { store }
 }
 
-pub(crate) fn transfer_repository(
-	federation: &crate::federation::Federation,
-) -> crate::apps::execution::repositories::transfer::Repository<'_> {
-	crate::apps::execution::repositories::transfer::Repository {
-		federation,
-		receiver: None,
-		delivery: None,
-	}
-}
-/// A transfer arriving at the Node `receiver`.
-pub(crate) fn transfer_receiver_repository(
-	federation: &crate::federation::Federation,
-	receiver: aidash_domain::nodes::NodeName,
-) -> crate::apps::execution::repositories::transfer::Repository<'_> {
-	crate::apps::execution::repositories::transfer::Repository {
-		federation,
-		receiver: Some(crate::apps::execution::repositories::transfer::Receiver {
-			address: federation
-				.config
-				.deployment
-				.node(receiver.clone())
-				.to_string(),
-			node: receiver,
-		}),
-		delivery: None,
-	}
-}
-/// A delivery from a Run executing for another Home, arriving at the Home Node `receiver`.
-pub(crate) fn home_delivery_repository(
-	federation: &crate::federation::Federation,
-	receiver: aidash_domain::nodes::NodeName,
-	delivery: crate::apps::execution::repositories::transfer::HomeDelivery,
-) -> crate::apps::execution::repositories::transfer::Repository<'_> {
-	let mut repository = transfer_receiver_repository(federation, receiver);
-	repository.delivery = Some(delivery);
-	repository
-}
-pub(crate) fn transfer_scope<'a>(
-	store: Option<&'a Store>,
-	access: &'a mut crate::authorization::access::Access,
-) -> crate::apps::execution::repositories::transfer::Scope<'a> {
-	crate::apps::execution::repositories::transfer::Scope {
-		store,
-		authority: crate::apps::execution::repositories::transfer::Authority::Borrowed(access),
-		receiving: None,
-		pending: None,
-	}
-}
-
 pub(crate) fn semantic_journal_repository(
 	store: &Store,
 	scope: aidash_application::tenancy::TenancyScope,

@@ -1,40 +1,17 @@
 //! Unit tests for services::management.
-use super::*;
-use serde_json::json;
 
 #[rstest::rstest]
-fn management_schema_has_typed_results_and_distinct_recipient_contracts() {
+fn management_schema_has_typed_results() {
 	let api = serde_json::to_value(crate::config::openapi::openapi().unwrap()).unwrap();
-	let schemas = &api["components"]["schemas"];
-	assert_eq!(schemas["Recipient"]["additionalProperties"], false);
-	// Since #1008 a transfer's recipient and a listed recipient both name the
-	// recipient Run's Thread (before, a reply thread and a Workspace).
-	for schema in ["Recipient", "FileRecipient"] {
-		assert!(
-			schemas[schema]["required"]
-				.as_array()
-				.unwrap()
-				.contains(&json!("thread_id")),
-			"{schema}"
-		);
-		assert!(schemas[schema]["properties"].get("workspace_id").is_none());
-	}
 	for expected in [
 		"core_agent_configure",
-		"core_file_materialize",
 		"core_approval_list",
 		"core_approval_decide",
 		"core_approval_revoke",
 		"core_grant_revoke",
 		"reference_revoke",
-		"core_deletion_confirmation",
-		"file_transfer_status",
-		"file_transfer_history",
-		"file_transfer_reconcile",
-		"file_recipient_list",
 		"core_operation_history",
 		"core_thread_delete",
-		"core_cleanup_reconcile",
 	] {
 		let operation = api["paths"]
 			.as_object()
@@ -49,5 +26,4 @@ fn management_schema_has_typed_results_and_distinct_recipient_contracts() {
 			"{expected} must have an executable typed response: {response}"
 		);
 	}
-	let _ = std::mem::size_of::<TransferStatus>();
 }

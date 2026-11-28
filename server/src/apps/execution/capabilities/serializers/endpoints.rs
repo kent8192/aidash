@@ -68,15 +68,6 @@ pub(crate) struct DownloadChunk {
 	pub(crate) next_offset: Option<u64>,
 }
 
-#[derive(Deserialize, schemars::JsonSchema, reinhardt::Validate)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct RecipientQuery {
-	pub(crate) node_id: String,
-	/// The sending Run, whose executing Node owns the route and identity.
-	pub(crate) run_id: Option<Uuid>,
-	pub(crate) cursor: Option<Uuid>,
-}
-
 #[derive(serde::Serialize, schemars::JsonSchema)]
 pub(crate) struct ReferencePage {
 	pub(crate) items: Vec<super::references::Reference>,

@@ -1,4 +1,4 @@
-//! Manifest and recipient-page limits are independent of the receiver's database.
+//! Validate the bounded manifest of a remote Thread Attachment delivery.
 use super::Description;
 use crate::{Error, Result, capabilities::records::Record};
 use chrono::{DateTime, Duration, Utc};
@@ -8,12 +8,6 @@ pub struct ManifestLimits {
 	pub files: usize,
 	pub file_bytes: u64,
 	pub bytes: u64,
-}
-pub const MAX_RECIPIENT_VERSIONS_PER_AREA: usize = 50;
-pub fn cap_recipient_versions(versions: &mut Vec<String>) -> bool {
-	let truncated = versions.len() > MAX_RECIPIENT_VERSIONS_PER_AREA;
-	versions.truncate(MAX_RECIPIENT_VERSIONS_PER_AREA);
-	truncated
 }
 pub fn validate(
 	description: &Description,

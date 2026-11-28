@@ -1239,7 +1239,7 @@ use reinhardt::injectable;
 
 pub(crate) use crate::apps::execution::capabilities::serializers::endpoints::{
 	ApprovalQuery, ApprovalRole, ApprovalState, AreaQuery, DownloadChunk, ExpectedRevision, Offset,
-	OutboundPage, Page, RecipientQuery, ReferencePage,
+	OutboundPage, Page, ReferencePage,
 };
 
 use reinhardt::query::SimpleExpr;

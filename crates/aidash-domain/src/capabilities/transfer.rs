@@ -1,6 +1,5 @@
-//! File-transfer/1 identity and exact durable receipt correspondence.
+//! Stored manifests and staged chunks for remote Thread Attachment delivery.
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
 // Serializable transfer contracts.
 use super::{operations::MountedFile as FileEntry, sharing::Recipient};
 use crate::registry::EntityRef;
@@ -31,15 +30,6 @@ pub struct Identity {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct Requester {
-	pub tenant: String,
-	pub subject: String,
-	#[serde(default)]
-	pub cursor: Option<Uuid>,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct Chunk {
 	pub transfer_id: Uuid,
 	pub input_digest: String,
@@ -49,24 +39,5 @@ pub struct Chunk {
 }
 
 use uuid::Uuid;
-
-pub fn receipt_matches(description: &Description, response: &Value) -> bool {
-	let Some(files) = response["receipt"]["files"].as_array() else {
-		return false;
-	};
-	response["state"] == "committed"
-		&& response["transfer_id"] == json!(description.transfer_id)
-		&& response["input_digest"] == description.input_digest
-		&& response["manifest_digest"] == description.manifest_digest
-		&& response["receipt"]["node_id"] == description.target.node_id
-		&& files.len() == description.files.len()
-		&& files.iter().zip(&description.files).all(|(got, expected)| {
-			got["digest"] == expected.digest
-				&& got["size"] == expected.size
-				&& got["path"] == format!("{}/{}", description.transfer_id, expected.path)
-		})
-}
-#[cfg(test)]
-mod tests;
 
 pub mod receiver;

@@ -41,8 +41,6 @@ pub(crate) mod skills;
 pub(crate) mod thread_lifecycle;
 #[path = "tools.rs"]
 pub(crate) mod tools;
-#[path = "transfer.rs"]
-pub mod transfer;
 
 use crate::{Error, Result};
 use std::{path::PathBuf, sync::Arc};

@@ -4,12 +4,11 @@
 //! `chunks` stage the bytes and `commit` posts the message with its Thread Attachments.
 //! The admission and the Run's call key identify a delivery across retries.
 use super::*;
-use crate::apps::execution::repositories::transfer::HomeDelivery;
+use crate::apps::execution::repositories::transfer;
 use crate::apps::identity::serializers::remote_execution_commands::{DeliveryChunk, DeliveryOpen};
 use aidash_application::{
 	capabilities::transfer::receiver,
 	federation::{deliveries, inbound::Admitted},
-	ports::capabilities::transfer::receiver::{DeliveryMode, ReceiverRepository as _},
 };
 use aidash_domain::{
 	capabilities::{
@@ -115,30 +114,21 @@ fn repository<'a>(
 	admitted: &Admitted,
 	grant: Uuid,
 	description: Description,
-) -> crate::apps::execution::repositories::transfer::Repository<'a> {
-	crate::bootstrap::home_delivery_repository(
-		f,
-		admitted.receiver.node.clone(),
-		HomeDelivery {
-			grant,
-			description,
-			mode: DeliveryMode {
-				bound_operation: None,
-			},
-		},
-	)
+) -> transfer::Repository<'a> {
+	let node = admitted.receiver.node.clone();
+	let address = f.config.deployment.node(node.clone()).to_string();
+	transfer::Repository {
+		federation: f,
+		node,
+		address,
+		grant,
+		description,
+	}
 }
 
 /// The description a staged delivery was opened with, from its record.
 async fn stored(f: &Federation, admitted: &Admitted, id: Uuid) -> Result<Option<Description>> {
-	let base = crate::bootstrap::transfer_receiver_repository(f, admitted.receiver.node.clone());
-	match base.incoming(id).await {
-		Ok(record) => Ok(Some(serde_json::from_value(
-			record.data["description"].clone(),
-		)?)),
-		Err(aidash_application::Error::NotFound(_)) => Ok(None),
-		Err(error) => Err(error.into()),
-	}
+	transfer::incoming(f, &admitted.receiver.node, id).await
 }
 
 fn key(input_key: &str) -> Result<()> {

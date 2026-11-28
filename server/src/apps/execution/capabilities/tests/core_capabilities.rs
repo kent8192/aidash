@@ -1829,9 +1829,6 @@ async fn cleanup_restores_exact_bytes_and_fences_old_runs_and_confirmations(
 	c.close().await;
 }
 
-#[path = "core_capabilities/transfer.rs"]
-mod transfer_tests;
-
 #[path = "core_capabilities/lifecycle.rs"]
 mod lifecycle_tests;
 
@@ -1850,10 +1847,6 @@ mod runtime_fault_tests;
 
 #[path = "core_capabilities/configuration.rs"]
 mod configuration_tests;
-
-#[cfg(feature = "capability-runtime-tests")]
-#[path = "core_capabilities/journey.rs"]
-mod journey_tests;
 
 #[cfg(feature = "capability-runtime-tests")]
 #[path = "core_capabilities/reference_limits.rs"]
@@ -1907,9 +1900,6 @@ mod publication_storage_tests;
 
 #[path = "core_capabilities/reference_reclamation.rs"]
 mod reference_reclamation_tests;
-
-#[path = "core_capabilities/transfer_quota.rs"]
-mod transfer_quota_tests;
 
 #[path = "core_capabilities/upload_scope.rs"]
 mod upload_scope_tests;

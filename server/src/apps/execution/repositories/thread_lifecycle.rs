@@ -84,9 +84,7 @@ impl ThreadScope for Scope<'_> {
 		&self.access.identity.subject
 	}
 	async fn serialize(&mut self) -> Result<()> {
-		super::sharing::serialize(self.access)
-			.await
-			.map_err(Into::into)
+		serialize(self.access).await.map_err(Into::into)
 	}
 	async fn thread(&mut self, id: Uuid) -> Result<aidash_domain::policy::Resource> {
 		self.access.thread(id).await.map_err(Into::into)
@@ -281,4 +279,21 @@ impl ThreadScope for Scope<'_> {
 			.map(|_| ())
 			.map_err(Into::into)
 	}
+}
+
+async fn serialize(access: &mut Access) -> NativeResult<()> {
+	{
+		let query_bind_1 = format!("core-share:{}", access.identity.tenant);
+		crate::database::native::query(
+			&Query::select()
+				.expr(SimpleExpr::CustomWithExpr(
+					"(pg_advisory_xact_lock(hashtextextended(?, 0)))".to_owned(),
+					vec![Expr::value(query_bind_1.to_owned()).into()],
+				))
+				.to_string(PostgresQueryBuilder),
+		)
+		.execute(&mut **access.tx)
+		.await?
+	};
+	Ok(())
 }

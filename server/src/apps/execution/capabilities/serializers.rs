@@ -18,8 +18,6 @@ pub mod approvals;
 
 pub mod configuration;
 
-pub mod sharing;
-
 pub mod errors;
 
 pub mod contracts;
@@ -27,8 +25,6 @@ pub mod contracts;
 pub mod management;
 
 pub mod python;
-
-pub mod transfer;
 
 pub mod thread_lifecycle;
 

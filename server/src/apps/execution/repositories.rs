@@ -172,11 +172,7 @@ pub(crate) mod skills;
 
 pub(crate) mod thread_lifecycle;
 
-pub(crate) mod sharing;
-
 pub(crate) mod transfer;
-
-pub(crate) mod transfer_receiver;
 
 pub mod capability_objects;
 pub(crate) mod capability_projection;

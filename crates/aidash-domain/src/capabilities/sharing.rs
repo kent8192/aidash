@@ -1,6 +1,5 @@
-//! Immutable local and remote file-share identities.
+//! Identifies the destination of a remote Thread Attachment delivery.
 use serde::{Deserialize, Serialize};
-// Serializable sharing contracts.
 
 pub use crate::media::Selection;
 
@@ -12,14 +11,3 @@ pub struct Recipient {
 	pub agent_version: String,
 	pub thread_id: Uuid,
 }
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Share {
-	pub idempotency_key: Uuid,
-	pub expected_revision: i64,
-	pub files: Vec<Selection>,
-	pub recipient: Recipient,
-}
-
-use uuid::Uuid;
