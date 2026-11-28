@@ -74,8 +74,6 @@ pub struct Area {
 	pub revision: i64,
 	pub epoch: i64,
 	pub state: String,
-	#[serde(skip)]
-	pub manifest: Value,
 	pub constraints: Value,
 }
 impl crate::database::native::Decode for Area {
@@ -92,7 +90,6 @@ impl crate::database::native::Decode for Area {
 			epoch: row.try_get("epoch")?,
 			state: row.try_get("state")?,
 			constraints: row.try_get("constraints")?,
-			manifest: serde_json::json!([]),
 		})
 	}
 }

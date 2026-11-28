@@ -3,13 +3,6 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema, reinhardt::Validate)]
-#[serde(deny_unknown_fields)]
-pub struct PreviewTicketInput {
-	pub area_id: Uuid,
-	pub file_id: Uuid,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct PreviewTicket {
 	pub url: String,

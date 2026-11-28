@@ -1,9 +1,9 @@
-//! Hosting Node authority for Federation File and Live preview tickets.
+//! Hosting Node authority for federated Live preview tickets.
 use crate::{Error, Result, authorization::identity::Actor, federation::Federation};
 use aidash_application::federation::inbound::Admitted;
 use aidash_domain::federation::{
 	execution::Description,
-	preview::{File, InspectRequest, Inspection, Live, Target, Ticket, TicketRequest},
+	preview::{InspectRequest, Inspection, Live, Target, Ticket, TicketRequest},
 };
 use aidash_domain::{federation::route::Sender, nodes::NodeAddress, tenancy::TenantName};
 use http::Method;
@@ -101,7 +101,7 @@ async fn source_target(
 /// Home describes the grant as it would for its receiver, which re-evaluates
 /// every subject of the chain by the current policy. A started grant stays
 /// live by its activation while its Run sleeps (#1013), so without this a
-/// chain broken meanwhile would keep reaching the Run's Working Area. Both
+/// chain broken meanwhile would keep reaching the Live preview. Both
 /// transactions end before the Viewer's request goes to the receiver.
 async fn viewer_target(
 	f: &Federation,
@@ -182,27 +182,14 @@ pub(crate) async fn inspect(
 		}
 		require_live_admission(&mut access, &description, &run).await?;
 		// A remote Run has an admission record rather than a local execution
-		// grant. With no preview listener there is no area or viewing address to
+		// grant. With no preview listener there is no viewing address to
 		// disclose; V can show the explicit unavailable state.
 		if f.config.preview.is_none() || !origin_registered {
 			return Ok(Inspection {
-				area_id: uuid::Uuid::nil(),
-				files: Vec::new(),
 				live_preview: None,
 				preview_available: false,
 			});
 		}
-		let area = super::sessions::for_run(&mut access, &run).await?;
-		let files = super::service::files(&area)?
-			.into_iter()
-			.map(|entry| File {
-				file_id: entry.file_id,
-				path: entry.path,
-				digest: entry.digest,
-				size: entry.size,
-				media_type: entry.media_type,
-			})
-			.collect();
 		let live_preview = crate::apps::execution::repositories::live_previews::status(
 			&f.store,
 			&mut access,
@@ -218,8 +205,6 @@ pub(crate) async fn inspect(
 			state: status.state.as_str().to_owned(),
 		});
 		Ok(Inspection {
-			area_id: area.id,
-			files,
 			live_preview,
 			preview_available: f.config.preview.is_some() && origin_registered,
 		})
@@ -291,49 +276,32 @@ pub(crate) async fn issue(
 			return Err(Error::Forbidden);
 		}
 		require_live_admission(&mut access, &description, &run).await?;
-		let area = super::sessions::for_run(&mut access, &run).await?;
 		let peer = aidash_application::preview::Peer {
 			sender: admitted.sender.to_string(),
 			receiver: admitted.receiver.to_string(),
 			subject: admitted.subject().ok_or(Error::Forbidden)?.to_owned(),
 			run_id: run.id,
 		};
-		let issued = match request.target {
-			Target::File { area_id, file_id } if area_id == area.id => {
-				let mut scope = crate::apps::execution::repositories::previews::Scope {
-					access: &mut access,
-					store: &f.store,
-					domain: Some(preview.domain.as_str()),
-					public_port: preview.public_port,
-					origin: &pinned,
-					peer: Some(peer.clone()),
-				};
-				aidash_application::preview::issue_federated(&mut scope, area_id, file_id).await?
-			}
-			Target::Live { live_preview_id } => {
-				let live = crate::apps::execution::repositories::live_previews::status(
-					&f.store,
-					&mut access,
-					&run,
-					Some(preview.domain.clone()),
-				)
-				.await?
-				.ok_or_else(|| Error::NotFound("Live preview unavailable".into()))?;
-				if live.id != live_preview_id {
-					return Err(Error::Forbidden);
-				}
-				let mut scope = crate::apps::execution::repositories::previews::Scope {
-					access: &mut access,
-					store: &f.store,
-					domain: Some(preview.domain.as_str()),
-					public_port: preview.public_port,
-					origin: &pinned,
-					peer: Some(peer),
-				};
-				aidash_application::preview::issue_live(&mut scope, live_preview_id).await?
-			}
-			_ => return Err(Error::Forbidden),
+		let Target::Live { live_preview_id } = request.target;
+		let live = crate::apps::execution::repositories::live_previews::status(
+			&f.store,
+			&mut access,
+			&run,
+			Some(preview.domain.clone()),
+		)
+		.await?
+		.ok_or_else(|| Error::NotFound("Live preview unavailable".into()))?;
+		if live.id != live_preview_id {
+			return Err(Error::Forbidden);
+		}
+		let mut scope = crate::apps::execution::repositories::previews::Scope {
+			access: &mut access,
+			domain: Some(preview.domain.as_str()),
+			public_port: preview.public_port,
+			origin: &pinned,
+			peer: Some(peer),
 		};
+		let issued = aidash_application::preview::issue_live(&mut scope, live_preview_id).await?;
 		Ok(Ticket {
 			url: issued.url,
 			expires_at: issued.expires_at,

@@ -1,6 +1,6 @@
 //! Preview gateway: session lifetime, host folding and periodic expiry.
 use super::*;
-use aidash_domain::preview::{PreviewLabel, PreviewSecret, SESSION_SECONDS};
+use aidash_domain::preview::{PreviewLabel, PreviewSecret};
 use aidash_server::capabilities::preview_gateway_for_test;
 use chrono::{Duration, Utc};
 
@@ -17,60 +17,28 @@ async fn identity(c: &CoreFixture) -> (String, String, Uuid) {
 	("acme".into(), "alice".into(), credential)
 }
 
-async fn area_and_file(c: &CoreFixture) -> (Uuid, Uuid) {
+async fn insert_preview(c: &CoreFixture, preview: Uuid, tenant: &str, label: &str, subject: &str) {
 	let run = admit(c).await;
-	let (status, created) = request(
-		&c.app,
-		&c.token,
-		"POST",
-		&path_for_patch(run.id),
-		json!({"idempotency_key":Uuid::new_v4(),"expected_revision":1,"preconditions":{"index.html":null,"assets/app.js":null},"patch":"*** Begin Patch\n*** Add File: index.html\n+<html>preview</html>\n*** Add File: assets/app.js\n+app()\n*** End Patch"}),
-	)
-	.await;
-	assert_eq!(status, 200, "{created}");
-	let (status, area) = request(
-		&c.app,
-		&c.token,
-		"GET",
-		&format!("/api/executions/{}/execution-scope", run.id),
-		Value::Null,
-	)
-	.await;
-	assert_eq!(status, 200, "{area}");
-	let area_id: Uuid = serde_json::from_value(area["id"].clone()).unwrap();
-	let file: Uuid = serde_json::from_value(
-		area["manifest"]
-			.as_array()
-			.unwrap()
-			.iter()
-			.find(|file| file["path"] == "index.html")
-			.unwrap()["file_id"]
-			.clone(),
-	)
-	.unwrap();
-	(area_id, file)
-}
-
-async fn insert_preview(
-	c: &CoreFixture,
-	preview: Uuid,
-	tenant: &str,
-	area: Uuid,
-	file: Uuid,
-	label: &str,
-	subject: &str,
-) {
+	let live = Uuid::new_v4();
+	let now = Utc::now();
+	let db = c.f.store.pool.fixture_driver();
 	sqlx::query(
-		"INSERT INTO core_previews (id, tenant, kind, area_id, file_id, label, created_by)
-		 VALUES ($1, $2, 'file', $3, $4, $5, $6)",
+		"INSERT INTO core_live_previews
+		 (id, tenant, run_id, port, state, idle_seconds, absolute_seconds, started_at, last_request_at, expires_at)
+		 VALUES ($1, $2, $3, 3000, 'running', 900, 7200, $4, $4, $5)",
+	)
+	.bind(live).bind(tenant).bind(run.id).bind(now).bind(now + Duration::hours(2))
+	.execute(db).await.unwrap();
+	sqlx::query(
+		"INSERT INTO core_previews (id, tenant, kind, live_preview_id, label, created_by)
+		 VALUES ($1, $2, 'live', $3, $4, $5)",
 	)
 	.bind(preview)
 	.bind(tenant)
-	.bind(area)
-	.bind(file)
+	.bind(live)
 	.bind(label)
 	.bind(subject)
-	.execute(c.f.store.pool.fixture_driver())
+	.execute(db)
 	.await
 	.unwrap();
 }
@@ -140,67 +108,12 @@ fn gateway(c: &CoreFixture) -> std::sync::Arc<dyn aidash_application::preview::A
 
 #[rstest::rstest]
 #[tokio::test]
-async fn an_expired_session_is_refused_while_a_live_one_is_served(
-	#[future] capability_fixture: CoreFixture,
-) {
-	let c = capability_fixture.await;
-	let (area, file) = area_and_file(&c).await;
-	let (tenant, subject, credential) = identity(&c).await;
-	let preview = Uuid::new_v4();
-	let label = PreviewLabel::generate().unwrap();
-	insert_preview(&c, preview, &tenant, area, file, label.as_str(), &subject).await;
-	let expired = "e".repeat(43);
-	insert_session(
-		&c,
-		preview,
-		&tenant,
-		&subject,
-		credential,
-		&expired,
-		Utc::now() - Duration::seconds(1),
-	)
-	.await;
-	let error = gateway(&c)
-		.view(
-			&format!("{}.LOCALHOST", label.as_str().to_ascii_uppercase()),
-			&expired,
-			"/",
-		)
-		.await
-		.unwrap_err();
-	assert!(
-		matches!(error, aidash_application::Error::Forbidden),
-		"an expired cookie is refused: {error}"
-	);
-
-	let live = "l".repeat(43);
-	insert_session(
-		&c,
-		preview,
-		&tenant,
-		&subject,
-		credential,
-		&live,
-		Utc::now() + Duration::seconds(SESSION_SECONDS),
-	)
-	.await;
-	let page = gateway(&c)
-		.view(&format!("{}.LOCALHOST", label.as_str()), &live, "/")
-		.await
-		.unwrap();
-	assert!(String::from_utf8(page.bytes).unwrap().contains("preview"));
-	c.close().await;
-}
-
-#[rstest::rstest]
-#[tokio::test]
 async fn a_preview_ticket_is_single_use_and_expires(#[future] capability_fixture: CoreFixture) {
 	let c = capability_fixture.await;
-	let (area, file) = area_and_file(&c).await;
 	let (tenant, subject, credential) = identity(&c).await;
 	let preview = Uuid::new_v4();
 	let label = PreviewLabel::generate().unwrap();
-	insert_preview(&c, preview, &tenant, area, file, label.as_str(), &subject).await;
+	insert_preview(&c, preview, &tenant, label.as_str(), &subject).await;
 	let ticket = "t".repeat(43);
 	insert_ticket(
 		&c,
@@ -248,11 +161,10 @@ async fn the_reclamation_sweep_removes_expired_tickets_and_sessions(
 	#[future] capability_fixture: CoreFixture,
 ) {
 	let c = capability_fixture.await;
-	let (area, file) = area_and_file(&c).await;
 	let (tenant, subject, credential) = identity(&c).await;
 	let preview = Uuid::new_v4();
 	let label = PreviewLabel::generate().unwrap();
-	insert_preview(&c, preview, &tenant, area, file, label.as_str(), &subject).await;
+	insert_preview(&c, preview, &tenant, label.as_str(), &subject).await;
 	let expired = Utc::now() - Duration::seconds(1);
 	insert_ticket(
 		&c,

@@ -191,7 +191,7 @@ impl OperationReconciliationScope for Scope<'_> {
 				generation: area.generation,
 				revision: area.revision,
 				epoch: area.epoch,
-				manifest: area.manifest.clone(),
+				manifest: json!([]),
 			},
 			operation: domain(&operation),
 		};

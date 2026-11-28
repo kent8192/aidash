@@ -1124,29 +1124,6 @@ pub(crate) fn preview_availability(f: &Federation) -> aidash_application::previe
 	)
 }
 
-/// Authorize the File version as a download, then issue its one-time ticket.
-pub(crate) async fn preview_ticket(
-	f: Federation,
-	actor: Actor,
-	input: crate::apps::execution::capabilities::serializers::previews::PreviewTicketInput,
-	origin: String,
-) -> Result<aidash_application::preview::Issued> {
-	let mut access = access(&f, actor).await?;
-	let preview = f.config.preview.as_ref();
-	let result = {
-		let mut scope = crate::apps::execution::repositories::previews::Scope {
-			access: &mut access,
-			store: &f.store,
-			domain: preview.map(|preview| preview.domain.as_str()),
-			public_port: preview.and_then(|preview| preview.public_port),
-			origin: &origin,
-			peer: None,
-		};
-		aidash_application::preview::issue(&mut scope, input.area_id, input.file_id).await
-	};
-	access.finish(result.map_err(Into::into)).await
-}
-
 /// The Run's Live preview, or `None` when it has never started one.
 pub(crate) async fn live_preview(
 	f: Federation,
@@ -1279,7 +1256,6 @@ pub(crate) async fn preview_live_ticket(
 	let result = {
 		let mut scope = crate::apps::execution::repositories::previews::Scope {
 			access: &mut access,
-			store: &f.store,
 			domain: preview.map(|preview| preview.domain.as_str()),
 			public_port: preview.and_then(|preview| preview.public_port),
 			origin: &origin,

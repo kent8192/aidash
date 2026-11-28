@@ -5,9 +5,6 @@ use crate::{
 };
 use aidash_application::capabilities::files as application;
 use serde_json::Value;
-pub(crate) fn files(area: &Area) -> Result<Vec<FileEntry>> {
-	Ok(serde_json::from_value(area.manifest.clone())?)
-}
 pub(crate) async fn settings(access: &mut Access, run: &Run) -> Result<AgentConfig> {
 	application::settings(
 		&mut crate::bootstrap::file_scope(None, access, Some(run)),

@@ -86,8 +86,6 @@ pub fn url_patterns() -> UnifiedRouter {
 			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
 			.endpoint(super::views::previews::availability)
 			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
-			.endpoint(super::views::previews::ticket)
-			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
 			.endpoint(super::views::previews::remote_ticket)
 			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
 			.endpoint(super::views::previews::remote_inspect)

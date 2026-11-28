@@ -1,18 +1,8 @@
 //! Durable operation admission and reconciliation. Workers never run host commands.
-use super::{contracts::*, service};
+use super::contracts::*;
 use crate::{Result, authorization::access::Access, domain::Run, store::Store};
 use serde_json::Value;
 use uuid::Uuid;
-
-/// What a Pod receives from an Area: Reference files stay with the file tools.
-pub(crate) fn pod_files(area: &Area) -> Result<Vec<FileEntry>> {
-	Ok(service::files(area)?
-		.into_iter()
-		.filter(|file| {
-			!(matches!(file.scope, FileScope::References) && file.provenance["kind"] == "reference")
-		})
-		.collect())
-}
 
 pub(in crate::apps::execution) async fn request_files(
 	access: &mut Access,

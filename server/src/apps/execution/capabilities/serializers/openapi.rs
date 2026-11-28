@@ -406,18 +406,6 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 			200,
 			"application/json",
 		)?;
-	contracts
-		.request::<_, crate::apps::execution::capabilities::serializers::previews::PreviewTicketInput>(
-			document,
-			views::previews::ticket,
-		)?;
-	contracts
-		.response::<_, crate::apps::execution::capabilities::serializers::previews::PreviewTicket>(
-			document,
-			views::previews::ticket,
-			200,
-			"application/json",
-		)?;
 	contracts.path(document, views::previews::remote_ticket, &["Uuid"])?;
 	contracts.request::<_, aidash_domain::federation::preview::Target>(
 		document,

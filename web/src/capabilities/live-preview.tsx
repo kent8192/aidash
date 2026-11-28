@@ -6,7 +6,7 @@ import { coreLivePreview, coreLivePreviewStop } from "../generated/aidash";
 import type { LivePreview } from "../generated/models";
 import { useI18n } from "../ui";
 import { panelClass } from "./display";
-import { useFilePreview } from "./file-preview-pane";
+import { useLivePreview } from "./live-preview-context";
 import {
   formatDuration,
   livePreviewIsActive,
@@ -22,7 +22,7 @@ import {
 export function LivePreviewPanel({ run }: { run: string }) {
   const { locale, t } = useI18n();
   const client = useQueryClient();
-  const preview = useFilePreview();
+  const preview = useLivePreview();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const query = useQuery({

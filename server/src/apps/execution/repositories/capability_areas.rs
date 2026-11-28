@@ -16,7 +16,7 @@ impl From<NativeArea> for Area {
 			revision: value.revision,
 			epoch: value.epoch,
 			state: value.state,
-			manifest: value.manifest,
+			manifest: serde_json::json!([]),
 			constraints: value.constraints,
 		}
 	}
@@ -34,7 +34,7 @@ impl From<&NativeArea> for Area {
 			revision: value.revision,
 			epoch: value.epoch,
 			state: value.state.clone(),
-			manifest: value.manifest.clone(),
+			manifest: serde_json::json!([]),
 			constraints: value.constraints.clone(),
 		}
 	}
@@ -52,7 +52,6 @@ impl From<Area> for NativeArea {
 			revision: value.revision,
 			epoch: value.epoch,
 			state: value.state,
-			manifest: value.manifest,
 			constraints: value.constraints,
 		}
 	}

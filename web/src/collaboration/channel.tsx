@@ -57,13 +57,10 @@ import { ChannelRequests } from "./requests";
 import { ChannelFiles } from "./attachments";
 import { RequestCanvas } from "./request/canvas";
 import {
-  FilePreviewContextProvider,
-  FilePreviewPane,
-  type FilePreviewSelection,
+  LivePreviewContext,
   type LivePreviewSelection,
-} from "../capabilities/file-preview-pane";
+} from "../capabilities/live-preview-context";
 import { LivePreviewPane } from "../capabilities/live-preview-pane";
-import { FileCitationProvider } from "./file-citations";
 import { corePreviewAvailability } from "../generated/aidash";
 import type { PreviewAvailability } from "../generated/models";
 import { TimelineStrip } from "./request/timeline";
@@ -312,39 +309,20 @@ export function Channel({
     "overview" | "work" | "results" | "activity"
   >("overview");
   const [statusOpen, setStatusOpen] = useState(false);
-  type PreviewPaneSelection =
-    | { kind: "file"; selection: FilePreviewSelection }
-    | { kind: "live"; selection: LivePreviewSelection };
-  const [preview, setPreview] = useState<PreviewPaneSelection | null>(null);
+  const [preview, setPreview] = useState<LivePreviewSelection | null>(null);
   const previewTrigger = useRef<HTMLElement | null>(null);
-  const previewManifests = useRef(
-    new Map<string, NonNullable<FilePreviewSelection["files"]>>(),
-  );
-  const openFilePreview = useCallback((selection: FilePreviewSelection) => {
-    previewTrigger.current =
-      document.activeElement instanceof HTMLElement
-        ? document.activeElement
-        : null;
-    if (selection.files?.length)
-      previewManifests.current.set(selection.area, selection.files);
-    setPreview({ kind: "file", selection });
-  }, []);
   const openLivePreview = useCallback((selection: LivePreviewSelection) => {
     previewTrigger.current =
       document.activeElement instanceof HTMLElement
         ? document.activeElement
         : null;
-    setPreview({ kind: "live", selection });
+    setPreview(selection);
   }, []);
-  const closeFilePreview = useCallback(() => {
+  const closeLivePreview = useCallback(() => {
     setPreview(null);
     previewTrigger.current?.focus();
     previewTrigger.current = null;
   }, []);
-  const manifestFor = useCallback(
-    (area: string) => previewManifests.current.get(area),
-    [],
-  );
   const previewAvailability = useQuery({
     queryKey: ["preview-availability"],
     queryFn: ({ signal }) => corePreviewAvailability({ signal }),
@@ -782,129 +760,112 @@ export function Channel({
         </div>
         {control.error && <Alert className="basis-full">{control.error}</Alert>}
       </header>
-      <FileCitationProvider>
-        <FilePreviewContextProvider
-          open={openFilePreview}
-          openLive={openLivePreview}
-          manifestFor={manifestFor}
-          availability={availability}
+      <LivePreviewContext.Provider
+        value={{ openLive: openLivePreview, availability }}
+      >
+        <Tabs
+          value={shownTab}
+          onValueChange={(value) => setTab(value as typeof tab)}
+          className="relative flex min-h-0 flex-1 flex-col md:flex-row"
         >
-          <Tabs
-            value={shownTab}
-            onValueChange={(value) => setTab(value as typeof tab)}
-            className="relative flex min-h-0 flex-1 flex-col md:flex-row"
-          >
-            {!desktop && (
-              <TabsList className="bg-surface">
-                <TabsTrigger value="conversation">
-                  {view.conversation}
-                </TabsTrigger>
-                <TabsTrigger value="canvas">{view.canvas}</TabsTrigger>
-                <TabsTrigger value="tasks">
-                  {view.tasks}
-                  {count(tasks.length)}
-                </TabsTrigger>
-                <TabsTrigger value="results">
-                  {view.results}
-                  {count(artifacts.length)}
-                </TabsTrigger>
-                <TabsTrigger value="schedules">{view.schedules}</TabsTrigger>
-              </TabsList>
-            )}
-            {desktop ? (
-              <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-                {unavailable}
-                {canvas}
-              </div>
-            ) : (
-              <TabsContent
-                value="canvas"
-                className="flex min-h-0 flex-1 flex-col data-[state=inactive]:hidden"
-              >
-                {unavailable}
-                {canvas}
-              </TabsContent>
-            )}
-            {preview?.kind === "file" && shownTab === "conversation" && (
-              <FilePreviewPane
-                key={`${preview.selection.area}:${preview.selection.file.file_id}:${preview.selection.file.digest}`}
-                selection={preview.selection}
-                onClose={closeFilePreview}
-              />
-            )}
-            {preview?.kind === "live" && shownTab === "conversation" && (
-              <LivePreviewPane
-                key={`${preview.selection.run}:${preview.selection.livePreviewId}`}
-                selection={preview.selection}
-                onClose={closeFilePreview}
-              />
-            )}
-            <aside
-              aria-label={view.details}
-              hidden={desktop ? !dockOpen : tab === "canvas"}
-              className="flex min-h-0 flex-1 flex-col bg-surface md:w-[400px] md:flex-none md:border-l md:border-border"
+          {!desktop && (
+            <TabsList className="bg-surface">
+              <TabsTrigger value="conversation">
+                {view.conversation}
+              </TabsTrigger>
+              <TabsTrigger value="canvas">{view.canvas}</TabsTrigger>
+              <TabsTrigger value="tasks">
+                {view.tasks}
+                {count(tasks.length)}
+              </TabsTrigger>
+              <TabsTrigger value="results">
+                {view.results}
+                {count(artifacts.length)}
+              </TabsTrigger>
+              <TabsTrigger value="schedules">{view.schedules}</TabsTrigger>
+            </TabsList>
+          )}
+          {desktop ? (
+            <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+              {unavailable}
+              {canvas}
+            </div>
+          ) : (
+            <TabsContent
+              value="canvas"
+              className="flex min-h-0 flex-1 flex-col data-[state=inactive]:hidden"
             >
-              {desktop && (
-                <div className="flex items-stretch border-b border-border">
-                  <TabsList className="flex-1 border-b-0">
-                    <TabsTrigger value="conversation">
-                      {view.conversation}
-                      {count(query.data?.messages?.length ?? 0)}
-                    </TabsTrigger>
-                    <TabsTrigger value="tasks">
-                      {view.tasks}
-                      {count(tasks.length)}
-                    </TabsTrigger>
-                    <TabsTrigger value="results">
-                      {view.results}
-                      {count(artifacts.length)}
-                    </TabsTrigger>
-                    <TabsTrigger value="schedules">
-                      {view.schedules}
-                    </TabsTrigger>
-                  </TabsList>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    type="button"
-                    className="mr-1.5 self-center"
-                    aria-label={view.hideDock}
-                    onClick={() => setDockOpen(false)}
-                  >
-                    <PanelRightClose />
-                  </Button>
-                </div>
-              )}
-              {!desktop && unavailable}
-              <TabsContent
-                value="conversation"
-                forceMount
-                className="flex min-h-0 flex-1 flex-col data-[state=inactive]:hidden"
-              >
-                {conversation}
-              </TabsContent>
-              <TabsContent
-                value="tasks"
-                className="flex min-h-0 flex-1 flex-col"
-              >
-                {taskPane}
-              </TabsContent>
-              <TabsContent
-                value="results"
-                className="flex min-h-0 flex-1 flex-col"
-              >
-                {resultPane}
-              </TabsContent>
-              <TabsContent
-                value="schedules"
-                className="flex min-h-0 flex-1 flex-col overflow-y-auto"
-              >
-                <DutiesPanel scope={{ kind: "thread", thread: thread.id }} />
-              </TabsContent>
-            </aside>
-          </Tabs>
-        </FilePreviewContextProvider>
-      </FileCitationProvider>
+              {unavailable}
+              {canvas}
+            </TabsContent>
+          )}
+          {preview && shownTab === "conversation" && (
+            <LivePreviewPane
+              key={`${preview.run}:${preview.livePreviewId}`}
+              selection={preview}
+              onClose={closeLivePreview}
+            />
+          )}
+          <aside
+            aria-label={view.details}
+            hidden={desktop ? !dockOpen : tab === "canvas"}
+            className="flex min-h-0 flex-1 flex-col bg-surface md:w-[400px] md:flex-none md:border-l md:border-border"
+          >
+            {desktop && (
+              <div className="flex items-stretch border-b border-border">
+                <TabsList className="flex-1 border-b-0">
+                  <TabsTrigger value="conversation">
+                    {view.conversation}
+                    {count(query.data?.messages?.length ?? 0)}
+                  </TabsTrigger>
+                  <TabsTrigger value="tasks">
+                    {view.tasks}
+                    {count(tasks.length)}
+                  </TabsTrigger>
+                  <TabsTrigger value="results">
+                    {view.results}
+                    {count(artifacts.length)}
+                  </TabsTrigger>
+                  <TabsTrigger value="schedules">{view.schedules}</TabsTrigger>
+                </TabsList>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  type="button"
+                  className="mr-1.5 self-center"
+                  aria-label={view.hideDock}
+                  onClick={() => setDockOpen(false)}
+                >
+                  <PanelRightClose />
+                </Button>
+              </div>
+            )}
+            {!desktop && unavailable}
+            <TabsContent
+              value="conversation"
+              forceMount
+              className="flex min-h-0 flex-1 flex-col data-[state=inactive]:hidden"
+            >
+              {conversation}
+            </TabsContent>
+            <TabsContent value="tasks" className="flex min-h-0 flex-1 flex-col">
+              {taskPane}
+            </TabsContent>
+            <TabsContent
+              value="results"
+              className="flex min-h-0 flex-1 flex-col"
+            >
+              {resultPane}
+            </TabsContent>
+            <TabsContent
+              value="schedules"
+              className="flex min-h-0 flex-1 flex-col overflow-y-auto"
+            >
+              <DutiesPanel scope={{ kind: "thread", thread: thread.id }} />
+            </TabsContent>
+          </aside>
+        </Tabs>
+      </LivePreviewContext.Provider>
       <Sheet open={statusOpen} onOpenChange={setStatusOpen}>
         <SheetContent closeLabel={t("close")} className="gap-0 p-0">
           <SheetHeader className="border-b border-border px-5 pb-3 pt-4">

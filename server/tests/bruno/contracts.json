@@ -46844,37 +46844,6 @@
     "uuid_parameters": []
   },
   {
-    "json": true,
-    "method": "POST",
-    "name": "core_preview_ticket",
-    "path": "/api/previews/tickets",
-    "query_parameters": [],
-    "responses": {
-      "200": {
-        "definitions": {
-          "PreviewTicket": {
-            "properties": {
-              "expires_at": {
-                "format": "date-time",
-                "type": "string"
-              },
-              "url": {
-                "type": "string"
-              }
-            },
-            "required": ["url", "expires_at"],
-            "type": "object"
-          }
-        },
-        "schema": {
-          "$ref": "#/components/schemas/PreviewTicket"
-        }
-      }
-    },
-    "source": "server/src/apps/execution/capabilities/views/previews.rs",
-    "uuid_parameters": []
-  },
-  {
     "json": false,
     "method": "GET",
     "name": "core_live_preview",
@@ -47206,42 +47175,8 @@
     "responses": {
       "200": {
         "definitions": {
-          "File": {
-            "properties": {
-              "digest": {
-                "type": "string"
-              },
-              "file_id": {
-                "format": "uuid",
-                "type": "string"
-              },
-              "media_type": {
-                "type": "string"
-              },
-              "path": {
-                "type": "string"
-              },
-              "size": {
-                "format": "uint64",
-                "minimum": 0,
-                "type": "integer"
-              }
-            },
-            "required": ["file_id", "path", "digest", "size", "media_type"],
-            "type": "object"
-          },
           "Inspection": {
             "properties": {
-              "area_id": {
-                "format": "uuid",
-                "type": "string"
-              },
-              "files": {
-                "items": {
-                  "$ref": "#/components/schemas/File"
-                },
-                "type": "array"
-              },
               "live_preview": {
                 "anyOf": [
                   {
@@ -47256,12 +47191,7 @@
                 "type": "boolean"
               }
             },
-            "required": [
-              "area_id",
-              "files",
-              "live_preview",
-              "preview_available"
-            ],
+            "required": ["live_preview", "preview_available"],
             "type": "object"
           },
           "Live": {
