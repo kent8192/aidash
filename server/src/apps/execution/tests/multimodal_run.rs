@@ -528,10 +528,8 @@ async fn verify_separate_format_routes(
 					"data:{mime};base64,{}",
 					base64::engine::general_purpose::STANDARD.encode(bytes)
 				);
-				if urls[0] == expected {
-					if !seen.contains(&index) {
-						seen.push(index);
-					}
+				if urls[0] == expected && !seen.contains(&index) {
+					seen.push(index);
 				}
 			}
 		}
