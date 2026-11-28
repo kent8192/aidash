@@ -1,6 +1,8 @@
 //! Agent Drive operations derive their scope from admitted executions.
 use super::{index, jobs, repository as db, transfer};
-use crate::apps::execution::capabilities::serializers::contracts::{Representation, SearchMode};
+use crate::apps::execution::capabilities::serializers::contracts::{
+	Representation, SearchMode, ToolFileRead,
+};
 use crate::{Error, Result, authorization::access::Access, store::Store};
 use aidash_application::tenancy::{DeploymentScopeReason, TenancyScope};
 use aidash_domain::{Run, nodes::NodeName};
@@ -62,17 +64,15 @@ pub(crate) async fn invoke(
 }
 
 async fn read(store: &Store, access: &mut Access, run: &Run, input: Value) -> Result<Value> {
-	#[derive(Deserialize)]
-	#[serde(deny_unknown_fields)]
-	struct Input {
-		drive: aidash_domain::drive::FileLocation,
-		representation: Option<Representation>,
-		offset: Option<usize>,
-		max_bytes: Option<usize>,
-		expected_digest: Option<String>,
-	}
-	let input: Input = serde_json::from_value(input)?;
-	let location = input.drive;
+	let input: ToolFileRead = serde_json::from_value(input)?;
+	let Some(location) = input
+		.drive
+		.filter(|_| input.file_id.is_none() && input.path.is_none())
+	else {
+		return Err(Error::Invalid(
+			"provide only the Drive file selector".into(),
+		));
+	};
 	let (drive, grant) = db::drive(access, &NodeName::parse(&location.node)?, false).await?;
 	let entry = db::file(access, &drive, &grant, &location.path, location.version).await?;
 	if input
