@@ -1,8 +1,12 @@
 //! Native tombstones and thread locks retain the original ordered query expressions.
-use super::cleanup::Scope;
 use crate::apps::execution::capabilities::serializers::thread_lifecycle::DeleteThread as NativeDeleteThread;
 use crate::{Error as NativeError, Result as NativeResult};
-use aidash_application::{Error, Result, ports::capabilities::thread_lifecycle::ThreadScope};
+use crate::{
+	apps::execution::capabilities::services::{records, sessions},
+	authorization::access::Access,
+	store::Store,
+};
+use aidash_application::{Result, ports::capabilities::thread_lifecycle::ThreadScope};
 use aidash_domain::capabilities::thread_lifecycle::DeleteThread;
 use async_trait::async_trait;
 use reinhardt::query::{
@@ -11,6 +15,11 @@ use reinhardt::query::{
 };
 use serde_json::Value;
 use uuid::Uuid;
+pub(crate) struct Scope<'a> {
+	pub(crate) store: &'a Store,
+	pub(crate) access: &'a mut Access,
+}
+
 pub(crate) async fn visible(
 	tx: &mut crate::database::native::Transaction,
 	thread: Uuid,
@@ -71,6 +80,55 @@ impl aidash_application::ports::capabilities::thread_lifecycle::DeletionAuthorit
 }
 #[async_trait]
 impl ThreadScope for Scope<'_> {
+	fn principal(&self) -> &str {
+		&self.access.identity.subject
+	}
+	async fn serialize(&mut self) -> Result<()> {
+		super::sharing::serialize(self.access)
+			.await
+			.map_err(Into::into)
+	}
+	async fn thread(&mut self, id: Uuid) -> Result<aidash_domain::policy::Resource> {
+		self.access.thread(id).await.map_err(Into::into)
+	}
+	async fn require(
+		&mut self,
+		resource: &aidash_domain::policy::Resource,
+		action: &str,
+	) -> Result<()> {
+		self.access
+			.require(resource, action)
+			.await
+			.map_err(Into::into)
+	}
+	async fn visible_thread(&mut self, thread: Uuid) -> Result<()> {
+		visible(&mut self.access.tx, thread)
+			.await
+			.map_err(Into::into)
+	}
+	async fn record_tombstone(&mut self, thread: Uuid) -> Result<()> {
+		records::insert(
+			self.access,
+			thread,
+			None,
+			"thread_tombstone",
+			"deleted",
+			serde_json::json!({"thread_id":thread}),
+			None,
+		)
+		.await?;
+		Ok(())
+	}
+	async fn cached(&mut self, key: Uuid, digest: &str) -> Result<Option<Value>> {
+		sessions::cached(self.access, key, digest)
+			.await
+			.map_err(Into::into)
+	}
+	async fn cache(&mut self, key: Uuid, digest: &str, result: &Value) -> Result<()> {
+		sessions::cache(self.access, key, digest, result)
+			.await
+			.map_err(Into::into)
+	}
 	async fn lock_for_deletion(&mut self, thread: Uuid) -> Result<()> {
 		crate::apps::workspaces::models::Thread::lock_for_deletion(&mut *self.access.tx, thread)
 			.await
@@ -131,9 +189,7 @@ impl ThreadScope for Scope<'_> {
 		Ok(())
 	}
 	async fn stop_work(&mut self, thread: Uuid) -> Result<()> {
-		let store = self
-			.store
-			.ok_or_else(|| Error::External("thread repository scope invariant".into()))?;
+		let store = self.store;
 		let result: NativeResult<()> = async {
 			let terminal = ["COMPLETED", "FAILED", "CANCELLED"];
 			let runs: Vec<Uuid> = crate::database::native::query_scalar(
@@ -154,8 +210,8 @@ impl ThreadScope for Scope<'_> {
 				super::subnodes::lock_for_end(&mut **self.access.tx, *run).await?;
 			}
 			for run in runs {
-				// A creator's cascade, or the Area cancellation above, may
-				// already have cancelled it.
+				// A creator's cascade may
+				// already have cancelled the Run.
 				let open: bool = crate::database::native::query_scalar(
 					&Query::select()
 						.expr(Expr::exists(
@@ -220,7 +276,6 @@ impl ThreadScope for Scope<'_> {
 	}
 	async fn event(&mut self, thread: Uuid, kind: &str, data: Value) -> Result<()> {
 		self.store
-			.ok_or_else(|| Error::External("thread repository scope invariant".into()))?
 			.event(&mut self.access.tx, Some(thread), kind, data)
 			.await
 			.map(|_| ())

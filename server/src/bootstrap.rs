@@ -2094,14 +2094,6 @@ impl aidash_application::ports::capabilities::processing::CapabilityBackgroundJo
 		.await
 		.map_err(Into::into)
 	}
-	async fn cleanup(
-		&self,
-		stopping: tokio::sync::watch::Receiver<bool>,
-	) -> aidash_application::Result<()> {
-		crate::apps::execution::capabilities::services::cleanup::run(self.store.clone(), stopping)
-			.await
-			.map_err(Into::into)
-	}
 	async fn reclamation(
 		&self,
 		stopping: tokio::sync::watch::Receiver<bool>,
@@ -2167,24 +2159,12 @@ pub(crate) fn session_scope<'a>(
 	crate::apps::execution::repositories::sessions::Scope { store, access }
 }
 
-pub(crate) fn cleanup_scope<'a>(
-	store: Option<&'a Store>,
-	access: &'a mut crate::authorization::access::Access,
-) -> crate::apps::execution::repositories::cleanup::Scope<'a> {
-	crate::apps::execution::repositories::cleanup::Scope { store, access }
-}
 pub(crate) fn retention_scope<'a>(
 	store: Option<&'a Store>,
 	access: &'a mut crate::authorization::access::Access,
 ) -> crate::apps::execution::repositories::retention::Scope<'a> {
 	crate::apps::execution::repositories::retention::Scope { store, access }
 }
-pub(crate) fn cleanup_repository(
-	store: &Store,
-) -> crate::apps::execution::repositories::cleanup::Repository<'_> {
-	crate::apps::execution::repositories::cleanup::Repository { store }
-}
-
 pub(crate) fn file_scope<'a>(
 	store: Option<&'a Store>,
 	access: &'a mut crate::authorization::access::Access,

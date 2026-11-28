@@ -1,5 +1,4 @@
 //! Persistence and authority for Thread deletion.
-use super::cleanup::CleanupScope;
 use crate::Result;
 use aidash_domain::policy::Resource;
 use async_trait::async_trait;
@@ -15,7 +14,15 @@ pub trait DeletionAuthority: Send {
 	async fn node_resource(&mut self, thread: Uuid) -> Result<Resource>;
 }
 #[async_trait]
-pub trait ThreadScope: CleanupScope + DeletionAuthority {
+pub trait ThreadScope: DeletionAuthority {
+	fn principal(&self) -> &str;
+	async fn serialize(&mut self) -> Result<()>;
+	async fn thread(&mut self, id: Uuid) -> Result<Resource>;
+	async fn require(&mut self, resource: &Resource, action: &str) -> Result<()>;
+	async fn visible_thread(&mut self, thread: Uuid) -> Result<()>;
+	async fn record_tombstone(&mut self, thread: Uuid) -> Result<()>;
+	async fn cached(&mut self, key: Uuid, digest: &str) -> Result<Option<Value>>;
+	async fn cache(&mut self, key: Uuid, digest: &str, result: &Value) -> Result<()>;
 	/// Lock the Thread row, so a Run admitted to it cannot commit behind
 	/// its deletion.
 	async fn lock_for_deletion(&mut self, thread: Uuid) -> Result<()>;

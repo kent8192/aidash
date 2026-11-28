@@ -1,8 +1,6 @@
 //! Harness-owned files and execution capabilities. No Registry tool identity grants authority.
 #[path = "approvals.rs"]
 pub(crate) mod approvals;
-#[path = "cleanup.rs"]
-pub(crate) mod cleanup;
 #[path = "configuration.rs"]
 pub(crate) mod configuration;
 #[path = "contracts.rs"]

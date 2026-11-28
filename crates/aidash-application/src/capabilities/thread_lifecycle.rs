@@ -1,10 +1,7 @@
 //! Delete a Thread and enqueue removal of its Scratch Space directory.
 use crate::{
 	Error, Result,
-	ports::capabilities::{
-		cleanup::Creation,
-		thread_lifecycle::{DeletionAuthority, ThreadScope},
-	},
+	ports::capabilities::thread_lifecycle::{DeletionAuthority, ThreadScope},
 };
 use aidash_domain::capabilities::thread_lifecycle::DeleteThread;
 use aidash_domain::policy::Resource;
@@ -64,16 +61,7 @@ pub async fn delete(
 	// see or stop it (#1008).
 	scope.stop_work(thread).await?;
 	// The tombstone hides the Thread everywhere (#1008, ADR 0140).
-	scope
-		.create(Creation {
-			id: thread,
-			area: None,
-			kind: "thread_tombstone",
-			state: "deleted",
-			data: json!({"thread_id":thread}),
-			expires: None,
-		})
-		.await?;
+	scope.record_tombstone(thread).await?;
 	let result = json!({"thread_id":thread,"state":"deleted"});
 	scope.cache(input.idempotency_key, &digest, &result).await?;
 	scope

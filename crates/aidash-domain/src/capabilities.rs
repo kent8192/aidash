@@ -68,8 +68,6 @@ pub mod retention;
 
 pub mod sessions;
 
-pub mod cleanup;
-
 pub mod python;
 
 pub mod errors;

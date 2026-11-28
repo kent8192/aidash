@@ -164,8 +164,6 @@ pub(crate) mod retention;
 pub(crate) mod capability_areas;
 pub(crate) mod sessions;
 
-pub(crate) mod cleanup;
-
 pub(crate) mod files;
 
 pub(crate) mod configuration;

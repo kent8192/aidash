@@ -6,8 +6,6 @@ pub mod previews;
 
 pub mod core;
 
-pub mod cleanup;
-
 pub mod records;
 
 pub mod references;

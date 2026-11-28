@@ -59,6 +59,5 @@ pub trait OperationProcessingRepository:
 pub trait CapabilityBackgroundJobs: Send + Sync {
 	async fn network(&self, stopping: watch::Receiver<bool>) -> Result<()>;
 	async fn references(&self, stopping: watch::Receiver<bool>) -> Result<()>;
-	async fn cleanup(&self, stopping: watch::Receiver<bool>) -> Result<()>;
 	async fn reclamation(&self, stopping: watch::Receiver<bool>) -> Result<()>;
 }

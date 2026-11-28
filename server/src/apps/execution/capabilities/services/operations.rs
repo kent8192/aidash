@@ -42,7 +42,6 @@ pub async fn run(store: Store, stopping: tokio::sync::watch::Receiver<bool>) -> 
 		Box::pin(read_recheck_maintenance(&store, stopping.clone())),
 		Box::pin(jobs.network(stopping.clone())),
 		Box::pin(jobs.references(stopping.clone())),
-		Box::pin(jobs.cleanup(stopping.clone())),
 		Box::pin(jobs.reclamation(stopping)),
 	)
 	.map_err(crate::Error::from)?;

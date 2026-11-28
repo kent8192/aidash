@@ -115,8 +115,6 @@ pub mod retention;
 
 pub mod sessions;
 
-pub mod cleanup;
-
 pub mod journal_query;
 
 pub mod files;
