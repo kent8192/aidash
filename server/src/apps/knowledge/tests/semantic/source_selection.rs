@@ -95,7 +95,7 @@ pub(super) fn declaration(f: &aidash_server::federation::Federation, case: Selec
 	})
 }
 
-/// The first proposal keeps the artifact and drops the message; a later call
+/// The first proposal keeps one message and drops the other; a later call
 /// keeps both. It never supplies admission, receipts or final fitting.
 pub(super) fn answer(body: Value, calls: &Arc<Mutex<Vec<Value>>>) -> reinhardt::Response {
 	let call = {
@@ -186,7 +186,7 @@ async fn scored_sources_reach_the_actual_request_as_individual_items(
 		.iter()
 		.filter(|item| match case {
 			SelectionCase::Shadow => item["source"]["kind"] != "memory",
-			SelectionCase::Enforce => item["source"]["kind"] == "artifact",
+			SelectionCase::Enforce => item["text"] == "A car has a steering wheel.",
 		})
 		.cloned()
 		.collect::<Vec<_>>();
@@ -218,16 +218,16 @@ async fn scored_sources_reach_the_actual_request_as_individual_items(
 	assert_eq!(
 		kinds,
 		match case {
-			SelectionCase::Shadow => vec!["artifact", "message"],
-			SelectionCase::Enforce => vec!["artifact"],
+			SelectionCase::Shadow => vec!["message", "message"],
+			SelectionCase::Enforce => vec!["message"],
 		}
 	);
 	assert_eq!(
 		matches
 			.iter()
-			.find(|item| item["source"]["kind"] == "artifact")
+			.find(|item| item["text"] == "A car has a steering wheel.")
 			.unwrap()["text"],
-		serde_json::to_string("A car has a steering wheel.").unwrap()
+		"A car has a steering wheel."
 	);
 	let selections = &run.context.source_selections;
 	assert_eq!(selections.len(), 1);

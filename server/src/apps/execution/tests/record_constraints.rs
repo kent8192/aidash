@@ -469,52 +469,6 @@ async fn thread_task_and_run_constraints_preserve_local_and_remote_boundaries(
 		result.as_database_error().unwrap().constraint(),
 		Some("tasks_parent_thread")
 	);
-	let artifact = Query::insert()
-		.into_table(Alias::new("artifacts"))
-		.columns(
-			[
-				"id",
-				"thread_id",
-				"task_id",
-				"kind",
-				"name",
-				"content",
-				"created_by",
-				"idempotency_key",
-				"tenant",
-			]
-			.map(Alias::new),
-		)
-		.from_subquery(
-			Query::select()
-				.expr(Expr::cust("gen_random_uuid()"))
-				.expr(Expr::cust("$1"))
-				.expr(Expr::cust("$2"))
-				.expr(Expr::value("text"))
-				.expr(Expr::value("Result"))
-				.expr(Expr::cust("'{}'::jsonb"))
-				.expr(Expr::value("human"))
-				.expr(Expr::value("artifact-key"))
-				.expr(Expr::value("acme"))
-				.to_owned(),
-		)
-		.to_string(PostgresQueryBuilder);
-	let error = sqlx::query(&artifact)
-		.bind(other.id)
-		.bind(task.id)
-		.execute(f.store.pool.fixture_driver())
-		.await
-		.unwrap_err();
-	assert_eq!(
-		error.as_database_error().unwrap().constraint(),
-		Some("artifacts_task_thread")
-	);
-	sqlx::query(&artifact)
-		.bind(thread.id)
-		.bind(task.id)
-		.execute(f.store.pool.fixture_driver())
-		.await
-		.unwrap();
 	// Remote runs are allowed even if their thread/task only exist at their home node.
 	let mut remote = task.clone();
 	remote.id = uuid::Uuid::new_v4();
@@ -1897,25 +1851,22 @@ async fn semantic_specs_and_sources_reject_undecodable_records(
 	.await
 	.unwrap();
 	let id = uuid::Uuid::new_v4();
-	for kind in ["artifact", "message"] {
-		for id in [
-			id.to_string(),
-			id.simple().to_string(),
-			id.urn().to_string(),
-			id.braced().to_string(),
-		] {
-			let source = json!({"kind":kind,"id":id});
-			let _: aidash_server::semantic::Source =
-				serde_json::from_value(source.clone()).unwrap();
-			update(
-				f.store.pool.fixture_driver(),
-				"semantic_entries",
-				"source",
-				Expr::value(source),
-			)
-			.await
-			.unwrap();
-		}
+	for id in [
+		id.to_string(),
+		id.simple().to_string(),
+		id.urn().to_string(),
+		id.braced().to_string(),
+	] {
+		let source = json!({"kind":"message","id":id});
+		let _: aidash_server::semantic::Source = serde_json::from_value(source.clone()).unwrap();
+		update(
+			f.store.pool.fixture_driver(),
+			"semantic_entries",
+			"source",
+			Expr::value(source),
+		)
+		.await
+		.unwrap();
 	}
 	update(
 		f.store.pool.fixture_driver(),

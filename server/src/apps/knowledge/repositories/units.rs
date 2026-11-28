@@ -280,7 +280,7 @@ pub(crate) enum UnitChanges {
 	/// Built-in Memory changes its own Units (#852 decision 8): pass over the
 	/// change and keep checking every source behind the Unit, so any `Conflict`
 	/// left reports a withdrawn source (revoked or expired Research, a removed
-	/// Journal range, message, artifact, Run or publication).
+	/// Journal range, message, Run or publication).
 	Forgive,
 }
 

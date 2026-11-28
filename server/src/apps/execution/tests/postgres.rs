@@ -1577,7 +1577,7 @@ async fn a_run_that_hits_a_statement_timeout_waits_and_completes(
 		.unwrap();
 	let agent = federation.registry.register(&aidash_domain::tenancy::TenantName::new("acme").unwrap(), entry("agent", "web-research", json!({"model":{"id":"web-model","version":"1.0.0"},"instructions":"Use available public evidence","schema_version":1,"bindings":[{"kind":"tool","target":{"registry_deployment":federation.config.deployment,"id":"web-fetch","version":"1.0.0"},"alias":"plugin_0","narrow":{}}],"remove_default":[]}))).await.unwrap();
 	let thread = store.create_thread(&ACME, "alice", "Waits").await.unwrap();
-	// The first artifact of this test fails the way a fired statement limit does.
+	// The first message of this test fails the way a fired statement limit does.
 	let owner = common::owner_pool(store.pool.fixture_driver()).await;
 	for ddl in [
 		"CREATE SEQUENCE statement_timeouts",
@@ -1585,7 +1585,7 @@ async fn a_run_that_hits_a_statement_timeout_waits_and_completes(
 		 IF nextval('statement_timeouts') = 1 THEN \
 		 RAISE EXCEPTION USING ERRCODE = '57014', MESSAGE = 'canceling statement due to statement timeout'; \
 		 END IF; RETURN NEW; END $$",
-		"CREATE TRIGGER fail_once BEFORE INSERT ON artifacts FOR EACH ROW EXECUTE FUNCTION fail_once()",
+		"CREATE TRIGGER fail_once BEFORE INSERT ON messages FOR EACH ROW EXECUTE FUNCTION fail_once()",
 	] {
 		sqlx::query(ddl).execute(&owner).await.unwrap();
 	}
@@ -1656,12 +1656,8 @@ async fn child_creation_and_parent_completion_are_serialized(
 	let parent = running_task(&f, &agent, thread.id, None).await;
 	let mut input = new_task();
 	input.parent_id = Some(parent.id);
-	let artifact = aidash_domain::deliverable::Completion::new(
-		parent.id,
-		"parent-complete",
-		"done".into(),
-		None,
-	);
+	let artifact =
+		aidash_domain::deliverable::Completion::new(parent.id, "parent", "done".into(), None);
 	let (child, completed) = tokio::join!(
 		store.create_task(&ACME, thread.id, &input, "human", Some("child")),
 		store.complete(

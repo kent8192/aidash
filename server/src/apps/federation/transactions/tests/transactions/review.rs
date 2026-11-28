@@ -425,7 +425,7 @@ async fn transaction_targets_must_belong_to_the_exact_participant_node(
 			json!({"kind":kind,"thread_id":thread,"expected_revision":0,"title":"Intrusion"})
 		}
 		"complete_task" => {
-			json!({"kind":kind,"task_id":task_id,"expected_revision":1,"artifact":{"kind":"text","name":"Answer","content":"Must not write"}})
+			json!({"kind":kind,"task_id":task_id,"expected_revision":1,"text":"Must not write"})
 		}
 		_ => {
 			json!({"kind":kind,"run_id":run.id,"task_id":task_id,"expected_revision":run.revision})

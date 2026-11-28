@@ -174,14 +174,14 @@ mod controlled_context_composition {
 			federation: f.for_workers().await.unwrap(),
 		};
 		worker.worker_once().await.unwrap();
-		let artifact = f
+		let report = f
 			.store
 			.message_record(
 				&TEST_FIXTURE,
 				thread,
 				&owner,
 				"A car has a steering wheel.",
-				Some("controlled-artifact"),
+				Some("controlled-report"),
 			)
 			.await
 			.unwrap();
@@ -201,7 +201,7 @@ mod controlled_context_composition {
 				"memory",
 				json!({"kind":"memory","text":"A car carries passengers."}),
 			),
-			("artifact", json!({"kind":"artifact","id":artifact.id})),
+			("report", json!({"kind":"message","id":report.id})),
 			("message", json!({"kind":"message","id":message.id})),
 		] {
 			let (status, entry) = common::post(
@@ -270,7 +270,7 @@ async fn automatic_semantic_context_respects_each_agent_behavior_control(
 			expected.push("memory");
 		}
 		if workspace_retrieval {
-			expected.extend(["artifact", "message"]);
+			expected.extend(["message", "message"]);
 		}
 		expected.sort();
 		assert_eq!(kinds, expected, "semantic: {semantic}");
@@ -301,7 +301,7 @@ async fn on_demand_memory_does_not_leak_through_an_always_thread_source(
 		.map(|item| item["source"]["kind"].as_str().unwrap())
 		.collect::<Vec<_>>();
 	kinds.sort();
-	assert_eq!(kinds, ["artifact", "message"]);
+	assert_eq!(kinds, ["message", "message"]);
 	fixture.worker.federation.store.pool.close().await;
 	fixture.worker.federation.store.control_pool.close().await;
 	drop(fixture.model_server);
@@ -1683,7 +1683,7 @@ async fn linked_sources_and_agent_metadata_filters_respect_original_authority(
 	.worker_once()
 	.await
 	.unwrap();
-	let artifact = f
+	let report = f
 		.store
 		.message_record(
 			&TEST_FIXTURE,
@@ -1694,7 +1694,7 @@ async fn linked_sources_and_agent_metadata_filters_respect_original_authority(
 				"1.0.0",
 			),
 			"A car has a steering wheel.",
-			Some("semantic-artifact"),
+			Some("semantic-report"),
 		)
 		.await
 		.unwrap();
@@ -1713,14 +1713,17 @@ async fn linked_sources_and_agent_metadata_filters_respect_original_authority(
 		.snapshot(&TEST_FIXTURE, thread)
 		.await
 		.unwrap()
-		.messages[0]
+		.messages
+		.iter()
+		.find(|message| message.content == "Vehicle safety")
+		.unwrap()
 		.id;
 	let mut ids = vec![];
-	for (kind, id, agent) in [
-		("artifact", artifact.id, None),
+	for (key, id, agent) in [
+		("report", report.id, None),
 		("message", message, Some("aidash://private/agent@1.0.0")),
 	] {
-		let (status,entry)=common::post(&app, &token, &format!("/api/threads/{thread}/semantic/entries"), json!({"key":kind,"expected_revision":0,"source":{"kind":kind,"id":id},"agent":agent,"metadata":{"topic":"transport"}})).await;
+		let (status,entry)=common::post(&app, &token, &format!("/api/threads/{thread}/semantic/entries"), json!({"key":key,"expected_revision":0,"source":{"kind":"message","id":id},"agent":agent,"metadata":{"topic":"transport"}})).await;
 		assert_eq!(status, 200, "{entry}");
 		ids.push(entry);
 	}
@@ -1745,11 +1748,11 @@ async fn linked_sources_and_agent_metadata_filters_respect_original_authority(
 	// An out-of-band source update invalidates a READY vector immediately. A
 	// background sweep allocates a new revision and then indexes the new text.
 	{
-		let query_bind_1 = artifact.id;
-		let query_bind_2 = json!("A car needs brakes.");
+		let query_bind_1 = report.id;
+		let query_bind_2 = "A car needs brakes.";
 		sqlx::query(
 			&reinhardt::query::Query::update()
-				.table(reinhardt::query::Alias::new("artifacts"))
+				.table(reinhardt::query::Alias::new("messages"))
 				.value_expr(
 					reinhardt::query::Alias::new("content"),
 					SimpleExpr::CustomWithExpr(
@@ -1788,7 +1791,7 @@ async fn linked_sources_and_agent_metadata_filters_respect_original_authority(
 			.unwrap()
 			.contains("brakes")
 	);
-	policy["policies"].as_array_mut().unwrap().push(json!({"id":"deny-original-artifact","effect":"deny","subjects":{"ids":["alice"]},"actions":["artifact.read"],"resources":{"kinds":["artifact"],"ids":[artifact.id.to_string()]}}));
+	policy["policies"].as_array_mut().unwrap().push(json!({"id":"deny-original-message","effect":"deny","subjects":{"ids":["alice"]},"actions":["message.read"],"resources":{"kinds":["message"],"ids":[report.id.to_string()]}}));
 	assert_eq!(
 		common::post(
 			&app,
@@ -1809,7 +1812,7 @@ async fn linked_sources_and_agent_metadata_filters_respect_original_authority(
 		json!(null),
 	)
 	.await;
-	assert!(!entries.to_string().contains(&artifact.id.to_string()));
+	assert!(!entries.to_string().contains(&report.id.to_string()));
 	// A Subject cannot configure or attach a resource across Tenants either.
 	let other_tenant = common::tenant_scope(&f.store, "other").await;
 	let other = f
@@ -1833,7 +1836,7 @@ async fn linked_sources_and_agent_metadata_filters_respect_original_authority(
 		.0,
 		403
 	);
-	assert_eq!(common::post(&app, &token, &format!("/api/threads/{}/semantic/entries",other.id), json!({"key":"forged","expected_revision":0,"source":{"kind":"artifact","id":artifact.id},"metadata":{}})).await.0,403);
+	assert_eq!(common::post(&app, &token, &format!("/api/threads/{}/semantic/entries",other.id), json!({"key":"forged","expected_revision":0,"source":{"kind":"message","id":report.id},"metadata":{}})).await.0,403);
 	assert_eq!(search(&app, &token, other.id).await.0, 403);
 	drop(server);
 	dispose(f, &url, &schema).await;

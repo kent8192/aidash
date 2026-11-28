@@ -192,11 +192,11 @@ async fn fixture(database: DatabaseFixture, reads: usize) -> Fixture {
 	)
 	.unwrap();
 	sqlx::query("INSERT INTO task_executions (id,tenant,task_id,thread_id,node,home_node,agent_id,agent_version,phase,pending,revision) VALUES ($1,'acme',$2,$3,$4,$5,'fixture','1.0.0','COMPLETED',$6,1)").bind(run).bind(task).bind(thread).bind(&node).bind(DEPLOYMENT).bind(pending).execute(&driver).await.unwrap();
-	let artifact = Uuid::new_v4();
-	sqlx::query("INSERT INTO artifacts (id,tenant,thread_id,task_id,kind,name,content,created_by,idempotency_key) VALUES ($1,'acme',$2,$3,'json','Fixture','{}','reader',$1::text)").bind(artifact).bind(thread).bind(read_task).execute(&driver).await.unwrap();
+	let source = Uuid::new_v4();
+	sqlx::query("INSERT INTO messages (id,tenant,thread_id,sender,content) VALUES ($1,'acme',$2,'reader','Fixture')").bind(source).bind(thread).execute(&driver).await.unwrap();
 	let mut sources = vec![
 		("task".to_owned(), read_task),
-		("artifact".to_owned(), artifact),
+		("message".to_owned(), source),
 	];
 	for _ in 0..reads {
 		let message = Uuid::new_v4();

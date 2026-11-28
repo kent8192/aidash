@@ -468,7 +468,7 @@ async fn a_finishing_run_tells_the_model_once_then_abandons_and_completes(
 		.filter(|message| message.completion.is_some())
 		.collect::<Vec<_>>();
 	assert_eq!(artifacts.len(), 1);
-	assert!(artifacts[0].content.as_str().unwrap().contains("Nobody's"));
+	assert!(artifacts[0].content.contains("Nobody's"));
 	cleanup(store, &url, &schema).await;
 }
 

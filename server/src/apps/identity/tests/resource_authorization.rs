@@ -114,7 +114,7 @@ async fn guarded_child_summary_pages_minimal_visible_rows(
 
 #[rstest::rstest]
 #[tokio::test]
-async fn task_artifact_message_denials_filter_aggregate_events_and_run_details(
+async fn task_and_message_denials_filter_aggregate_events_and_run_details(
 	#[future(awt)]
 	#[from(common::native_application)]
 	fixture: common::ApplicationFixture,
@@ -140,18 +140,18 @@ async fn task_artifact_message_denials_filter_aggregate_events_and_run_details(
 	.worker_once()
 	.await
 	.unwrap();
-	let artifact = f
+	let source = f
 		.store
 		.message_record(
 			&TEST_FIXTURE,
-			thread,
+			task_record.thread_id,
 			&qualified_agent(
 				&aidash_domain::nodes::NodeAddress::derived(f.config.deployment.as_str(), "acme"),
 				"research",
 				"1.0.0",
 			),
-			"private-artifact-content",
-			Some("resource-test-artifact"),
+			"private-source-content",
+			Some("resource-test-source"),
 		)
 		.await
 		.unwrap();
@@ -172,13 +172,20 @@ async fn task_artifact_message_denials_filter_aggregate_events_and_run_details(
 		&format!("/api/threads/{}", task_record.thread_id),
 	)
 	.await;
-	let message = before["messages"][0]["id"].as_str().unwrap();
+	let message = before["messages"]
+		.as_array()
+		.unwrap()
+		.iter()
+		.find(|message| message["content"] == "private-message-content")
+		.unwrap()["id"]
+		.as_str()
+		.unwrap();
 	for (kind, id) in [
 		("task", task.to_string()),
-		("artifact", artifact.id.to_string()),
+		("message", source.id.to_string()),
 		("message", message.to_owned()),
 	] {
-		bundle["policies"].as_array_mut().unwrap().push(json!({"id":format!("deny-{kind}"),"effect":"deny","subjects":{"ids":["alice"]},"actions":[format!("{kind}.read")],"resources":{"kinds":[kind],"ids":[id]}}));
+		bundle["policies"].as_array_mut().unwrap().push(json!({"id":format!("deny-{id}"),"effect":"deny","subjects":{"ids":["alice"]},"actions":[format!("{kind}.read")],"resources":{"kinds":[kind],"ids":[id]}}));
 	}
 	assert_eq!(
 		common::post(
@@ -199,8 +206,8 @@ async fn task_artifact_message_denials_filter_aggregate_events_and_run_details(
 		let (status, body) = common::get(&app, &token, &path).await;
 		assert_eq!(status, 200, "{body}");
 		assert!(
-			!body.to_string().contains("private-artifact-content"),
-			"artifact leaked through {path}"
+			!body.to_string().contains("private-source-content"),
+			"source leaked through {path}"
 		);
 		assert!(
 			!body.to_string().contains("private-message-content"),
@@ -225,7 +232,6 @@ async fn task_artifact_message_denials_filter_aggregate_events_and_run_details(
 	)
 	.await;
 	assert_eq!(snapshot["tasks"], json!([]));
-	assert_eq!(snapshot["artifacts"], json!([]));
 	assert_eq!(snapshot["messages"], json!([]));
 	cleanup(f, &url, &schema).await;
 }
@@ -344,26 +350,6 @@ async fn retained_snapshot_revocation(
 		federation: f.clone(),
 	};
 	worker.worker_once().await.unwrap();
-	let artifact = f
-		.store
-		.message_record(
-			&TEST_FIXTURE,
-			thread,
-			&qualified_agent(
-				&aidash_domain::nodes::NodeAddress::derived(f.config.deployment.as_str(), "acme"),
-				"research",
-				"1.0.0",
-			),
-			"private-artifact-content",
-			Some("source-revoke"),
-		)
-		.await
-		.unwrap();
-	sqlx::query("UPDATE artifacts SET created_at = '2000-01-01T00:00:00Z' WHERE id = $1")
-		.bind(artifact.id)
-		.execute(f.store.pool.fixture_driver())
-		.await
-		.unwrap();
 	for index in 0..25 {
 		f.store
 			.message_record(
@@ -383,10 +369,28 @@ async fn retained_snapshot_revocation(
 			.await
 			.unwrap();
 	}
+	let source = f
+		.store
+		.message_record(
+			&TEST_FIXTURE,
+			thread,
+			&qualified_agent(
+				&aidash_domain::nodes::NodeAddress::derived(f.config.deployment.as_str(), "acme"),
+				"research",
+				"1.0.0",
+			),
+			&format!(
+				"protected source: {} private-source-content",
+				"x".repeat(600)
+			),
+			Some("source-revoke"),
+		)
+		.await
+		.unwrap();
 	worker.worker_once().await.unwrap();
 	worker.worker_once().await.unwrap();
 	let run = f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
-	assert!(run.context.to_string().contains("private-artifact-content"));
+	assert!(run.context.to_string().contains("private-source-content"));
 	let authorization = aidash_server::authorization::Authorization {
 		pool: f.store.pool.clone(),
 	};
@@ -408,7 +412,7 @@ async fn retained_snapshot_revocation(
 	let denial = if events_only {
 		json!({"id":"revoke-events","effect":"deny","subjects":{"ids":["alice"]},"actions":["thread.events"],"resources":{"kinds":["thread"],"ids":[thread]}})
 	} else {
-		json!({"id":"revoke-source","effect":"deny","subjects":{"ids":["alice"]},"actions":["artifact.read"],"resources":{"kinds":["artifact"],"ids":[artifact.id]}})
+		json!({"id":"revoke-source","effect":"deny","subjects":{"ids":["alice"]},"actions":["message.read"],"resources":{"kinds":["message"],"ids":[source.id]}})
 	};
 	bundle["policies"].as_array_mut().unwrap().push(denial);
 	assert_eq!(
@@ -441,7 +445,7 @@ async fn retained_snapshot_revocation(
 			let (status, body) = common::get(&app, &token, &path).await;
 			assert_eq!(status, 200, "{body}");
 			assert!(
-				!body.to_string().contains("private-artifact-content"),
+				!body.to_string().contains("private-source-content"),
 				"{path}"
 			);
 		}
@@ -802,7 +806,7 @@ async fn worker_continues_with_visible_subset_and_never_sends_denied_records(
 		federation: f.clone(),
 	};
 	worker.worker_once().await.unwrap();
-	let artifact = f
+	let source = f
 		.store
 		.message_record(
 			&TEST_FIXTURE,
@@ -833,9 +837,12 @@ async fn worker_continues_with_visible_subset_and_never_sends_denied_records(
 		.snapshot(&TEST_FIXTURE, thread)
 		.await
 		.unwrap()
-		.messages[0]
+		.messages
+		.iter()
+		.find(|message| message.content == "hidden-message")
+		.unwrap()
 		.id;
-	bundle["policies"].as_array_mut().unwrap().push(json!({"id":"hide-artifact","effect":"deny","subjects":{"ids":["alice"]},"actions":["artifact.read"],"resources":{"kinds":["artifact"],"ids":[artifact.id]}}));
+	bundle["policies"].as_array_mut().unwrap().push(json!({"id":"hide-source","effect":"deny","subjects":{"ids":["alice"]},"actions":["message.read"],"resources":{"kinds":["message"],"ids":[source.id]}}));
 	bundle["policies"].as_array_mut().unwrap().push(json!({"id":"hide-messages","effect":"deny","subjects":{"ids":["alice"]},"actions":["message.read"],"resources":{"kinds":["message"],"ids":[hidden_message]}}));
 	assert_eq!(
 		common::post(
@@ -861,7 +868,7 @@ async fn worker_continues_with_visible_subset_and_never_sends_denied_records(
 		200
 	);
 	let hidden: i64 = {
-		let query_bind_1 = artifact.id;
+		let query_bind_1 = source.id;
 		let query_bind_2 = hidden_message;
 		sqlx::query_scalar(
 			&reinhardt::query::Query::select()
@@ -884,208 +891,55 @@ async fn worker_continues_with_visible_subset_and_never_sends_denied_records(
 	let snapshot = f.store.snapshot(&TEST_FIXTURE, thread).await.unwrap();
 	let output = snapshot
 		.messages
-		.into_iter()
-		.filter(|message| message.completion.is_some())
-		.collect::<Vec<_>>()
 		.iter()
-		.find(|a| a.content == json!("Visible work completed"))
+		.find(|message| message.completion.is_some() && message.content == "Visible work completed")
 		.unwrap();
-	let message = snapshot
-		.messages
-		.iter()
-		.find(|m| m.content == "Visible work completed")
-		.unwrap();
-	let recorded: i64 = { let query_bind_1 = run.id; let query_bind_2 = output.id; let query_bind_3 = message.id; sqlx::query_scalar(&reinhardt::query::Query::select().expr(reinhardt::query::Expr::cust("COUNT(*)")).from(reinhardt::query::Alias::new("authorization_run_reads")).and_where(SimpleExpr::CustomWithExpr("(run_id = ? AND ((resource_kind = 'artifact' AND resource_id = ?) OR (resource_kind = 'message' AND resource_id = ?)))".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into(), Expr::value(query_bind_2.to_owned()).into(), Expr::value(query_bind_3.to_owned()).into()])).to_string(reinhardt::query::PostgresQueryBuilder))
-    .fetch_one(f.store.pool.fixture_driver())
-    .await }
-    .unwrap();
+	let recorded: i64 = {
+		let query_bind_1 = run.id;
+		let query_bind_2 = output.id;
+		sqlx::query_scalar(
+			&reinhardt::query::Query::select()
+				.expr(reinhardt::query::Expr::cust("COUNT(*)"))
+				.from(reinhardt::query::Alias::new("authorization_run_reads"))
+				.and_where(SimpleExpr::CustomWithExpr(
+					"(run_id = ? AND resource_kind = 'message' AND resource_id = ?)".to_owned(),
+					vec![
+						Expr::value(query_bind_1.to_owned()).into(),
+						Expr::value(query_bind_2.to_owned()).into(),
+					],
+				))
+				.to_string(reinhardt::query::PostgresQueryBuilder),
+		)
+		.fetch_one(f.store.pool.fixture_driver())
+		.await
+	}
+	.unwrap();
 	assert_eq!(
-		recorded, 2,
-		"producer outputs retain their read requirements"
+		recorded, 1,
+		"the Completion Message retains its read requirements"
 	);
-	// Each output is independently authorized, but its raw producer journal
-	// contains both. Denying either resource must conceal that journal.
-	for (index, (kind, id)) in [("artifact", output.id), ("message", message.id)]
-		.into_iter()
-		.enumerate()
-	{
-		let mut changed = bundle.clone();
-		changed["policies"].as_array_mut().unwrap().push(json!({"id":"deny-produced-output","effect":"deny","subjects":{"ids":["alice"]},"actions":[format!("{kind}.read")],"resources":{"kinds":[kind],"ids":[id]}}));
-		assert_eq!(
-			common::post(
-				&app,
-				&f.config.api_token,
-				"/api/authorization/acme",
-				json!({"expected_revision":2+index,"bundle":changed})
-			)
-			.await
-			.0,
-			200
-		);
-		assert_eq!(
-			common::get(&app, &token, &format!("/api/executions/{}", run.id))
-				.await
-				.0,
-			403
-		);
-		let (status, state) = common::get(&app, &token, "/api/state").await;
-		assert_eq!(status, 200);
-		assert!(state["runs"].as_array().unwrap().is_empty());
-	}
-	drop(server);
-	cleanup(f, &url, &schema).await;
-}
-
-#[rstest::rstest]
-#[tokio::test]
-async fn artifact_state_window_stops_at_task_denials_without_disclosing_them(
-	#[future(awt)]
-	#[from(common::native_application)]
-	fixture: common::ApplicationFixture,
-) {
-	let (f, url, schema) = fixture.runtime.parts();
-	let app = fixture.application;
-	let (mut bundle, token, hidden) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
-	let thread = f.store.task(&TEST_FIXTURE, hidden).await.unwrap().thread_id;
-	let (_, visible) = common::post(
-		&app,
-		&token,
-		&format!("/api/threads/{thread}/tasks"),
-		json!({"title":"Visible","description":"An older readable artifact"}),
-	)
-	.await;
-	let visible: uuid::Uuid = visible["id"].as_str().unwrap().parse().unwrap();
-	{
-		let query_bind_1 = thread;
-		let query_bind_2 = hidden;
-		sqlx::query(
-			&reinhardt::query::Query::insert()
-				.into_table(reinhardt::query::Alias::new("artifacts"))
-				.columns([
-					reinhardt::query::Alias::new("id"),
-					reinhardt::query::Alias::new("thread_id"),
-					reinhardt::query::Alias::new("task_id"),
-					reinhardt::query::Alias::new("kind"),
-					reinhardt::query::Alias::new("name"),
-					reinhardt::query::Alias::new("content"),
-					reinhardt::query::Alias::new("created_by"),
-					reinhardt::query::Alias::new("idempotency_key"),
-					reinhardt::query::Alias::new("created_at"),
-					reinhardt::query::Alias::new("tenant"),
-				])
-				.from_subquery(
-					reinhardt::query::Query::select()
-						.expr(reinhardt::query::Expr::cust("GEN_RANDOM_UUID()"))
-						.expr(SimpleExpr::CustomWithExpr(
-							"(?)".to_owned(),
-							vec![Expr::value(query_bind_1.to_owned()).into()],
-						))
-						.expr(SimpleExpr::CustomWithExpr(
-							"(?)".to_owned(),
-							vec![Expr::value(query_bind_2.to_owned()).into()],
-						))
-						.expr(reinhardt::query::Expr::cust("'text'"))
-						.expr(reinhardt::query::Expr::cust("'Hidden'"))
-						.expr(reinhardt::query::Expr::cust("'\"hidden\"'"))
-						.expr(reinhardt::query::Expr::cust("'alice'"))
-						.expr(reinhardt::query::Expr::cust("'hidden-' || i"))
-						.expr(reinhardt::query::Expr::cust("CURRENT_TIMESTAMP"))
-						.from_subquery(
-							reinhardt::query::Query::select()
-								.expr(reinhardt::query::Expr::cust("generate_series(1, 500)"))
-								.to_owned(),
-							reinhardt::query::Alias::new("i"),
-						)
-						.expr(Expr::value("acme"))
-						.to_owned(),
-				)
-				.to_string(reinhardt::query::PostgresQueryBuilder),
-		)
-		.execute(f.store.pool.fixture_driver())
-		.await
-	}
-	.unwrap();
-	{
-		let query_bind_1 = thread;
-		let query_bind_2 = visible;
-		sqlx::query(
-			&reinhardt::query::Query::insert()
-				.into_table(reinhardt::query::Alias::new("artifacts"))
-				.columns([
-					reinhardt::query::Alias::new("id"),
-					reinhardt::query::Alias::new("thread_id"),
-					reinhardt::query::Alias::new("task_id"),
-					reinhardt::query::Alias::new("kind"),
-					reinhardt::query::Alias::new("name"),
-					reinhardt::query::Alias::new("content"),
-					reinhardt::query::Alias::new("created_by"),
-					reinhardt::query::Alias::new("idempotency_key"),
-					reinhardt::query::Alias::new("created_at"),
-					reinhardt::query::Alias::new("tenant"),
-				])
-				.from_subquery(
-					reinhardt::query::Query::select()
-						.expr(reinhardt::query::Expr::cust("GEN_RANDOM_UUID()"))
-						.expr(SimpleExpr::CustomWithExpr(
-							"(?)".to_owned(),
-							vec![Expr::value(query_bind_1.to_owned()).into()],
-						))
-						.expr(SimpleExpr::CustomWithExpr(
-							"(?)".to_owned(),
-							vec![Expr::value(query_bind_2.to_owned()).into()],
-						))
-						.expr(reinhardt::query::Expr::cust("'text'"))
-						.expr(reinhardt::query::Expr::cust("'Visible'"))
-						.expr(reinhardt::query::Expr::cust("'\"readable\"'"))
-						.expr(reinhardt::query::Expr::cust("'alice'"))
-						.expr(reinhardt::query::Expr::cust("'visible'"))
-						.expr(reinhardt::query::Expr::cust(
-							"CURRENT_TIMESTAMP - INTERVAL '1 DAY'",
-						))
-						.expr(Expr::value("acme"))
-						.to_owned(),
-				)
-				.to_string(reinhardt::query::PostgresQueryBuilder),
-		)
-		.execute(f.store.pool.fixture_driver())
-		.await
-	}
-	.unwrap();
-	bundle["policies"].as_array_mut().unwrap().push(json!({"id":"hide-task","effect":"deny","subjects":{"ids":["alice"]},"actions":["task.read"],"resources":{"kinds":["task"],"ids":[hidden]}}));
+	bundle["policies"].as_array_mut().unwrap().push(json!({"id":"deny-produced-output","effect":"deny","subjects":{"ids":["alice"]},"actions":["message.read"],"resources":{"kinds":["message"],"ids":[output.id]}}));
 	assert_eq!(
 		common::post(
 			&app,
 			&f.config.api_token,
 			"/api/authorization/acme",
-			json!({"expected_revision":1,"bundle":bundle})
+			json!({"expected_revision":2,"bundle":bundle})
 		)
 		.await
 		.0,
 		200
 	);
-	// The Artifacts window scans the 50 newest candidates, all behind the
-	// hidden Task, and stops there instead of reaching the older readable one
-	// (#664 decision 1); the cursor only says older items exist.
+	assert_eq!(
+		common::get(&app, &token, &format!("/api/executions/{}", run.id))
+			.await
+			.0,
+		403
+	);
 	let (status, state) = common::get(&app, &token, "/api/state").await;
-	assert_eq!(status, 200, "{state}");
-	assert!(state["artifacts"].as_array().unwrap().is_empty(), "{state}");
-	assert!(state["next_cursors"]["artifacts"].is_string(), "{state}");
-	assert!(!state.to_string().contains("\"hidden\""), "{state}");
-	// The older readable artifact is outside the bounded candidate window,
-	// rather than denied. Once it enters the window it remains visible.
-	let delete = reinhardt::query::Query::delete()
-		.from_table(reinhardt::query::Alias::new("artifacts"))
-		.and_where(Expr::col("thread_id").eq(Expr::value(thread)))
-		.and_where(Expr::col("task_id").eq(Expr::value(hidden)))
-		.to_string(reinhardt::query::PostgresQueryBuilder);
-	sqlx::query(&delete)
-		.execute(f.store.pool.fixture_driver())
-		.await
-		.unwrap();
-	let (status, state) = request(&app, &token, "GET", "/api/state", Value::Null).await;
 	assert_eq!(status, 200);
-	assert_eq!(state["artifacts"].as_array().unwrap().len(), 1);
-	assert_eq!(state["artifacts"][0]["content"], "readable");
+	assert!(state["runs"].as_array().unwrap().is_empty());
+	drop(server);
 	cleanup(f, &url, &schema).await;
 }
 
@@ -1368,12 +1222,14 @@ fn retained_snapshot_revocation_provider_router(
         let seen=seen.clone();let pool=pool.clone();async move {
             seen.fetch_add(1,Ordering::SeqCst);
             let context: Value = crate::common::captured_context(&body);
-            let artifact_id = context["snapshot"]["thread"]["artifacts"][0]["id"].clone();
-            assert!(artifact_id.is_string());
-            assert!(!body.to_string().contains("private-artifact-content"));
-            let sources:i64=sqlx::query_scalar(&reinhardt::query::Query::select().expr(reinhardt::query::Expr::cust("COUNT(*)")).from(reinhardt::query::Alias::new("authorization_run_reads")).and_where(reinhardt::query::Expr::cust("resource_kind = 'artifact'")).to_string(reinhardt::query::PostgresQueryBuilder)).fetch_one(&pool).await.unwrap();
+            let source_id = context["snapshot"]["thread"]["messages"].as_array().unwrap().iter()
+                .find(|message| message["content_preview"].as_str().is_some_and(|preview| preview.starts_with("protected source:")))
+                .unwrap()["id"].clone();
+            assert!(source_id.is_string());
+            assert!(!body.to_string().contains("private-source-content"));
+            let sources:i64=sqlx::query_scalar(&reinhardt::query::Query::select().expr(reinhardt::query::Expr::cust("COUNT(*)")).from(reinhardt::query::Alias::new("authorization_run_reads")).and_where(reinhardt::query::Expr::cust("resource_kind = 'message'")).to_string(reinhardt::query::PostgresQueryBuilder)).fetch_one(&pool).await.unwrap();
             assert_eq!(sources,20,"only records exposed by the bounded observation page are tracked before provider I/O");
-            reinhardt::Response::ok().with_json(&json!({"choices":[{"index":0,"finish_reason":"tool_calls","message":{"role":"assistant","content":null,"tool_calls":[{"id":"read","type":"function","function":{"name":"thread_read","arguments":json!({"kind":"artifact","id":artifact_id}).to_string()}}]}}],"usage":{"prompt_tokens":1,"completion_tokens":1}})).unwrap()
+            reinhardt::Response::ok().with_json(&json!({"choices":[{"index":0,"finish_reason":"tool_calls","message":{"role":"assistant","content":null,"tool_calls":[{"id":"read","type":"function","function":{"name":"thread_read","arguments":json!({"kind":"message","id":source_id}).to_string()}}]}}],"usage":{"prompt_tokens":1,"completion_tokens":1}})).unwrap()
         }
     })).into_server_router();
 

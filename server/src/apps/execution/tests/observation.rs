@@ -318,7 +318,7 @@ async fn observations_do_not_recursively_embed_the_invocation_journal(
 			"thread_read_plan":{"step":prepared_run.step,"cursor":0,"call":{"id":"read-1","name":"workspace_read","arguments":{"max_chars":97}},"result":{"content":"stable chunk"}}
 		}),
 	)));
-	let prepared_input = json!({"kind":"artifact","id":Uuid::new_v4(),"max_chars":97});
+	let prepared_input = json!({"kind":"message","id":Uuid::new_v4(),"max_chars":97});
 	f.store
 		.invocation_start(
 			&scope,

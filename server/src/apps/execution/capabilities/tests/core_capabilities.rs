@@ -1142,7 +1142,6 @@ async fn configure_approvals(mut c: CoreFixture) -> (CoreFixture, aidash_server:
 		"skill",
 		"memory",
 		"working_area",
-		"artifact",
 		"human_request"
 	]);
 	// A dormant default still requires current Registry metadata visibility.

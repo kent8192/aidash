@@ -107,14 +107,14 @@ async fn state_statement_count_is_bounded_with_denied_provenance_and_human_reque
 		.fetch_one(db)
 		.await
 		.unwrap();
-	let artifacts = [Uuid::new_v4(), Uuid::new_v4()];
-	for id in artifacts {
-		sqlx::query("INSERT INTO artifacts (id, tenant, thread_id, task_id, kind, name, content, created_by, idempotency_key) VALUES ($1, 'acme', $2, $3, 'json', 'Source', '{}', 'alice', $1::text)")
-			.bind(id).bind(thread).bind(first_task).execute(db).await.unwrap();
+	let messages = [Uuid::new_v4(), Uuid::new_v4()];
+	for id in messages {
+		sqlx::query("INSERT INTO messages (id, tenant, thread_id, sender, content, idempotency_key) VALUES ($1, 'acme', $2, 'alice', 'Source', $1::text)")
+			.bind(id).bind(thread).execute(db).await.unwrap();
 	}
 	bundle["policies"].as_array_mut().unwrap().push(json!({
 		"id":"deny-source", "effect":"deny", "subjects":{"ids":["alice"]},
-		"actions":["artifact.read"], "resources":{"kinds":["artifact"],"ids":[artifacts[1]]}
+		"actions":["message.read"], "resources":{"kinds":["message"],"ids":[messages[1]]}
 	}));
 	let (status, body) = common::request(
 		&app,
@@ -163,8 +163,8 @@ async fn state_statement_count_is_bounded_with_denied_provenance_and_human_reque
 		} else {
 			visible.push(run);
 		}
-		sqlx::query("INSERT INTO authorization_run_reads (run_id, tenant, thread_id, resource_kind, resource_id) VALUES ($1, 'acme', $2, 'artifact', $3)")
-			.bind(run).bind(thread).bind(artifacts[usize::from(is_hidden)]).execute(db).await.unwrap();
+		sqlx::query("INSERT INTO authorization_run_reads (run_id, tenant, thread_id, resource_kind, resource_id) VALUES ($1, 'acme', $2, 'message', $3)")
+			.bind(run).bind(thread).bind(messages[usize::from(is_hidden)]).execute(db).await.unwrap();
 		if index == 0 {
 			let request = Uuid::new_v4();
 			sqlx::query("INSERT INTO human_requests (id, tenant, thread_id, run_id, kind, prompt, request_key, created_at) VALUES ($1, 'acme', $2, $3, 'QUESTION', 'Still waiting?', 'measure-mixed', now())")

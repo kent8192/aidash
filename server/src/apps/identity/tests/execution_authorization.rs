@@ -8452,7 +8452,7 @@ const SUBNODE_TOOLS: [&str; 6] = [
 	"thread_read",
 	"thread_observe",
 	"task_wait",
-	"artifact_publish",
+	"deliverable_note",
 	"human_request",
 	"connection_request",
 ];
@@ -8884,7 +8884,7 @@ const SUBNODE_FILE_TOOLS: [&str; 9] = [
 	"thread_read",
 	"thread_observe",
 	"task_wait",
-	"artifact_publish",
+	"deliverable_note",
 	"human_request",
 	"connection_request",
 	"file_read",

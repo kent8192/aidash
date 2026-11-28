@@ -117,7 +117,7 @@ impl aidash_application::ports::graph::GraphVisibility for Visibility<'_, '_> {
 			Candidate::Task(row) => access.task_visible(row).await.map_err(Into::into),
 			Candidate::Run(row) => access.run_visible(row).await.map_err(Into::into),
 			_ => Err(aidash_application::Error::Invalid(
-				"record visibility requires a task, run or artifact".into(),
+				"record visibility requires a task or run".into(),
 			)),
 		}
 	}

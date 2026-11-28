@@ -2597,7 +2597,13 @@ async fn semantic_dependencies_hide_both_node_outputs_and_journals_after_source_
 		body.to_string().contains("Scoped remote progress"),
 		"{body}"
 	);
-	let artifact = body["artifacts"][0]["id"].clone();
+	let artifact = body["messages"]
+		.as_array()
+		.unwrap()
+		.iter()
+		.find(|message| message["completion"].is_object())
+		.unwrap()["id"]
+		.clone();
 	let receipt_path = format!("/api/tasks/{}/remote-grants/{}/semantic", p.task, p.grant);
 	let (status, receipt) = request(&p.aa, &p.token, "GET", &receipt_path, json!({})).await;
 	assert_eq!(status, 200, "{receipt}");
@@ -2647,7 +2653,7 @@ async fn semantic_dependencies_hide_both_node_outputs_and_journals_after_source_
 			.0,
 		403
 	);
-	let (status,body)=request(&p.aa,&p.token,"POST",&format!("/api/threads/{thread}/semantic/entries"),json!({"key":"derived-reingestion","expected_revision":0,"source":{"kind":"artifact","id":artifact},"metadata":{}})).await;
+	let (status,body)=request(&p.aa,&p.token,"POST",&format!("/api/threads/{thread}/semantic/entries"),json!({"key":"derived-reingestion","expected_revision":0,"source":{"kind":"message","id":artifact},"metadata":{}})).await;
 	assert_eq!(status, 403, "{body}");
 	let (status, body) = request(
 		&p.aa,
@@ -3401,7 +3407,7 @@ async fn new_cross_node_scoped_transaction_is_rejected_before_manifest_persisten
 		.and_where(SimpleExpr::CustomWithExpr("(id=?)".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into()])).to_string(PostgresQueryBuilder))
 		.execute(p.b.store.pool.fixture_driver()).await }.unwrap();
 	let mut manifest:Manifest=serde_json::from_value(json!({"id":Uuid::new_v4(),"coordinator":node_of(&p.a),"isolation":"serializable","deadline":chrono::Utc::now()+chrono::Duration::minutes(5),
-		"participants":[{"node_id":node_of(&p.a),"mutations":[{"kind":"complete_task","task_id":task.id,"expected_revision":task.revision,"artifact":{"kind":"text","name":"Answer","content":"Atomic remote answer"}}]},
+		"participants":[{"node_id":node_of(&p.a),"mutations":[{"kind":"complete_task","task_id":task.id,"expected_revision":task.revision,"text":"Atomic remote answer"}]},
 		{"node_id":node_of(&p.b),"mutations":[{"kind":"finish_run","run_id":run.id,"task_id":task.id,"expected_revision":run.revision}]}]})).unwrap();
 	manifest
 		.participants
@@ -7261,7 +7267,7 @@ async fn deployment_administrator_content_views_cannot_bypass_both_node_subject_
 		.filter(|message| message.completion.is_some())
 		.find(|message| message.completion.is_some())
 		.unwrap();
-	let (status,_)=request(&p.aa,&p.a.config.api_token,"POST",&format!("/api/threads/{}/semantic/entries",task.thread_id),json!({"key":"deployment-administrator-bypass","expected_revision":0,"source":{"kind":"artifact","id":artifact.id},"metadata":{}})).await;
+	let (status,_)=request(&p.aa,&p.a.config.api_token,"POST",&format!("/api/threads/{}/semantic/entries",task.thread_id),json!({"key":"deployment-administrator-bypass","expected_revision":0,"source":{"kind":"message","id":artifact.id},"metadata":{}})).await;
 	assert_eq!(status, 403);
 	let (status, independent) = request(
 		&p.aa,
@@ -7568,7 +7574,7 @@ async fn a_cross_node_producer_cycle_terminates_and_still_requires_receiver_auth
 		.filter(|message| message.completion.is_some())
 		.find(|message| message.completion.is_some())
 		.unwrap();
-	// Reproduce a persisted observation cycle: A's grant reads an A Artifact
+	// Reproduce a persisted observation cycle: A's grant reads an A Completion Message
 	// produced by that grant's B Run. Such provenance must neither recurse over
 	// HTTP nor suppress the receiver's current-reader check.
 	{
@@ -7598,7 +7604,7 @@ async fn a_cross_node_producer_cycle_terminates_and_still_requires_receiver_auth
 							"(?)".to_owned(),
 							vec![Expr::value(query_bind_2.to_owned()).into()],
 						))
-						.expr(Expr::cust("'artifact'"))
+						.expr(Expr::cust("'message'"))
 						.expr(SimpleExpr::CustomWithExpr(
 							"(?)".to_owned(),
 							vec![Expr::value(query_bind_3.to_owned()).into()],
@@ -7650,7 +7656,13 @@ async fn a_cross_node_producer_cycle_terminates_and_still_requires_receiver_auth
 	)
 	.await;
 	assert_eq!(status, 200, "{body}");
-	assert!(body["artifacts"].as_array().unwrap().is_empty());
+	assert!(
+		!body["messages"]
+			.as_array()
+			.unwrap()
+			.iter()
+			.any(|message| message["completion"].is_object())
+	);
 	p.close().await;
 }
 
@@ -11497,15 +11509,8 @@ async fn a_run_on_another_node_abandons_the_unassigned_task_it_created(
 		snapshot
 			.messages
 			.iter()
-			.filter(|message| message.completion.is_some())
-			.collect::<Vec<_>>()
-			.iter()
-			.any(|artifact| {
-				artifact
-					.content
-					.as_str()
-					.is_some_and(|text| text.contains("Remote subtask"))
-			})
+			.any(|message| message.completion.is_some()
+				&& message.content.contains("Remote subtask"))
 	);
 	p.close().await;
 }

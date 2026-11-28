@@ -1202,14 +1202,21 @@ async fn script_task(c: &CoreFixture, duty: Uuid, role: &str) -> (Uuid, String) 
 /// its result. No Execution Pod runs in these tests; the harness side is
 /// covered by `aidash-harness`'s duty_script tests.
 async fn finish_script(c: &CoreFixture, task: Uuid, stdout: &str) {
-	let driver = c.f.store.pool.fixture_driver();
-	sqlx::query("INSERT INTO artifacts (id, tenant, thread_id, task_id, kind, name, content, created_by, idempotency_key) SELECT $1, tenant, thread_id, id, 'text', 'Script result', to_jsonb($2::text), 'test', $1::text FROM tasks WHERE id = $3")
-		.bind(Uuid::new_v4())
-		.bind(stdout)
-		.bind(task)
-		.execute(driver)
-		.await
-		.unwrap();
+	let task_record = c.f.store.task(&TEST_FIXTURE, task).await.unwrap();
+	let completion =
+		aidash_domain::deliverable::Completion::new(task, "script", stdout.into(), None);
+	let mut tx = c.f.store.pool.begin(&TEST_FIXTURE).await.unwrap();
+	crate::apps::workspaces::models::Message::append_completion(
+		&mut tx,
+		&task_record,
+		"test",
+		&format!("script:{task}"),
+		None,
+		&completion,
+	)
+	.await
+	.unwrap();
+	tx.commit().await.unwrap();
 	finish_task(c, task).await;
 }
 

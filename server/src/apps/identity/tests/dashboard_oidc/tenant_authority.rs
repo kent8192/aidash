@@ -1399,14 +1399,7 @@ async fn a_deployment_administrator_holds_no_tenant_content_or_settings_authorit
 		.await,
 	] {
 		assert_eq!(state.0, 200, "{}", state.1);
-		for collection in [
-			"threads",
-			"tasks",
-			"runs",
-			"events",
-			"artifacts",
-			"conversations",
-		] {
+		for collection in ["threads", "tasks", "runs", "events", "conversations"] {
 			assert_eq!(state.1[collection], json!([]), "{collection}: {}", state.1);
 		}
 		assert!(!state.1.to_string().contains("Confidential"));
