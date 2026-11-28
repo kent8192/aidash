@@ -83,7 +83,7 @@ pub fn execution(
 			(
 				"agent",
 				"research",
-				json!({"model":{"id":"model","version":"1.0.0"},"instructions":"Test approved work","schema_version":1,"bindings":[{"kind":"tool","target":{"registry_deployment":node,"id":"http","version":"1.0.0"},"alias":"plugin_0","narrow":{}}],"remove_default":[]}),
+				json!({"model":{"id":"model","version":"1.0.0"},"instructions":"Test approved work","bindings":[{"kind":"tool","target":{"registry_deployment":node,"id":"http","version":"1.0.0"},"alias":"plugin_0","narrow":{}}],"remove_default":[]}),
 			),
 		] {
 			let entry = json!({"id":id,"version":"1.0.0","kind":kind,"name":{"en":id},"description":{"en":"fixture"},"capabilities":[],"languages":["en"],"schema":{"type":"object"},"config":config});
