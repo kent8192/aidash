@@ -134,3 +134,14 @@ fn instructions_and_node_administration_are_administrator_actions() {
 	assert!(!crate::identity::tenancy::MEMBER_ACTIONS.contains(&NODE_ADMINISTER));
 	assert!(!crate::policy::EXPLICIT_ACTIONS.contains(&NODE_ADMINISTER));
 }
+
+#[test]
+fn duties_never_run_on_the_tenant_configurator() {
+	// The Configurator must name the dedicated Agent instead of defaulting to itself.
+	assert!(duty_agent_refusal(CONFIGURATOR_ID, None).is_some());
+	assert!(duty_agent_refusal(CONFIGURATOR_ID, Some(CONFIGURATOR_ID)).is_some());
+	assert!(duty_agent_refusal(CONFIGURATOR_ID, Some("shop-reels")).is_none());
+	// No other Agent may hand a Duty to it either; their own default stays.
+	assert!(duty_agent_refusal("shop-reels", Some(CONFIGURATOR_ID)).is_some());
+	assert!(duty_agent_refusal("shop-reels", None).is_none());
+}

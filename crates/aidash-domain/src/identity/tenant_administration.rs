@@ -15,6 +15,22 @@ pub fn is_configurator_subject(subject: &str) -> bool {
 		.is_some_and(|(id, version)| id == CONFIGURATOR_ID && !version.is_empty())
 }
 
+/// Recurring work never runs on the Tenant Configurator: its Tasks would carry
+/// a Tenant Administrator's whole authority and its costs on every tick. When
+/// it sets up a Duty it names the dedicated Agent it prepared, and no Agent may
+/// hand a Duty to the Configurator. Returns the refusal shown to the model.
+pub fn duty_agent_refusal(caller: &str, agent: Option<&str>) -> Option<&'static str> {
+	match agent {
+		Some(CONFIGURATOR_ID) => Some(
+			"the Tenant Configurator does not carry out Duties; create a dedicated Agent for this work and name it as agent",
+		),
+		None if caller == CONFIGURATOR_ID => Some(
+			"name the dedicated Agent that carries out this Duty as agent; the Tenant Configurator does not carry out Duties",
+		),
+		_ => None,
+	}
+}
+
 /// The mapped person must hold the Tenant administration permissions (ADRs 0021, 0026).
 pub fn configurator_administrator(bundle: &PolicyBundle, person: &str, deployment: &str) -> bool {
 	bundle

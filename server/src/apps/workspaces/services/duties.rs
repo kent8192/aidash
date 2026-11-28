@@ -1387,6 +1387,18 @@ pub(crate) async fn stop_for_tenant(
 		.len())
 }
 
+/// The Tenant Configurator names the dedicated Agent instead of defaulting
+/// to itself; `check_definition` refuses a Duty naming the Configurator.
+fn refuse_configurator_duty(caller: &str, agent: Option<&EntityRef>) -> Result<()> {
+	match aidash_domain::identity::tenant_administration::duty_agent_refusal(
+		caller,
+		agent.map(|agent| agent.id.as_str()),
+	) {
+		Some(reason) => Err(Error::Invalid(reason.into())),
+		None => Ok(()),
+	}
+}
+
 /// A Duty tool call by an Agent (#557 decisions 5 to 7, #1011). It acts for
 /// the person at the root of the Run's chain, with the credential the Run
 /// was admitted with, in the Run's Thread. A Run a Duty started may set
@@ -1467,6 +1479,7 @@ pub async fn agent_tool(
 			"duty_create" => {
 				let input: tool::Create =
 					serde_json::from_value(input).map_err(|e| Error::Invalid(e.to_string()))?;
+				refuse_configurator_duty(&run.agent_id, input.agent.as_ref())?;
 				let definition = Definition {
 					task_model: input.task_model,
 					title: input.title,

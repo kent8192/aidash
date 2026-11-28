@@ -153,6 +153,13 @@ async fn check_definition(
 			})?;
 	}
 	definition.validate(scope.now())?;
+	// Every way in (person, Agent tool, template, resume) meets this rule.
+	if let Some(reason) = aidash_domain::identity::tenant_administration::duty_agent_refusal(
+		"",
+		Some(definition.agent.id.as_str()),
+	) {
+		return Err(Error::Invalid(reason.into()));
+	}
 	// Its Runs start Tasks here, so the Requester must be able to.
 	scope.require_thread(thread, "task.create").await?;
 	scope

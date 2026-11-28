@@ -261,6 +261,22 @@ fn alice_in(thread: Uuid) -> Fake {
 
 #[rstest]
 #[tokio::test]
+async fn no_duty_is_staffed_by_the_tenant_configurator() {
+	// Arrange
+	let thread = Uuid::new_v4();
+	let mut scope = alice_in(thread);
+	let mut on_configurator = definition();
+	on_configurator.agent.id =
+		aidash_domain::identity::tenant_administration::CONFIGURATOR_ID.into();
+	// Act
+	let refused = register(&mut scope, thread, on_configurator, Origin::Person).await;
+	// Assert: recurring work runs on a dedicated Agent, whoever sets it up.
+	assert!(matches!(refused, Err(Error::Invalid(_))), "{refused:?}");
+	assert!(scope.duties.is_empty());
+}
+
+#[rstest]
+#[tokio::test]
 async fn a_registered_duty_acts_as_its_requester_and_knows_its_next_time() {
 	// Arrange
 	let thread = Uuid::new_v4();
