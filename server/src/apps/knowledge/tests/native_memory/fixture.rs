@@ -1,6 +1,5 @@
 //! Shared native-memory fixture; integration and repository tests use the same ownership.
 use super::DatabaseFixture;
-use crate::tenant_roots::default_node_in;
 use aidash_application::tenancy::TEST_FIXTURE;
 use aidash_domain::{memory::*, registry::EntityRef};
 use aidash_server::{
@@ -12,6 +11,10 @@ use reinhardt::db::orm::Model;
 use rstest::fixture;
 use serde_json::json;
 use uuid::Uuid;
+
+#[path = "../../../execution/tests/support/tenant_roots.rs"]
+mod tenant_roots;
+
 pub(super) fn reference(id: &str) -> EntityRef {
 	EntityRef {
 		id: id.into(),
@@ -228,7 +231,7 @@ async fn setup_endpoint_policy_with_window(
 		})
 		.await
 		.unwrap();
-	default_node_in(store.pool.fixture_driver(), "acme").await;
+	tenant_roots::default_node_in(store.pool.fixture_driver(), "acme").await;
 	let registry = Registry::new(store.pool.clone(), &store.deployment).unwrap();
 	registry
 		.seed(&aidash_domain::tenancy::TenantName::new("acme").unwrap())
