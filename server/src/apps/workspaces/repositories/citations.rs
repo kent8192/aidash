@@ -1,6 +1,6 @@
 //! Read metadata for historical Working Area citations.
 use crate::apps::workspaces::services::access::Lease;
-use crate::{Error, Result, authorization::access::Access, store::Store};
+use crate::{Error, Result, store::Store};
 use aidash_application::capabilities::sessions;
 use aidash_domain::threads::channels::{ChannelCitation, CitedFileVersion};
 use reinhardt::query::{
