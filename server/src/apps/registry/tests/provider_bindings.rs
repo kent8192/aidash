@@ -191,7 +191,7 @@ async fn database_admits_personal_transports_and_rejects_invalid_connection_fiel
 
 #[rstest]
 #[tokio::test]
-async fn context_descriptors_remain_valid_alongside_native_memory_roles(
+async fn registry_accepts_context_sources_and_rejects_retired_memory_descriptors(
 	#[future] database: DatabaseFixture,
 ) {
 	let database = database.await;
@@ -206,13 +206,23 @@ async fn context_descriptors_remain_valid_alongside_native_memory_roles(
 			"config":{"schema_version":1,"source":{"adapter":adapter}}
 		}))
 		.unwrap();
-		let saved = registry
+		let result = registry
 			.register(
 				&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
 				entry.clone(),
 			)
-			.await
-			.unwrap();
+			.await;
+		if kind == "memory" {
+			let error = result.unwrap_err();
+			assert!(
+				error
+					.to_string()
+					.contains("unsupported Registry kind memory"),
+				"{error}"
+			);
+			continue;
+		}
+		let saved = result.unwrap();
 		assert_eq!(saved.config, entry.config);
 		assert_eq!(
 			registry
