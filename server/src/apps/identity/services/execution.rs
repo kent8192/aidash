@@ -519,7 +519,7 @@ impl WorkerAuthority {
 		}
 		let search = crate::apps::knowledge::serializers::contracts::Search {
 			query: input["query"].as_str().unwrap_or_default().to_owned(),
-			image: None,
+
 			attachment: attachment.clone(),
 			agent: None,
 			metadata: json!({}),

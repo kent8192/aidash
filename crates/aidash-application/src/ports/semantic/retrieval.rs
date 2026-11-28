@@ -25,15 +25,6 @@ pub trait SemanticRetrievalSession:
 	async fn image_pointer(&mut self, _thread: Uuid, _source: &Source) -> Result<Option<Value>> {
 		Ok(None)
 	}
-	/// Resolve an image only under the named Run's current Working Area authority.
-	async fn query_image(
-		&mut self,
-		_thread: Uuid,
-		_query: &aidash_domain::semantic::retrieval::ImageQuery,
-		_max_bytes: usize,
-	) -> Result<super::IndexImage> {
-		Err(crate::Error::Forbidden)
-	}
 	/// Whether the query's Run itself selected this attachment, with these
 	/// bytes, for its own inference.
 	async fn attachment_seen(

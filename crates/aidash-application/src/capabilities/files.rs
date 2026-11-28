@@ -1017,23 +1017,10 @@ pub(crate) async fn publish_with_known_media(
 	}
 	area.revision += 1;
 	scope.persist_manifest(area).await?;
-	let changes = if previous_generation != area.generation {
-		let mut changes = aidash_domain::semantic::indexing::image_changes(&previous, &[]);
-		changes.extend(aidash_domain::semantic::indexing::image_changes(
-			&[],
-			&current,
-		));
-		changes
-	} else {
-		aidash_domain::semantic::indexing::image_changes(&previous, &current)
-	};
 	// A receiving Area belongs to a Home whose Thread this Node does not hold: no Thread
-	// image index or event stream here can take what it changes (ADR 0139).
+	// event stream here can take what it changes (ADR 0139).
 	if area.is_remote_home() {
 		return Ok(());
-	}
-	if !changes.is_empty() {
-		scope.image_publication(area, &changes).await?;
 	}
 	scope
 		.event(

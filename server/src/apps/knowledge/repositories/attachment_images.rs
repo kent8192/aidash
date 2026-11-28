@@ -358,7 +358,7 @@ pub(crate) async fn enqueue(
 				.await?;
 			entries.schedule(&pending, &index.collection).await?;
 			if limited {
-				super::image_publications::mark_limit(&mut entries, thread, &pending).await?;
+				mark_limit(&mut entries, thread, &pending).await?;
 			} else {
 				entries
 					.history(
@@ -400,7 +400,7 @@ pub(crate) async fn enqueue(
 		let entry = entries.put(entry, authority.clone()).await?;
 		entries.schedule(&entry, &index.collection).await?;
 		if held >= spec.max_images {
-			super::image_publications::mark_limit(&mut entries, thread, &entry).await?;
+			mark_limit(&mut entries, thread, &entry).await?;
 		} else {
 			entries
 				.history(
@@ -459,7 +459,7 @@ pub(crate) async fn relimit(lease: &mut Lease<'_>, thread: Uuid, max_images: usi
 		if entry.state == "UNSUPPORTED" && entry.last_error.as_deref() == Some("limit") {
 			continue;
 		}
-		super::image_publications::mark_limit(&mut entries, thread, &entry).await?;
+		mark_limit(&mut entries, thread, &entry).await?;
 	}
 	Ok(())
 }
@@ -561,6 +561,35 @@ pub(crate) async fn retire(lease: &mut Lease<'_>, thread: Uuid, attachment: Uuid
 			"DELETED",
 			"Thread Attachment removed",
 		)
+		.await?;
+	Ok(())
+}
+
+async fn mark_limit(entries: &mut Entries<'_, '_>, thread: Uuid, entry: &Entry) -> Result<()> {
+	native::query(
+		&Query::update()
+			.table(Alias::new("semantic_entries"))
+			.value("state", "UNSUPPORTED")
+			.value("last_error", "limit")
+			.value_expr("updated_at", Expr::cust("CLOCK_TIMESTAMP()"))
+			.and_where(Expr::col("id").eq(Expr::value(entry.id)))
+			.to_string(PostgresQueryBuilder),
+	)
+	.execute(&mut **entries.lease.tx())
+	.await?;
+	native::query(
+		&Query::update()
+			.table(Alias::new("semantic_points"))
+			.value("retired", true)
+			.value_expr("next_attempt", Expr::cust("CLOCK_TIMESTAMP()"))
+			.and_where(Expr::col("entry_id").eq(Expr::value(entry.id)))
+			.and_where(Expr::col("retired").eq(Expr::value(false)))
+			.to_string(PostgresQueryBuilder),
+	)
+	.execute(&mut **entries.lease.tx())
+	.await?;
+	entries
+		.history(thread, entry.id, entry.revision, "UNSUPPORTED", "limit")
 		.await?;
 	Ok(())
 }

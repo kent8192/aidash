@@ -32,7 +32,7 @@ struct Scope {
 	superseded: Vec<Uuid>,
 	persisted: Option<Area>,
 	events: Vec<(String, Value)>,
-	image_publications: Vec<Vec<aidash_domain::semantic::indexing::ImageChange>>,
+
 	snapshot: Option<aidash_domain::registry::bindings::BindingSnapshot>,
 	area: Option<Area>,
 	deny_entry: Option<String>,
@@ -193,14 +193,6 @@ impl FileScopePort for Scope {
 		self.events.push((kind.to_owned(), data));
 		Ok(())
 	}
-	async fn image_publication(
-		&mut self,
-		_: &Area,
-		changes: &[aidash_domain::semantic::indexing::ImageChange],
-	) -> Result<()> {
-		self.image_publications.push(changes.to_vec());
-		Ok(())
-	}
 }
 fn fixture(bytes: &[u8]) -> (Scope, Area, FileEntry) {
 	let file = FileEntry {
@@ -241,7 +233,7 @@ fn fixture(bytes: &[u8]) -> (Scope, Area, FileEntry) {
 			superseded: vec![],
 			persisted: None,
 			events: vec![],
-			image_publications: vec![],
+
 			snapshot: None,
 			area: None,
 			deny_entry: None,
@@ -659,7 +651,7 @@ async fn publication_tombstones_only_removed_working_objects() {
 }
 
 #[tokio::test]
-async fn a_receiving_area_publishes_without_a_thread_index_or_event() {
+async fn a_receiving_area_publishes_without_a_thread_event() {
 	let (mut scope, mut area, mut image) = fixture(b"bytes");
 	image.path = "image.png".into();
 	image.media_type = "image/png".into();
@@ -671,49 +663,8 @@ async fn a_receiving_area_publishes_without_a_thread_index_or_event() {
 	publish(&mut scope, &mut area).await.unwrap();
 	// The revision is still saved, so the Area's readers see the Reference set.
 	assert_eq!(scope.persisted.as_ref().unwrap().revision, area.revision);
-	assert!(scope.image_publications.is_empty());
+
 	assert!(scope.events.is_empty());
-}
-
-#[tokio::test]
-async fn publication_records_image_versions_in_publication_order() {
-	use aidash_domain::semantic::indexing::ImageChange;
-	let (mut scope, mut area, mut old) = fixture(b"bytes");
-	old.path = "image.png".into();
-	old.media_type = "image/png".into();
-	let mut replacement = old.clone();
-	replacement.file_id = Uuid::new_v4();
-	let mut added = old.clone();
-	added.file_id = Uuid::new_v4();
-	added.path = "next.png".into();
-	scope.previous = json!([old]);
-	area.manifest = json!([replacement, added]);
-	publish(&mut scope, &mut area).await.unwrap();
-	assert_eq!(scope.image_publications.len(), 1);
-	let changes = &scope.image_publications[0];
-	assert!(matches!(&changes[0], ImageChange::Removed { file_id, .. } if *file_id == old.file_id));
-	assert!(
-		matches!(&changes[1], ImageChange::Published { file_id, .. } if *file_id == replacement.file_id)
-	);
-	assert!(
-		matches!(&changes[2], ImageChange::Published { file_id, .. } if *file_id == added.file_id)
-	);
-}
-
-#[tokio::test]
-async fn a_new_area_generation_republishes_unchanged_image_versions() {
-	use aidash_domain::semantic::indexing::ImageChange;
-	let (mut scope, mut area, mut image) = fixture(b"bytes");
-	image.path = "image.png".into();
-	image.media_type = "image/png".into();
-	scope.previous = json!([image]);
-	scope.previous_generation = Some(area.generation - 1);
-	area.manifest = json!([image]);
-	publish(&mut scope, &mut area).await.unwrap();
-	let changes = &scope.image_publications[0];
-	assert!(
-		matches!(&changes[..], [ImageChange::Removed { file_id: old, .. }, ImageChange::Published { file_id: new, .. }] if *old == image.file_id && *new == image.file_id)
-	);
 }
 
 #[tokio::test]
@@ -725,7 +676,6 @@ async fn publication_detects_images_in_generic_binary_files_by_signature() {
 	area.manifest = json!([file]);
 	publish(&mut scope, &mut area).await.unwrap();
 	assert_eq!(area.manifest[0]["media_type"], "image/png");
-	assert_eq!(scope.image_publications.len(), 1);
 }
 
 fn invoke_fixture(operation: &str, narrow: Value) -> (Scope, RunMetadata, FileEntry) {

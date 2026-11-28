@@ -49,13 +49,10 @@ import {
 
 import { Alert, Check, Hint } from "./components/patterns";
 
-type EditableKind = Exclude<
-  SemanticSource["kind"],
-  "working_image" | "attachment_image"
->;
-/** Images enter the index with their File or Thread Attachment; they are never edited here. */
+type EditableKind = Exclude<SemanticSource["kind"], "attachment_image">;
+/** Images enter the index with their Thread Attachment. */
 function isImageSource(kind: string): boolean {
-  return kind === "working_image" || kind === "attachment_image";
+  return kind === "attachment_image";
 }
 function hasRecordId(
   source: SemanticSource,

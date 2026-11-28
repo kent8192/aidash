@@ -424,29 +424,6 @@ async fn deletion_and_reindex_keep_separate_source_authority_paths(#[case] delet
 #[case::delete(true)]
 #[case::reindex(false)]
 #[tokio::test]
-async fn working_image_lifecycle_is_managed_by_file_publication(#[case] delete: bool) {
-	let mut old = entry();
-	old.source = serde_json::to_value(Source::WorkingImage {
-		area_id: Uuid::from_u128(7),
-		generation: 1,
-		file_id: Uuid::from_u128(8),
-		path: "image.png".into(),
-	})
-	.unwrap();
-	let mut scope = Scope {
-		old: Some(old.clone()),
-		..Default::default()
-	};
-	assert!(matches!(
-		change(&mut scope, old.thread_id, old.id, 1, delete).await,
-		Err(Error::Invalid(_))
-	));
-	assert!(!scope.calls.contains(&"change"));
-}
-#[rstest]
-#[case::delete(true)]
-#[case::reindex(false)]
-#[tokio::test]
 async fn mutation_replays_check_read_authority_and_skip_new_effects(#[case] delete: bool) {
 	let mut old = entry();
 	old.revision = 2;
@@ -520,38 +497,6 @@ async fn listing_counts_the_entries_a_silent_node_left_out_and_not_the_vanished_
 }
 
 #[rstest]
-#[case::allowed(true, false)]
-#[case::denied(false, false)]
-#[case::deleted_without_area_access(false, true)]
-#[tokio::test]
-async fn image_index_state_is_listed_only_under_current_area_authority(
-	#[case] visible: bool,
-	#[case] deleted: bool,
-) {
-	let mut image = entry();
-	image.source = serde_json::to_value(Source::WorkingImage {
-		area_id: Uuid::from_u128(7),
-		generation: 1,
-		file_id: Uuid::from_u128(8),
-		path: "image.png".into(),
-	})
-	.unwrap();
-	image.state = "PENDING".into();
-	image.deleted = deleted;
-	let mut scope = Scope {
-		rows: vec![image],
-		text: None,
-		image_visible: visible,
-		..Default::default()
-	};
-	let (result, _) = entries(&mut scope, Uuid::from_u128(1)).await.unwrap();
-	assert_eq!(result.len(), usize::from(visible));
-	if visible {
-		assert_eq!(result[0].state, "PENDING");
-	}
-	assert!(!scope.calls.contains(&"source"));
-}
-#[rstest]
 #[tokio::test]
 async fn history_advances_past_two_hundred_denied_candidates() {
 	let row = |sequence, entry_id| History {
@@ -590,56 +535,7 @@ async fn history_advances_past_two_hundred_denied_candidates() {
 	);
 }
 
-#[rstest]
-#[case::allowed(true)]
-#[case::denied(false)]
-#[tokio::test]
-async fn image_history_requires_current_area_authority(#[case] visible: bool) {
-	let mut image = entry();
-	image.source = serde_json::to_value(Source::WorkingImage {
-		area_id: Uuid::from_u128(7),
-		generation: 1,
-		file_id: Uuid::from_u128(8),
-		path: "image.png".into(),
-	})
-	.unwrap();
-	let row = History {
-		sequence: 1,
-		thread_id: Uuid::from_u128(1),
-		entry_id: Some(image.id),
-		revision: 1,
-		state: "PENDING".into(),
-		detail: "fixture".into(),
-		created_at: Utc::now(),
-	};
-	let mut scope = Scope {
-		old: Some(image),
-		image_visible: visible,
-		pages: VecDeque::from([vec![row]]),
-		..Default::default()
-	};
-	assert_eq!(
-		history(&mut scope, Uuid::from_u128(1)).await.unwrap().len(),
-		usize::from(visible)
-	);
-}
-
 mod configuration;
-
-#[test]
-fn public_entry_cannot_claim_a_working_area_image() {
-	let mut value = input();
-	value.source = Source::WorkingImage {
-		area_id: Uuid::from_u128(1),
-		generation: 1,
-		file_id: Uuid::from_u128(2),
-		path: "image.png".into(),
-	};
-	assert!(matches!(
-		validate_public_put(&value),
-		Err(Error::Invalid(_))
-	));
-}
 
 #[rstest::rstest]
 #[case("attachment-image:00000000-0000-0000-0000-000000000001")]

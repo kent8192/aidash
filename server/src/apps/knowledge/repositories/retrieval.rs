@@ -59,62 +59,6 @@ impl SemanticRetrievalSession for Retrieval<'_, '_> {
 			.await
 			.map_err(Into::into)
 	}
-	async fn query_image(
-		&mut self,
-		thread: Uuid,
-		input: &aidash_domain::semantic::retrieval::ImageQuery,
-		max_bytes: usize,
-	) -> Result<aidash_application::ports::semantic::IndexImage> {
-		use crate::apps::execution::capabilities::services::sessions;
-		let scope = self
-			.entries
-			.lease
-			.access()
-			.ok_or(aidash_application::Error::Forbidden)?
-			.tenancy()?;
-		let run = self.store.run(&scope, input.run_id).await?;
-		if run.thread_id != thread {
-			return Err(aidash_application::Error::Forbidden);
-		}
-		let access = self
-			.entries
-			.lease
-			.access()
-			.ok_or(aidash_application::Error::Forbidden)?;
-		let area = sessions::for_run(access, &run).await?;
-		sessions::require_current_run(access, &area, &run).await?;
-		if area.id != input.area_id || area.generation != input.generation {
-			return Err(aidash_application::Error::Forbidden);
-		}
-		let source = Source::WorkingImage {
-			area_id: input.area_id,
-			generation: input.generation,
-			file_id: input.file_id,
-			path: input.path.clone(),
-		};
-		let file = super::image_files::current(access, thread, &source)
-			.await?
-			.ok_or(aidash_application::Error::Forbidden)?;
-		if file.digest != input.expected_digest {
-			return Err(aidash_application::Error::Conflict("FILE_CHANGED".into()));
-		}
-		if file.size > max_bytes as u64 {
-			return Err(aidash_application::Error::Invalid(
-				"image query exceeds the configured byte limit".into(),
-			));
-		}
-		if !file.media_type.starts_with("image/") {
-			return Err(aidash_application::Error::Invalid(
-				"query File is not an image".into(),
-			));
-		}
-		let bytes = self.store.capabilities.read(access, &file).await?;
-		Ok(aidash_application::ports::semantic::IndexImage {
-			description: None,
-			media_type: file.media_type,
-			bytes,
-		})
-	}
 	async fn attachment_seen(
 		&mut self,
 		input: &aidash_domain::semantic::retrieval::AttachmentImageQuery,
@@ -210,7 +154,7 @@ impl SemanticRetrievalSession for Retrieval<'_, '_> {
 						))
 						.from(reinhardt::query::Alias::new("semantic_entries"))
 						.and_where(SimpleExpr::CustomWithExpr(
-							"(thread_id = ? AND NOT deleted AND (source->>'kind' NOT IN ('working_image', 'attachment_image') OR state = 'READY'))".to_owned(),
+							"(thread_id = ? AND NOT deleted AND source->>'kind' <> 'working_image' AND (source->>'kind' <> 'attachment_image' OR state = 'READY'))".to_owned(),
 							vec![Expr::value(query_bind_1.to_owned()).into()],
 						))
 						.order_by_expr(
@@ -281,7 +225,6 @@ impl From<&native::Search> for Search {
 	fn from(input: &native::Search) -> Self {
 		Self {
 			query: input.query.clone(),
-			image: input.image.clone(),
 			attachment: input.attachment.clone(),
 			agent: input.agent.clone(),
 			metadata: input.metadata.clone(),
