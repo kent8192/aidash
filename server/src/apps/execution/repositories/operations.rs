@@ -179,6 +179,6 @@ mod read_recheck;
 pub(crate) mod remote_tools;
 #[cfg(test)]
 pub(crate) use read_recheck::stop_pending_run_with_runner;
-mod receipt_output;
+mod stopped_logs;
 
 mod pod_usage;

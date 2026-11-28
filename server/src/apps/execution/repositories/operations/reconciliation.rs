@@ -2,7 +2,7 @@
 use super::Operation;
 use crate::apps::execution::capabilities::{
 	serializers::contracts::{Area as NativeArea, FileEntry},
-	services::{objects::PendingObject, operations, service, sessions, skills},
+	services::{operations, service, sessions, skills},
 };
 use crate::{
 	Result as NativeResult,
@@ -40,7 +40,6 @@ struct Scope<'a> {
 	access: Access,
 	run: Option<Run>,
 	area: Option<NativeArea>,
-	pending: Option<PendingObject>,
 }
 fn domain(operation: &Operation) -> Snapshot {
 	Snapshot {
@@ -129,7 +128,6 @@ impl OperationReconciliationRepository for Repository<'_> {
 			access,
 			run: None,
 			area: None,
-			pending: None,
 		}))
 	}
 	async fn withdraw(&self, snapshot: &Snapshot) -> Result<()> {
@@ -296,74 +294,6 @@ impl OperationReconciliationScope for Scope<'_> {
 		self.store
 			.capabilities
 			.read_chunk(&mut self.access, &file.clone().into(), offset)
-			.await
-			.map_err(Into::into)
-	}
-	async fn verified(&mut self, file: &MountedFile) -> Result<()> {
-		self.store
-			.capabilities
-			.verified(&mut self.access, &file.clone().into())
-			.await
-			.map(|_| ())
-			.map_err(Into::into)
-	}
-	async fn reuse_output(&mut self, digest: &str, size: u64) -> Result<Option<Uuid>> {
-		self.store
-			.capabilities
-			.reference_blob(
-				&mut self.access,
-				self.area.as_ref().expect("reconciliation scope loaded").id,
-				"working",
-				digest,
-				size,
-			)
-			.await
-			.map_err(Into::into)
-	}
-	async fn begin_output(&mut self, size: u64) -> Result<()> {
-		if self.pending.is_some() {
-			return Err(aidash_application::Error::External(
-				"pending operation output already exists".into(),
-			));
-		}
-		self.pending = Some(
-			self.store
-				.capabilities
-				.begin_object(
-					&mut self.access,
-					Some(self.area.as_ref().unwrap().id),
-					"working",
-					size,
-				)
-				.await?,
-		);
-		Ok(())
-	}
-	async fn write_output(&mut self, bytes: &[u8]) -> Result<()> {
-		self.pending
-			.as_mut()
-			.expect("operation output begun")
-			.write_block(bytes)
-			.await
-			.map_err(Into::into)
-	}
-	async fn finish_output(&mut self, expected: &str) -> Result<(Uuid, String)> {
-		self.pending
-			.take()
-			.expect("operation output begun")
-			.finish(&mut self.access, Some(expected))
-			.await
-			.map_err(Into::into)
-	}
-	async fn put(&mut self, kind: &str, bytes: &[u8]) -> Result<(Uuid, String)> {
-		self.store
-			.capabilities
-			.put(
-				&mut self.access,
-				Some(self.area.as_ref().unwrap().id),
-				kind,
-				bytes,
-			)
 			.await
 			.map_err(Into::into)
 	}

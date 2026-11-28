@@ -228,35 +228,6 @@ impl OperationReconciliationScope for Scope {
 			trace.chunks.remove(0)
 		})
 	}
-	async fn verified(&mut self, _: &MountedFile) -> Result<()> {
-		self.0.call("verified")
-	}
-	async fn reuse_output(&mut self, digest: &str, size: u64) -> Result<Option<Uuid>> {
-		self.0.call("reuse_output")?;
-		assert_eq!(
-			digest,
-			"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
-		);
-		assert_eq!(size, 3);
-		Ok(self.0.0.lock().unwrap().reusable)
-	}
-	async fn begin_output(&mut self, _: u64) -> Result<()> {
-		self.0.call("begin_output")
-	}
-	async fn write_output(&mut self, _: &[u8]) -> Result<()> {
-		self.0.call("write_output")
-	}
-	async fn finish_output(&mut self, expected: &str) -> Result<(Uuid, String)> {
-		self.0.call("finish_output")?;
-		Ok((Uuid::from_u128(11), expected.into()))
-	}
-	async fn put(&mut self, kind: &str, bytes: &[u8]) -> Result<(Uuid, String)> {
-		self.0.call(&format!("put:{kind}"))?;
-		if kind == "output" {
-			assert_eq!(bytes, b"stdout");
-		}
-		Ok((Uuid::from_u128(12), "saved-digest".into()))
-	}
 	async fn event(&mut self, data: Value) -> Result<()> {
 		self.0.call("event")?;
 		self.0.0.lock().unwrap().events.push(data);

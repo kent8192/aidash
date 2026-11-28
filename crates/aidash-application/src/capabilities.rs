@@ -99,7 +99,7 @@ pub mod runner;
 pub mod reconciliation;
 
 pub mod processing;
-mod receipt_output;
+mod stopped_logs;
 
 pub mod read_recheck;
 

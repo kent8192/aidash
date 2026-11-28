@@ -1,4 +1,4 @@
-//! Retain a stopped uncertain result without publishing successful Area effects.
+//! Preserve an uncertain operation's stopped stdout and Python displays.
 use crate::{Error, Result, ports::capabilities::processing::OperationProcessingRepository};
 use aidash_domain::capabilities::operations::processing::{Receipt, output_digest};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
@@ -45,35 +45,6 @@ pub(super) async fn adopt(
 		return Err(Error::Forbidden);
 	}
 	let limits = scope.limits();
-	let files = observed["files"].as_array().ok_or(Error::Forbidden)?;
-	if files.len() > 4096 {
-		return Err(Error::Invalid("invalid runner paths".into()));
-	}
-	let mut total = 0u64;
-	let mut paths = std::collections::BTreeSet::new();
-	for file in files {
-		let path = file["path"].as_str().ok_or(Error::Forbidden)?;
-		aidash_domain::registry::rules::validate_path(path)?;
-		if !paths.insert(path) {
-			return Err(Error::Invalid("invalid runner paths".into()));
-		}
-		let size = file["size"].as_u64().ok_or(Error::Forbidden)?;
-		total = total.checked_add(size).ok_or(Error::Forbidden)?;
-		if total > limits.working_bytes {
-			return Err(Error::Conflict("runner file quota".into()));
-		}
-	}
-	let mut retained = vec![];
-	for file in files {
-		let path = file["path"].as_str().ok_or(Error::Forbidden)?;
-		let size = file["size"].as_u64().ok_or(Error::Forbidden)?;
-		let (id, digest, media_type) =
-			super::reconciliation::download_output(&mut *scope, receipt.id, file).await?;
-		retained.push(
-			json!({"file_id":id,"path":path,"digest":digest,"size":size,"media_type":media_type,
-			"scope":"working","provenance":{"kind":"stopped_operation","operation_id":receipt.id}}),
-		);
-	}
 	let encoded_stdout = observed["stdout"].as_str().ok_or(Error::Forbidden)?;
 	check_encoding_budget(encoded_stdout, limits.output_bytes)?;
 	let stdout = STANDARD
@@ -115,7 +86,12 @@ pub(super) async fn adopt(
 	if health["instance"] != instance {
 		return Err(Error::Forbidden);
 	}
-	scope.commit(&proof, json!({"files":retained,"output_file":output,"displays":displays,"truncated":observed["truncated"]})).await?;
+	scope
+		.commit(
+			&proof,
+			json!({"output_file":output,"displays":displays,"truncated":observed["truncated"]}),
+		)
+		.await?;
 	Ok(Some(proof))
 }
 

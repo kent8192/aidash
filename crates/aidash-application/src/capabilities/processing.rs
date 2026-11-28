@@ -90,7 +90,7 @@ pub async fn acknowledge(
 			if lost {
 				continue;
 			}
-			match super::receipt_output::adopt(repository, &receipt).await {
+			match super::stopped_logs::adopt(repository, &receipt).await {
 				Ok(Some(proof)) => ack["output_digest"] = json!(proof),
 				Ok(None) => {
 					// This request only harvests, and deliberately cannot drain a
