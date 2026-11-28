@@ -535,18 +535,24 @@ async fn move_drive(
 	}
 	let incoming = db::by_node(access.tx.as_mut(), &tenant, source, true).await?;
 	let current = db::by_node(access.tx.as_mut(), &tenant, destination, true).await?;
-	let uploads = db::select("drive_uploads", &tenant)
-		.and_where(db::col("drive_id").eq(Expr::value(current.id)))
-		.limit(1)
-		.to_owned();
-	if current.head != 0
-		|| !db::rows::<serde_json::Value>(access.tx.as_mut(), &uploads)
-			.await?
-			.is_empty()
-	{
+	if current.head != 0 {
 		return Err(Error::Conflict(
 			"destination Node Drive already contains work".into(),
 		));
+	}
+	for table in ["drive_uploads", "drive_jobs"] {
+		let work = db::select(table, &tenant)
+			.and_where(db::col("drive_id").eq(Expr::value(current.id)))
+			.limit(1)
+			.to_owned();
+		if !db::rows::<serde_json::Value>(access.tx.as_mut(), &work)
+			.await?
+			.is_empty()
+		{
+			return Err(Error::Conflict(
+				"destination Node Drive already contains work".into(),
+			));
+		}
 	}
 	db::delete(
 		access.tx.as_mut(),
