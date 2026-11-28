@@ -692,15 +692,15 @@ One provider call, owned by exactly one Stint (for a step of its Run) or one Mod
 _Avoid_: attempt (unqualified), request, claim
 
 **Model Call**:
-One model request made for a purpose other than a step of a Run: a compaction summary, a memory role, a Workbench test or an MCP sampling. It is sent in the Native form and is to these purposes what a Stint is to a Run's steps: the owner of their Inference Attempts. One made during a Run belongs to the Stint awake at the time and counts against that Run's Budgets; one made outside a Run belongs to its Tenant and Node. It records its purpose, owner, model version, a digest of what was sent (never the content), its outcome, usage and cost, and when it started and ended. A Compaction Attempt keeps its own record and names the Model Call it used; a Decider's request is not a Model Call.
+One model request made for a purpose other than a step of a Run: a compaction summary, a Goal judgment, a memory role, a Workbench test or MCP sampling. It is sent in the Native form and is to these purposes what a Stint is to a Run's steps: the owner of their Inference Attempts. One made during a Run belongs to the Stint awake at the time and counts against that Run's Budgets; one made outside a Run belongs to its Tenant and Node. It records its purpose, owner, model version, a digest of what was sent (never the content), its outcome, usage and cost, and when it started and ended. A Compaction Attempt keeps its own record and names the Model Call it used; a Decider's request is not a Model Call.
 _Avoid_: Call (unqualified; a Call is a tool call), auxiliary request, side call, Inference Attempt
 
 **Accepted Response**:
-The single complete model response of an Inference Attempt that passed the same validation as a non-streamed response and ended with an accepted finish reason. Only an Accepted Response enters ToolCall state, accepted context or the completion gate.
+The single complete model response of an Inference Attempt that passed the same validation as a non-streamed response and ended with an accepted finish reason. Only an Accepted Response enters ToolCall state or accepted context. A final Accepted Response without tool calls can trigger Goal judgment.
 _Avoid_: final delta, completed stream
 
 **Inference Progress**:
-Bounded, sanitized, tentative display data from one Inference Attempt: text deltas and tool-call identity, name and argument size. It never carries partial tool arguments or provider reasoning, is never executed, never enters context and never becomes an Artifact.
+Bounded, sanitized, tentative display data from one Inference Attempt: text deltas and tool-call identity, name and argument size. It never carries partial tool arguments or provider reasoning, is never executed, never enters context and never becomes a Completion Message.
 _Avoid_: partial response, delta journal, streaming output
 
 **Progress Outcome**:
