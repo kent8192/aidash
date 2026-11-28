@@ -1138,8 +1138,6 @@ mod review_regression_tests;
 
 use reinhardt::query::{ExprTrait as _, QueryStatementBuilder as _};
 
-use reinhardt::query::SimpleExpr;
-
 #[rstest::fixture]
 fn provider_endpoint(
 	#[default(async { panic!("provider endpoint must be injected") }.boxed().shared())]

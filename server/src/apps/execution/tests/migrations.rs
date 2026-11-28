@@ -1483,6 +1483,7 @@ async fn native_migrations_build_a_fresh_schema_and_preserve_records_on_replay(
 		.title("After native migration")
 		.revision(0)
 		.deleted_at(None)
+		.scratch_wipe_requested(false)
 		.finish();
 	Thread::objects()
 		.create_with_conn(&mut connection, &workspace)
@@ -2064,6 +2065,7 @@ async fn management_refuses_fake_baseline_rollback_without_changing_data_or_hist
 		.title("Retained")
 		.revision(0)
 		.deleted_at(None)
+		.scratch_wipe_requested(false)
 		.finish();
 	Thread::objects()
 		.create_with_conn(&mut lease.handle(), &workspace)
@@ -2251,6 +2253,7 @@ async fn escaped_whitespace_checks_still_reject_blank_content(
 		.title(whitespace)
 		.revision(0)
 		.deleted_at(None)
+		.scratch_wipe_requested(false)
 		.finish();
 	// Act
 	let error = Thread::objects()
