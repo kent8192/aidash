@@ -111,6 +111,7 @@ fn a_tools_own_fallback_shaped_result_never_becomes_a_control_outcome() {
 
 #[rstest]
 #[case::assign("task_assign", "task_assign", true)]
+#[case::goal_edit("child_goal", "task_delegate", true)]
 #[case::request("connection_request", "connection_request", true)]
 #[case::mutate("memory_mutate", "memory_mutate", true)]
 #[case::search("thread_search", "thread_search", false)]
@@ -122,6 +123,7 @@ fn home_forwarded_tools_check_their_own_tool_and_only_writes_enter_the_journal(
 	#[case] mutation: bool,
 ) {
 	assert_eq!(builtin(operation), Some(tool));
+	assert!(requested(operation));
 	assert_eq!(
 		prepare(operation, &json!({"key":"id"})).unwrap().mutation,
 		mutation
@@ -130,6 +132,7 @@ fn home_forwarded_tools_check_their_own_tool_and_only_writes_enter_the_journal(
 
 #[rstest]
 #[case::assign("task_assign")]
+#[case::goal_edit("child_goal")]
 #[case::request("connection_request")]
 #[case::mutate("memory_mutate")]
 fn home_forwarded_writes_require_an_explicit_string_key(#[case] operation: &str) {

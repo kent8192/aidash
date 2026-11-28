@@ -426,11 +426,14 @@ pub async fn execute(
 			let id: Uuid = serde_json::from_value(data["child"].clone())?;
 			let child = scope.task(id).await?;
 			if child.parent_id != Some(task.id)
+				|| child.thread_id != task.thread_id
 				|| child.created_by != owner
 				|| !scope.created_by_grant(input.grant_id, child.id).await?
 			{
 				return Err(Error::Forbidden);
 			}
+			let resource = scope.task_resource(&child).await?;
+			scope.require(&resource, "task.delegate").await?;
 			scope
 				.apply(
 					context(),

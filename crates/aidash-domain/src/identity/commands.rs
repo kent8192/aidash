@@ -15,6 +15,7 @@ pub fn prepare(operation: &str, data: &Value) -> Result<Metadata> {
 	if matches!(
 		operation,
 		"delegate"
+			| "child_goal"
 			| "task_assign"
 			| "connection_request"
 			| "outbound_request"
@@ -115,7 +116,7 @@ pub fn builtin(operation: &str) -> Option<&'static str> {
 /// Whether the Home checks its own Federation Tool Request for `operation` before it serves it
 /// (ADR 0139, decision 1): the Home-forwarded tools, whose ops a receiving Node sends only when
 /// the Run called that tool. The older ops also carry traffic of the Run itself that no list
-/// names (a person asked about a tool approval or a Completion Review, records read for the
+/// names (a person asked about a tool approval or for Goal guidance, records read for the
 /// Run's context, tasks an Agent tool creates), so only the Binding is checked for them.
 /// `delegate` and `discover` come only from a remote Run's `task_delegate` and `agent_discover`,
 /// which hand work on through the Home (#654, #1013), so they are checked too. `created_task`
@@ -124,6 +125,7 @@ pub fn requested(operation: &str) -> bool {
 	matches!(
 		operation,
 		"delegate"
+			| "child_goal"
 			| "discover"
 			| "task_assign"
 			| "thread_search"
