@@ -82,25 +82,23 @@ async fn linked_candidates(
 				registry.push((conversation.target_kind.clone(), id.into(), version.into()));
 			}
 		}
-		Candidate::Registry(entry) => {
-			if entry.kind == "agent" {
-				for (kind, field, relation) in [
-					("tool", "tools", "tool"),
-					("model", "model", "model"),
-					("skill", "skills", "skill"),
-				] {
-					if !kind_allowed(kind, options) || !relation_allowed(relation, options) {
-						continue;
-					}
-					let value = &entry.config[field];
-					let refs = value
-						.as_array()
-						.map(|items| items.iter().collect::<Vec<_>>())
-						.unwrap_or_else(|| vec![value]);
-					for item in refs {
-						if let Some((id, version)) = registry_ref(item) {
-							registry.push((kind.into(), id.into(), version.into()));
-						}
+		Candidate::Registry(entry) if entry.kind == "agent" => {
+			for (kind, field, relation) in [
+				("tool", "tools", "tool"),
+				("model", "model", "model"),
+				("skill", "skills", "skill"),
+			] {
+				if !kind_allowed(kind, options) || !relation_allowed(relation, options) {
+					continue;
+				}
+				let value = &entry.config[field];
+				let refs = value
+					.as_array()
+					.map(|items| items.iter().collect::<Vec<_>>())
+					.unwrap_or_else(|| vec![value]);
+				for item in refs {
+					if let Some((id, version)) = registry_ref(item) {
+						registry.push((kind.into(), id.into(), version.into()));
 					}
 				}
 			}

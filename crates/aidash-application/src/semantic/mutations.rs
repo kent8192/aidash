@@ -328,13 +328,12 @@ pub async fn change(
 	if !scope.permits(&entry, action).await? || !scope.permits(&entry, "semantic.read").await? {
 		return Err(Error::Forbidden);
 	}
-	match serde_json::from_value::<aidash_domain::semantic::Source>(entry.source.clone())? {
-		aidash_domain::semantic::Source::AttachmentImage { .. } => {
-			return Err(Error::Invalid(
-				"Thread Attachment images are managed through their attachment".into(),
-			));
-		}
-		_ => {}
+	if let aidash_domain::semantic::Source::AttachmentImage { .. } =
+		serde_json::from_value(entry.source.clone())?
+	{
+		return Err(Error::Invalid(
+			"Thread Attachment images are managed through their attachment".into(),
+		));
 	}
 	if !delete
 		&& !entry.deleted

@@ -272,10 +272,6 @@ async fn an_approval_awaiting_the_home_is_polled_not_rerun_at_once(
 	);
 }
 
-/// Newer input ends only the Run's own Completion Review (#112): the Run is due
-/// so its step answers the review on the Run's behalf. A request the model
-/// raised, or a review without newer input, still waits for its answer.
-
 /// A model's question waits for its answer, and past the person's Answer
 /// Deadline the Run is due so its step can continue without one.
 #[rstest]

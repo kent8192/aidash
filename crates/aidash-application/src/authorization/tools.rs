@@ -418,7 +418,7 @@ pub async fn authorize(
 		match requirement {
 			AuthorizationRequirement::AgentExecution { node_id, agent } => {
 				// The Node comes from the agent's configuration, not from the model.
-				if !aidash_domain::tool::contract::AgentFlag::Delegation.permitted(&configuration)
+				if !aidash_domain::tool::contract::AgentFlag::Delegation.permitted(configuration)
 					|| !aidash_domain::nodes::names_home(node_id, &run.home_node)
 				{
 					return Err(refused(call, RefusalCheck::AgentExecution, None));

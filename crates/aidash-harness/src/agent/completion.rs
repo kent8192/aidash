@@ -288,10 +288,10 @@ impl Executor<'_> {
 			.complete_model_call(run, attempt, &usage_outcome(&result), outcome)
 			.await;
 		let resumed = visibility.resume().await;
-		if let Some(reservation) = reservation {
-			if let Some(response) = settled_usage(&result) {
-				reservation.settle(response).await?;
-			}
+		if let Some(reservation) = reservation
+			&& let Some(response) = settled_usage(&result)
+		{
+			reservation.settle(response).await?;
 		}
 		resumed?;
 		recorded?;

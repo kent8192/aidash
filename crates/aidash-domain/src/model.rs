@@ -300,15 +300,13 @@ impl ModelConfig {
 	/// Decode a persisted definition without changing the JSON that is pinned
 	/// into its digest. New definitions use the strict deserializer directly.
 	pub fn from_stored(mut value: Value) -> Result<Self> {
-		if let Some(fields) = value.as_object_mut() {
-			if let Some(calibrations) = fields
-				.get_mut("estimate_diagnostics")
-				.and_then(|diagnostics| diagnostics.get_mut("calibrations"))
-				.and_then(Value::as_object_mut)
-			{
-				calibrations.remove("legacy");
-				calibrations.remove("ordered");
-			}
+		if let Some(calibrations) = value
+			.get_mut("estimate_diagnostics")
+			.and_then(|diagnostics| diagnostics.get_mut("calibrations"))
+			.and_then(Value::as_object_mut)
+		{
+			calibrations.remove("legacy");
+			calibrations.remove("ordered");
 		}
 		Ok(serde_json::from_value(value)?)
 	}

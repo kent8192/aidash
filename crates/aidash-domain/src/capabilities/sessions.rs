@@ -24,11 +24,8 @@ pub struct SessionStatus {
 	pub last_agent_version: Option<String>,
 	pub active_run_id: Option<Uuid>,
 }
-/// The constraint kind of a Working Area a receiving Node keeps for Runs executing for another
-/// Home (ADR 0139). It records the Home, whose Thread this Node does not hold, so reads of
-/// the Area are authorized by the Run's admission and the Area's owner instead.
-
 pub const QUEUE_LIMIT: &str = "QUEUE_LIMIT";
+/// The constraint that records the Home of a remote Run's execution scope (ADR 0139).
 pub const REMOTE_HOME: &str = "remote_home";
 pub fn remote_home_constraint(home_node: &str) -> Value {
 	serde_json::json!({"kind": REMOTE_HOME, "home_node": home_node})
