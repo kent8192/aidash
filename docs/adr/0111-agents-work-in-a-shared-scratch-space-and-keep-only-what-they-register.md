@@ -47,4 +47,4 @@ A Run that a Remote Grant started works in the receiving Node's Delegated Run Sc
 
 ## Amendment (2026-11-26, #1020)
 
-[ADR 0154](0154-each-node-has-a-shared-scratch-space.md) defines the Node's shared default space, access, work directories and explicit clearing. It replaces the dedicated Thread and Delegated Run space model.
+[ADR 0162](0162-each-node-has-a-shared-scratch-space.md) defines the Node's shared default space, access, work directories and explicit clearing. It replaces the dedicated Thread and Delegated Run space model.
