@@ -77,31 +77,6 @@ fn has_input_path_collision(files: &[FileEntry]) -> bool {
 	)
 }
 
-pub(crate) async fn prepare_kind(
-	store: &Store,
-	access: &mut Access,
-	run: &Run,
-	area: &mut Area,
-	input: Shell,
-	kind: &str,
-	extra: Value,
-) -> Result<Value> {
-	crate::apps::execution::repositories::node_cancellations::require_area_open(
-		&mut **access.tx,
-		area.id,
-	)
-	.await?;
-	aidash_application::capabilities::prepare(
-		&mut crate::bootstrap::operation_admission_scope(store, access, run, area),
-		&run.metadata(),
-		input.into(),
-		kind,
-		extra,
-	)
-	.await
-	.map_err(Into::into)
-}
-
 /// Admit a command or Python cell for the Execution Pod of the Run's Scratch
 /// Space (#745). The capability worker dispatches it.
 pub(crate) async fn prepare_pod(
