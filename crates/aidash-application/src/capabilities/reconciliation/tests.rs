@@ -9,6 +9,7 @@ use aidash_domain::{
 };
 use async_trait::async_trait;
 use rstest::{fixture, rstest};
+use serde_json::Value;
 use std::sync::{Arc, Mutex};
 struct Trace {
 	operation: Snapshot,

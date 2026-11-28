@@ -274,8 +274,6 @@ async fn approval_list_and_decision_restore_the_request_thread_context(
 	c.close().await;
 }
 
-use reinhardt::query::{ExprTrait as _, QueryStatementBuilder as _};
-
 #[rstest::rstest]
 #[tokio::test]
 async fn every_eligible_approver_sees_a_waiting_approval_and_a_late_one_is_told_who_decided(

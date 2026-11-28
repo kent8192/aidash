@@ -722,7 +722,7 @@ async fn direct_invocations_reject_inputs_outside_admitted_binding_before_effect
 		Err(Error::Domain(aidash_domain::Error::Invalid(_)))
 	));
 	assert_eq!(scope.opens, 0);
-	assert!(scope.events.is_empty());
+	assert!(scope.cache_entry.is_none());
 }
 #[tokio::test]
 async fn direct_file_read_applies_the_admitted_limit_when_input_omits_it() {
@@ -811,7 +811,7 @@ async fn direct_invocations_recheck_the_bound_definition_before_any_effect(
 		assert!(matches!(result, Err(Error::Forbidden)));
 	}
 	assert_eq!(scope.opens, 0);
-	assert!(scope.events.is_empty());
+	assert!(scope.cache_entry.is_none());
 }
 
 #[tokio::test]
