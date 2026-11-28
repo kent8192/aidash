@@ -27,11 +27,6 @@ struct Scope {
 	reference_queries: usize,
 	search_seconds: u64,
 	open_delay: std::time::Duration,
-	previous: Value,
-	previous_generation: Option<i64>,
-	superseded: Vec<Uuid>,
-	persisted: Option<Area>,
-	events: Vec<(String, Value)>,
 
 	snapshot: Option<aidash_domain::registry::bindings::BindingSnapshot>,
 	area: Option<Area>,
@@ -175,24 +170,6 @@ impl FileScopePort for Scope {
 		self.cache_entry = Some((key, digest.to_owned(), result.clone()));
 		Ok(())
 	}
-	async fn previous_manifest(&mut self, _area: &Area) -> Result<Value> {
-		Ok(self.previous.clone())
-	}
-	async fn previous_generation(&mut self, area: &Area) -> Result<i64> {
-		Ok(self.previous_generation.unwrap_or(area.generation))
-	}
-	async fn supersede(&mut self, _area: &Area, file: Uuid) -> Result<()> {
-		self.superseded.push(file);
-		Ok(())
-	}
-	async fn persist_manifest(&mut self, area: &Area) -> Result<()> {
-		self.persisted = Some(area.clone());
-		Ok(())
-	}
-	async fn event(&mut self, _thread: Uuid, kind: &str, data: Value) -> Result<()> {
-		self.events.push((kind.to_owned(), data));
-		Ok(())
-	}
 }
 fn fixture(bytes: &[u8]) -> (Scope, Area, FileEntry) {
 	let file = FileEntry {
@@ -227,11 +204,6 @@ fn fixture(bytes: &[u8]) -> (Scope, Area, FileEntry) {
 			reference_queries: 0,
 			search_seconds: 5,
 			open_delay: std::time::Duration::ZERO,
-			previous: area.manifest.clone(),
-			previous_generation: None,
-			superseded: vec![],
-			persisted: None,
-			events: vec![],
 
 			snapshot: None,
 			area: None,
@@ -621,62 +593,6 @@ async fn a_revoked_reference_file_is_neither_read_nor_searched() {
 	.unwrap();
 	assert_eq!(paths(&listed), ["references/kept.md"], "{listed}");
 }
-#[tokio::test]
-async fn publication_tombstones_only_removed_working_objects() {
-	let (mut scope, mut area, file) = fixture(b"bytes");
-	let received = FileEntry {
-		file_id: Uuid::new_v4(),
-		scope: FileScope::Received,
-		..file.clone()
-	};
-	let reference = FileEntry {
-		file_id: Uuid::new_v4(),
-		scope: FileScope::References,
-		..file.clone()
-	};
-	scope.previous = json!([file, received, reference]);
-	area.manifest = json!([]);
-	publish(&mut scope, &mut area).await.unwrap();
-	assert_eq!(scope.superseded, vec![file.file_id]);
-	assert_eq!(area.revision, 5);
-	assert_eq!(scope.persisted.as_ref().unwrap().revision, 5);
-	assert_eq!(
-		scope.events,
-		vec![(
-			"capability.files_changed".into(),
-			json!({"area_id":area.id,"revision":5,"generation":7})
-		)]
-	);
-}
-
-#[tokio::test]
-async fn a_receiving_area_publishes_without_a_thread_event() {
-	let (mut scope, mut area, mut image) = fixture(b"bytes");
-	image.path = "image.png".into();
-	image.media_type = "image/png".into();
-	scope.previous = json!([]);
-	area.manifest = json!([image]);
-	area.constraints = json!([
-		aidash_domain::capabilities::sessions::remote_home_constraint("aidash://home/node")
-	]);
-	publish(&mut scope, &mut area).await.unwrap();
-	// The revision is still saved, so the Area's readers see the Reference set.
-	assert_eq!(scope.persisted.as_ref().unwrap().revision, area.revision);
-
-	assert!(scope.events.is_empty());
-}
-
-#[tokio::test]
-async fn publication_detects_images_in_generic_binary_files_by_signature() {
-	let (mut scope, mut area, mut file) = fixture(b"\x89PNG\r\n\x1a\nimage");
-	file.path = "without-extension".into();
-	file.media_type = "application/octet-stream".into();
-	scope.previous = json!([]);
-	area.manifest = json!([file]);
-	publish(&mut scope, &mut area).await.unwrap();
-	assert_eq!(area.manifest[0]["media_type"], "image/png");
-}
-
 fn invoke_fixture(operation: &str, narrow: Value) -> (Scope, RunMetadata, FileEntry) {
 	let (mut scope, area, mut file) = fixture(b"abcdefgh");
 	let node = "aidash://local";

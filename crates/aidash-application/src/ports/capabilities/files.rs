@@ -108,9 +108,4 @@ pub trait FileScopePort: Send {
 			"Scratch patch settlement unavailable".into(),
 		))
 	}
-	async fn previous_manifest(&mut self, area: &Area) -> Result<Value>;
-	async fn previous_generation(&mut self, area: &Area) -> Result<i64>;
-	async fn supersede(&mut self, area: &Area, file: Uuid) -> Result<()>;
-	async fn persist_manifest(&mut self, area: &Area) -> Result<()>;
-	async fn event(&mut self, thread: Uuid, kind: &str, data: Value) -> Result<()>;
 }

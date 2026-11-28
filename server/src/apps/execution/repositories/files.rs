@@ -21,7 +21,7 @@ use aidash_domain::{
 };
 use async_trait::async_trait;
 use reinhardt::query::{
-	Alias, Expr, ExprTrait as _, IntoValue as _, OnConflict, PostgresQueryBuilder, Query,
+	Alias, Expr, ExprTrait as _, IntoValue as _, PostgresQueryBuilder, Query,
 	QueryStatementBuilder as _,
 };
 use serde_json::Value;
@@ -39,101 +39,6 @@ struct Reader {
 	digest: aidash_domain::capabilities::Digest,
 	size: u64,
 }
-/// Atomically retain one immutable revision and every logical object it names.
-pub(crate) async fn record_revision(
-	tx: &mut crate::database::native::Transaction,
-	tenant: &str,
-	area: &Area,
-	manifest: &Value,
-) -> NativeResult<()> {
-	let inserted = crate::database::native::query(
-		&Query::insert()
-			.into_table(Alias::new("core_manifest_revisions"))
-			.columns(["tenant", "area_id", "revision", "manifest"].map(Alias::new))
-			.values(vec![
-				tenant.to_owned().into(),
-				area.id.into(),
-				area.revision.into(),
-				manifest.clone().into_value(),
-			])
-			.map_err(NativeError::Invalid)?
-			.on_conflict(
-				OnConflict::columns(["tenant", "area_id", "revision"].map(Alias::new))
-					.do_nothing()
-					.to_owned(),
-			)
-			.to_string(PostgresQueryBuilder),
-	)
-	.execute(&mut **tx)
-	.await?
-	.rows_affected();
-	let stored: Value = crate::database::native::query_scalar(
-		&Query::select()
-			.column(Alias::new("manifest"))
-			.from(Alias::new("core_manifest_revisions"))
-			.and_where(Expr::col(Alias::new("tenant")).eq(Expr::value(tenant)))
-			.and_where(Expr::col(Alias::new("area_id")).eq(Expr::value(area.id)))
-			.and_where(Expr::col(Alias::new("revision")).eq(Expr::value(area.revision)))
-			.to_string(PostgresQueryBuilder),
-	)
-	.scalar_one(&mut **tx)
-	.await?;
-	if stored != *manifest {
-		return Err(NativeError::Conflict("AREA_REVISION_CHANGED".into()));
-	}
-	// Revision and references are inserted in the same transaction. An existing
-	// revision therefore already owns its references, including an empty one.
-	if inserted == 0 {
-		return Ok(());
-	}
-	let mut entries: Vec<FileEntry> = serde_json::from_value(manifest.clone())?;
-	entries.sort_by(|a, b| a.digest.cmp(&b.digest).then(a.file_id.cmp(&b.file_id)));
-	// Bound statement size independently of the maximum Working Area size.
-	const REFERENCE_BATCH_SIZE: usize = 256;
-	for batch in entries.chunks(REFERENCE_BATCH_SIZE) {
-		let mut insert = Query::insert();
-		insert
-			.into_table(Alias::new("core_blob_references"))
-			.columns(
-				[
-					"id",
-					"tenant",
-					"digest",
-					"holder_kind",
-					"holder_id",
-					"object_id",
-					"area_id",
-					"revision",
-				]
-				.map(Alias::new),
-			);
-		for file in batch {
-			let holder = format!("{}:{}:{}", area.id, area.revision, file.file_id);
-			insert
-				.values(vec![
-					Uuid::new_v4().into(),
-					tenant.to_owned().into(),
-					file.digest.clone().into(),
-					"revision".into(),
-					holder.into(),
-					file.file_id.into(),
-					area.id.into(),
-					area.revision.into(),
-				])
-				.map_err(NativeError::Invalid)?;
-		}
-		insert.on_conflict(
-			OnConflict::columns(["tenant", "digest", "holder_kind", "holder_id"].map(Alias::new))
-				.do_nothing()
-				.to_owned(),
-		);
-		crate::database::native::query(&insert.to_string(PostgresQueryBuilder))
-			.execute(&mut **tx)
-			.await?;
-	}
-	Ok(())
-}
-
 fn missing() -> Error {
 	Error::External("file repository scope invariant".into())
 }
@@ -408,98 +313,6 @@ impl FileScopePort for Scope<'_> {
 		.await;
 		result.map_err(Into::into)
 	}
-	async fn previous_manifest(&mut self, area: &Area) -> Result<Value> {
-		let result: NativeResult<Value> = async {
-			let access = &mut *self.access;
-			let previous: Option<Value> = crate::database::native::query_scalar(
-				&Query::select()
-					.column(Alias::new("manifest"))
-					.from(Alias::new("core_manifest_revisions"))
-					.and_where(
-						Expr::col(Alias::new("tenant")).eq(Expr::value(&access.identity.tenant)),
-					)
-					.and_where(Expr::col(Alias::new("area_id")).eq(Expr::value(area.id)))
-					.and_where(Expr::col(Alias::new("revision")).eq(Expr::value(area.revision)))
-					.to_string(PostgresQueryBuilder),
-			)
-			.scalar_optional(&mut **access.tx)
-			.await?;
-			let previous = previous.unwrap_or_else(|| serde_json::json!([]));
-			let tenant = access.identity.tenant.clone();
-			record_revision(access.tx.native_mut(), &tenant, area, &previous).await?;
-			Ok(previous)
-		}
-		.await;
-		result.map_err(Into::into)
-	}
-
-	async fn previous_generation(&mut self, area: &Area) -> Result<i64> {
-		let result: NativeResult<i64> = crate::database::native::query_scalar(
-			&Query::select()
-				.column(Alias::new("generation"))
-				.from(Alias::new("core_areas"))
-				.and_where(Expr::col(Alias::new("id")).eq(Expr::value(area.id)))
-				.to_string(PostgresQueryBuilder),
-		)
-		.scalar_one(&mut **self.access.tx)
-		.await;
-		result.map_err(Into::into)
-	}
-	async fn supersede(&mut self, area: &Area, file: Uuid) -> Result<()> {
-		let result: NativeResult<_> = async {
-			let access = &mut *self.access;
-			{
-				let query_bind_1 = file;
-				let query_bind_2 = area.id;
-				crate::database::native::query(
-					&Query::update()
-						.table(Alias::new("core_objects"))
-						.value(Alias::new("kind"), "superseded_working")
-						.and_where(
-							Expr::col(Alias::new("id")).eq(Expr::value(query_bind_1.to_owned())),
-						)
-						.and_where(
-							Expr::col(Alias::new("area_id"))
-								.eq(Expr::value(query_bind_2.to_owned())),
-						)
-						.and_where(
-							Expr::col(Alias::new("kind"))
-								.eq(reinhardt::query::Expr::value("working")),
-						)
-						.to_string(PostgresQueryBuilder),
-				)
-				.execute(&mut **access.tx)
-				.await?
-			};
-			Ok(())
-		}
-		.await;
-		result.map_err(Into::into)
-	}
-	async fn persist_manifest(&mut self, area: &Area) -> Result<()> {
-		let result: NativeResult<()> = async {
-			let access = &mut *self.access;
-			let tenant = access.identity.tenant.clone();
-			record_revision(access.tx.native_mut(), &tenant, area, &area.manifest).await?;
-			crate::database::native::query(
-				&Query::update()
-					.table(Alias::new("core_areas"))
-					.value(Alias::new("constraints"), area.constraints.clone())
-					.value(Alias::new("revision"), area.revision)
-					.and_where(Expr::col(Alias::new("id")).eq(Expr::value(area.id)))
-					.and_where(
-						Expr::col(Alias::new("tenant")).eq(Expr::value(&access.identity.tenant)),
-					)
-					.to_string(PostgresQueryBuilder),
-			)
-			.execute(&mut **access.tx)
-			.await?;
-			Ok(())
-		}
-		.await;
-		result.map_err(Into::into)
-	}
-
 	async fn bound_references(
 		&mut self,
 		config: &aidash_domain::registry::AgentConfig,
@@ -603,18 +416,5 @@ impl FileScopePort for Scope<'_> {
 			return Err(Error::Conflict("PATCH_CLAIM_CHANGED".into()));
 		}
 		Ok(())
-	}
-	async fn event(&mut self, thread: Uuid, kind: &str, data: Value) -> Result<()> {
-		let store = self.store.ok_or_else(missing)?;
-		store
-			.event(
-				&mut self.access.tx,
-				store.event_thread(self.run, thread),
-				kind,
-				data,
-			)
-			.await
-			.map(|_| ())
-			.map_err(Into::into)
 	}
 }

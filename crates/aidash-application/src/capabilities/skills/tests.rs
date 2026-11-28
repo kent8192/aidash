@@ -234,21 +234,6 @@ mod exposure {
 		async fn cache(&mut self, _: Uuid, _: &str, _: &Value) -> Result<()> {
 			panic!("unexpected cache effect")
 		}
-		async fn previous_manifest(&mut self, _: &Area) -> Result<Value> {
-			panic!("unexpected previous_manifest effect")
-		}
-		async fn previous_generation(&mut self, _: &Area) -> Result<i64> {
-			panic!("unexpected previous_generation effect")
-		}
-		async fn supersede(&mut self, _: &Area, _: Uuid) -> Result<()> {
-			panic!("unexpected supersede effect")
-		}
-		async fn persist_manifest(&mut self, _: &Area) -> Result<()> {
-			panic!("unexpected persist_manifest effect")
-		}
-		async fn event(&mut self, _: Uuid, _: &str, _: Value) -> Result<()> {
-			panic!("unexpected event effect")
-		}
 	}
 	#[async_trait::async_trait]
 	impl SkillScope for Scope {

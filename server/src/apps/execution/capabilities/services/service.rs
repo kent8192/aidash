@@ -108,13 +108,3 @@ pub(crate) fn envelope(output: aidash_domain::capabilities::files::Envelope) -> 
 		result: serde_json::from_value(output.result)?,
 	})
 }
-pub(crate) async fn publish(store: &Store, access: &mut Access, area: &mut Area) -> Result<()> {
-	let mut state = (&*area).into();
-	let result = application::publish(
-		&mut crate::bootstrap::file_scope(Some(store), access, None),
-		&mut state,
-	)
-	.await;
-	*area = state.into();
-	result.map_err(Into::into)
-}

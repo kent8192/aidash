@@ -978,58 +978,5 @@ pub async fn snapshot_message_files(
 	}
 	Ok(result)
 }
-pub async fn publish(scope: &mut dyn FileScopePort, area: &mut Area) -> Result<()> {
-	publish_with_known_media(scope, area, &BTreeSet::new()).await
-}
-
-pub(crate) async fn publish_with_known_media(
-	scope: &mut dyn FileScopePort,
-	area: &mut Area,
-	known_media: &BTreeSet<Uuid>,
-) -> Result<()> {
-	// Commit the old working-object tombstones with the new manifest. Only
-	// superseded working bytes are reclaimed, never outputs or recovery copies.
-	let previous: Vec<FileEntry> = serde_json::from_value(scope.previous_manifest(area).await?)?;
-	let previous_generation = scope.previous_generation(area).await?;
-	let mut current = files(area)?;
-	for file in &mut current {
-		if matches!(file.scope, FileScope::Working | FileScope::Received)
-			&& file.media_type == "application/octet-stream"
-			&& !known_media.contains(&file.file_id)
-			&& file.size > 0
-			&& (previous_generation != area.generation
-				|| !previous.iter().any(|old| old.file_id == file.file_id))
-		{
-			let mut reader = scope.open(file).await?;
-			let prefix = reader.read_range(0, file.size.min(12)).await?;
-			if let Some(media_type) = aidash_domain::provider::detect_image(&prefix) {
-				file.media_type = media_type.into();
-			}
-		}
-	}
-	area.manifest = json!(current);
-	for old in &previous {
-		if matches!(old.scope, FileScope::Working)
-			&& !current.iter().any(|file| file.file_id == old.file_id)
-		{
-			scope.supersede(area, old.file_id).await?;
-		}
-	}
-	area.revision += 1;
-	scope.persist_manifest(area).await?;
-	// A receiving Area belongs to a Home whose Thread this Node does not hold: no Thread
-	// event stream here can take what it changes (ADR 0139).
-	if area.is_remote_home() {
-		return Ok(());
-	}
-	scope
-		.event(
-			area.thread_id,
-			"capability.files_changed",
-			json!({"area_id":area.id,"revision":area.revision,"generation":area.generation}),
-		)
-		.await?;
-	Ok(())
-}
 #[cfg(test)]
 mod tests;
