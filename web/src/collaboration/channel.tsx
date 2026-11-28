@@ -696,10 +696,7 @@ export function Channel({
                 {view.tasks}
                 {count(tasks.length)}
               </TabsTrigger>
-              <TabsTrigger value="results">
-                {view.results}
-                {count(artifacts.length)}
-              </TabsTrigger>
+              <TabsTrigger value="results">{view.results}</TabsTrigger>
               <TabsTrigger value="schedules">{view.schedules}</TabsTrigger>
             </TabsList>
           )}
@@ -740,9 +737,7 @@ export function Channel({
                     {view.tasks}
                     {count(tasks.length)}
                   </TabsTrigger>
-                  <TabsTrigger value="results">
-                    {view.results}
-                    </TabsTrigger>
+                  <TabsTrigger value="results">{view.results}</TabsTrigger>
                   <TabsTrigger value="schedules">{view.schedules}</TabsTrigger>
                 </TabsList>
                 <Button
