@@ -1,5 +1,5 @@
 //! Scratch Space publication plans and resumable, digest-addressed transfers.
-use super::{repository as db, tools::MAINTENANCE, transfer};
+use super::{repository as db, tools::MAINTENANCE};
 use crate::apps::execution::repositories::capability_objects::{PendingObject, SealedObject};
 use crate::{Error, Result, authorization::access::Access, store::Store};
 use aidash_application::{
@@ -695,7 +695,7 @@ async fn upload(
 			scratch_space_id: context.scratch_space_id().to_owned(),
 			path: file.path.clone(),
 			offset: Some(offset),
-			limit: transfer::PART_BYTES as u32,
+			limit: 1024 * 1024,
 		};
 		let chunk = context
 			.runtime

@@ -3,6 +3,7 @@ import { useState } from "react";
 import { Button } from "./components/ui/button";
 import { Input } from "./components/ui/input";
 import { Alert, Hint, Loading, RowList } from "./components/patterns";
+import { hashUpload, uploadChunks } from "./capabilities/multipart";
 import {
   FILE_PREVIEW_BYTE_LIMIT,
   FilePreviewRenderer,
@@ -116,32 +117,36 @@ export function NodeDrive({ node }: { node: string }) {
   async function upload(file: File, destination: string, index: boolean) {
     if (!data) return;
     const path = destination.replace(/^\/+/, "");
-    const base = data.files.some((file) => file.path === path)
-      ? data.drive.head
-      : "new";
-    const receipt = await apiFetch<{ id: string; part_bytes: number }>(
+    const digest = await hashUpload(file);
+    const key = `aidash:drive-upload:${JSON.stringify([url, path, digest, index])}`;
+    const saved = sessionStorage.getItem(key);
+    const upload: { idempotency_key: string; base_version: number | "new" } =
+      saved === null
+        ? {
+            idempotency_key: crypto.randomUUID(),
+            base_version: data.files.some((file) => file.path === path)
+              ? data.drive.head
+              : "new",
+          }
+        : JSON.parse(saved);
+    sessionStorage.setItem(key, JSON.stringify(upload));
+    const receipt = await apiFetch<{ id: string; uploaded_bytes: number }>(
       `${url}/uploads`,
-      json("POST", { path, size: file.size, base_version: base, index }),
+      json("POST", { ...upload, path, size: file.size, digest, index }),
     );
-    for (let offset = 0; offset < file.size; offset += receipt.part_bytes) {
-      const part = offset / receipt.part_bytes;
-      await authenticatedFetch(
-        `${url}/uploads/${receipt.id}/chunks?number=${part}`,
-        {
-          method: "PUT",
-          headers: { "content-type": "application/octet-stream" },
-          body: file.slice(offset, offset + receipt.part_bytes),
-        },
-      );
-      setPending(
-        `${number.format(Math.min(file.size, offset + receipt.part_bytes))} / ${number.format(file.size)} B`,
-      );
-    }
-    record(
-      await apiFetch<Publication>(`${url}/uploads/${receipt.id}/finish`, {
-        method: "POST",
-      }),
+    const endpoint = `${url}/uploads/${receipt.id}`;
+    await uploadChunks(
+      file,
+      receipt.uploaded_bytes,
+      (chunk) => apiFetch(`${endpoint}/chunks`, json("POST", chunk)),
+      (bytes) =>
+        setPending(`${number.format(bytes)} / ${number.format(file.size)} B`),
     );
+    const result = await apiFetch<Publication>(`${endpoint}/commit`, {
+      method: "POST",
+    });
+    sessionStorage.removeItem(key);
+    record(result);
     setUploading(false);
   }
   async function download(file: DriveFile) {

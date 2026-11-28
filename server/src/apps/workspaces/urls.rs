@@ -18,7 +18,7 @@ pub fn url_patterns() -> UnifiedRouter {
 			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
 			.endpoint(drives::upload_part)
 			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
-			.endpoint(drives::upload_finish)
+			.endpoint(drives::upload_commit)
 			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
 			.endpoint(duties::thread_list)
 			.with_route_middleware(AccessBoundary::authenticated().with_visibility())

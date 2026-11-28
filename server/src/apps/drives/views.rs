@@ -14,7 +14,7 @@ use aidash_domain::{
 use bytes::Bytes;
 use chrono::{DateTime, Utc};
 use reinhardt::query::{Alias, Expr, ExprTrait, LockType, Order};
-use reinhardt::{Path, Query, Request, Response, get, http::ViewResult, post, put};
+use reinhardt::{Path, Query, Request, Response, get, http::ViewResult, post};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -612,14 +612,7 @@ pub async fn upload_start(
 	crate::http::json(result)
 }
 
-#[derive(Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-#[schemars(rename = "DrivePartQuery")]
-pub struct PartQuery {
-	pub number: i64,
-}
-
-#[put(
+#[post(
 	"/api/nodes/{node}/drive/uploads/{id}/chunks",
 	name = "drive-upload-part",
 	auth = "protected"
@@ -628,8 +621,7 @@ pub async fn upload_part(
 	#[inject] f: Federation,
 	#[inject] actor: Actor,
 	Path((node, id)): Path<(String, Uuid)>,
-	Query(part): Query<PartQuery>,
-	request: Request,
+	Json(part): Json<crate::capabilities::references::Chunk>,
 ) -> ViewResult<Response> {
 	let result = async {
 		let mut access = subject(&f, actor).await?;
@@ -640,8 +632,10 @@ pub async fn upload_part(
 			&drive,
 			&grant,
 			id,
-			part.number,
-			request.body(),
+			aidash_domain::capabilities::references::lifecycle::Chunk {
+				offset: part.offset,
+				data: part.data,
+			},
 		)
 		.await
 	}
@@ -650,11 +644,11 @@ pub async fn upload_part(
 }
 
 #[post(
-	"/api/nodes/{node}/drive/uploads/{id}/finish",
-	name = "drive-upload-finish",
+	"/api/nodes/{node}/drive/uploads/{id}/commit",
+	name = "drive-upload-commit",
 	auth = "protected"
 )]
-pub async fn upload_finish(
+pub async fn upload_commit(
 	#[inject] f: Federation,
 	#[inject] actor: Actor,
 	Path((node, id)): Path<(String, Uuid)>,
@@ -662,7 +656,7 @@ pub async fn upload_finish(
 	let result = async {
 		let mut access = subject(&f, actor).await?;
 		let (drive, grant) = db::drive(&mut access, &NodeName::parse(&node)?, true).await?;
-		transfer::finish(&f.store, access, &drive, &grant, id).await
+		transfer::commit(&f.store, access, &drive, &grant, id).await
 	}
 	.await;
 	crate::http::json(result)
@@ -704,10 +698,9 @@ pub(crate) fn openapi(
 	contracts.request::<_, transfer::UploadSpec>(document, upload_start)?;
 	contracts.response::<_, transfer::UploadReceipt>(document, upload_start, 200, json)?;
 	contracts.path(document, upload_part, &["String", "Uuid"])?;
-	contracts.query::<_, PartQuery>(document, upload_part)?;
-	contracts.binary_request(document, upload_part)?;
+	contracts.request::<_, crate::capabilities::references::Chunk>(document, upload_part)?;
 	contracts.response::<_, transfer::UploadReceipt>(document, upload_part, 200, json)?;
-	contracts.path(document, upload_finish, &["String", "Uuid"])?;
-	contracts.response::<_, db::Publication>(document, upload_finish, 200, json)?;
+	contracts.path(document, upload_commit, &["String", "Uuid"])?;
+	contracts.response::<_, db::Publication>(document, upload_commit, 200, json)?;
 	Ok(())
 }

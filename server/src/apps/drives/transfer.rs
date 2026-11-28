@@ -1,25 +1,34 @@
-//! Durable multipart upload receipts and bounded streaming downloads.
+//! Drive storage adapter for the shared resumable uploads/chunks/commit flow.
 use super::repository::{self as db, Drive, Grant, Provenance, Publication, col};
-use crate::{Error, Result, authorization::access::Access, store::Store};
-use aidash_application::{drive::Change, ports::blob_store::BlobReader};
-use aidash_domain::drive::{self, BaseVersion, PublishBase};
+use crate::{
+	Error, Result, apps::execution::repositories::capability_objects::PendingObject,
+	authorization::access::Access, store::Store,
+};
+use aidash_application::{
+	capabilities::multipart::{self, CHUNK_BYTES},
+	drive::Change,
+	ports::blob_store::{BlobReader, BlobStore},
+};
+use aidash_domain::{
+	capabilities::{Digest, references::lifecycle::Chunk},
+	drive::{self, BaseVersion, PublishBase},
+};
 use chrono::{DateTime, Duration, Utc};
 use reinhardt::query::{Alias, Expr, ExprTrait, LockType, Order};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use tokio::io::AsyncReadExt;
 use uuid::Uuid;
 
-pub(super) const PART_BYTES: usize = 1024 * 1024;
-
-#[derive(Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 #[schemars(rename = "DriveUploadSpec")]
 pub struct UploadSpec {
+	pub idempotency_key: Uuid,
 	pub path: String,
 	pub size: i64,
+	pub digest: String,
 	pub base_version: BaseVersion,
 	pub index: bool,
 }
@@ -28,7 +37,7 @@ pub struct UploadSpec {
 #[schemars(rename = "DriveUploadReceipt")]
 pub struct UploadReceipt {
 	pub id: Uuid,
-	pub part_bytes: usize,
+	pub uploaded_bytes: u64,
 }
 
 #[derive(Deserialize)]
@@ -46,6 +55,10 @@ struct Part {
 	size: i64,
 }
 
+fn expires_at() -> DateTime<Utc> {
+	Utc::now() + Duration::days(1)
+}
+
 pub(super) async fn start(
 	access: &mut Access,
 	drive: &Drive,
@@ -56,10 +69,22 @@ pub(super) async fn start(
 	if !grant.authority().writes(&spec.path) {
 		return Err(Error::Forbidden);
 	}
-	if spec.size < 0 {
-		return Err(Error::Invalid("invalid upload size".into()));
+	if spec.size < 0 || spec.digest.parse::<Digest>().is_err() {
+		return Err(Error::Invalid("invalid upload size or digest".into()));
 	}
-	let id = Uuid::new_v4();
+	let key = format!("{}:{}", grant.person, spec.idempotency_key);
+	let id = Uuid::new_v5(&drive.id, key.as_bytes());
+	if let Some(upload) = find(access, drive, grant, id).await? {
+		if upload.spec != spec {
+			return Err(Error::Conflict("IDEMPOTENCY_CONFLICT".into()));
+		}
+		let uploaded_bytes = if upload.published_version.is_some() {
+			spec.size as u64
+		} else {
+			progress(access, grant, id).await?
+		};
+		return Ok(UploadReceipt { id, uploaded_bytes });
+	}
 	db::insert(
 		access.tx.as_mut(),
 		"drive_uploads",
@@ -70,32 +95,63 @@ pub(super) async fn start(
 			drive.id.into(),
 			grant.person.clone().into(),
 			serde_json::to_value(spec)?.into(),
-			(Utc::now() + Duration::days(1)).into(),
+			expires_at().into(),
 		],
 	)
 	.await?;
 	Ok(UploadReceipt {
 		id,
-		part_bytes: PART_BYTES,
+		uploaded_bytes: 0,
 	})
 }
 
-async fn load(access: &mut Access, drive: &Drive, grant: &Grant, id: Uuid) -> Result<Upload> {
+async fn find(
+	access: &mut Access,
+	drive: &Drive,
+	grant: &Grant,
+	id: Uuid,
+) -> Result<Option<Upload>> {
 	let mut query = db::select("drive_uploads", &grant.tenant);
 	query
 		.and_where(col("id").eq(Expr::value(id)))
 		.and_where(col("drive_id").eq(Expr::value(drive.id)))
 		.and_where(col("author").eq(Expr::value(&grant.person)))
 		.lock(LockType::Update);
-	let upload = db::rows::<Upload>(access.tx.as_mut(), &query)
-		.await?
-		.pop()
-		.filter(|upload| upload.expires_at > Utc::now())
-		.ok_or_else(|| Error::NotFound("upload expired or does not exist".into()))?;
-	if !grant.authority().writes(&upload.spec.path) {
-		return Err(Error::Forbidden);
+	let upload = db::rows::<Upload>(access.tx.as_mut(), &query).await?.pop();
+	if let Some(upload) = &upload {
+		if upload.expires_at <= Utc::now() {
+			return Err(Error::Conflict("UPLOAD_INCOMPLETE_OR_EXPIRED".into()));
+		}
+		if !grant.authority().writes(&upload.spec.path) {
+			return Err(Error::Forbidden);
+		}
 	}
 	Ok(upload)
+}
+
+async fn load(access: &mut Access, drive: &Drive, grant: &Grant, id: Uuid) -> Result<Upload> {
+	find(access, drive, grant, id)
+		.await?
+		.ok_or_else(|| Error::NotFound("upload does not exist".into()))
+}
+
+fn part_query(grant: &Grant, id: Uuid) -> reinhardt::query::SelectStatement {
+	db::select("drive_upload_parts", &grant.tenant)
+		.and_where(col("upload_id").eq(Expr::value(id)))
+		.to_owned()
+}
+
+async fn progress(access: &mut Access, grant: &Grant, id: Uuid) -> Result<u64> {
+	let query = part_query(grant, id)
+		.order_by(Alias::new("number"), Order::Desc)
+		.limit(1)
+		.to_owned();
+	Ok(db::rows::<Part>(access.tx.as_mut(), &query)
+		.await?
+		.pop()
+		.map_or(0, |part| {
+			part.number as u64 * CHUNK_BYTES + part.size as u64
+		}))
 }
 
 pub(super) async fn put_part(
@@ -104,37 +160,31 @@ pub(super) async fn put_part(
 	drive: &Drive,
 	grant: &Grant,
 	id: Uuid,
-	number: i64,
-	bytes: &[u8],
+	input: Chunk,
 ) -> Result<UploadReceipt> {
 	let mut sealed = None;
 	let result = async {
 		let upload = load(&mut access, drive, grant, id).await?;
 		if upload.published_version.is_some() {
-			return Err(Error::Conflict("upload is already published".into()));
+			return Err(Error::Conflict("UPLOAD_UNAVAILABLE".into()));
 		}
-		let offset = number
-			.checked_mul(PART_BYTES as i64)
-			.filter(|offset| (0..upload.spec.size).contains(offset))
-			.ok_or_else(|| Error::Invalid("invalid upload part number".into()))?;
-		let expected = (upload.spec.size - offset).min(PART_BYTES as i64);
-		if bytes.len() as i64 != expected {
-			return Err(Error::Invalid("invalid upload part size".into()));
+		if !input.offset.is_multiple_of(CHUNK_BYTES) {
+			return Err(Error::Conflict("UPLOAD_OFFSET_CHANGED".into()));
 		}
-		let digest = format!("{:x}", Sha256::digest(bytes));
-		let mut query = db::select("drive_upload_parts", &grant.tenant);
-		query
-			.and_where(col("upload_id").eq(Expr::value(id)))
-			.and_where(col("number").eq(Expr::value(number)));
-		if let Some(part) = db::rows::<Part>(access.tx.as_mut(), &query).await?.pop() {
-			if digest != part.digest {
-				return Err(Error::Conflict("part already has different content".into()));
-			}
-			return Ok(UploadReceipt {
-				id,
-				part_bytes: PART_BYTES,
-			});
-		}
+		let number = (input.offset / CHUNK_BYTES) as i64;
+		let query = part_query(grant, id)
+			.and_where(col("number").eq(Expr::value(number)))
+			.to_owned();
+		let previous = db::rows::<Part>(access.tx.as_mut(), &query).await?.pop();
+		let prior = previous
+			.as_ref()
+			.map(|part| (part.digest.as_str(), part.size as u64));
+		let uploaded_bytes = progress(&mut access, grant, id).await?;
+		let Some(bytes) =
+			multipart::next_chunk(&input, upload.spec.size as u64, uploaded_bytes, prior)?
+		else {
+			return Ok(UploadReceipt { id, uploaded_bytes });
+		};
 		let mut pending = store
 			.capabilities
 			.begin_object_for(
@@ -142,12 +192,12 @@ pub(super) async fn put_part(
 				&grant.tenant,
 				None,
 				"drive",
-				expected as u64,
+				bytes.len() as u64,
 				true,
 			)
 			.await?;
-		pending.write_block(bytes).await?;
-		sealed = Some(pending.seal(Some(&digest)).await?);
+		pending.write_block(&bytes).await?;
+		let object = sealed.insert(pending.seal(None).await?);
 		db::insert(
 			access.tx.as_mut(),
 			"drive_upload_parts",
@@ -157,24 +207,67 @@ pub(super) async fn put_part(
 				grant.tenant.clone().into(),
 				id.into(),
 				number.into(),
-				digest.into(),
-				expected.into(),
+				object.digest().to_owned().into(),
+				(bytes.len() as i64).into(),
 			],
+		)
+		.await?;
+		db::update(
+			access.tx.as_mut(),
+			"drive_uploads",
+			&grant.tenant,
+			id,
+			[("expires_at", Expr::value(expires_at()).into())],
 		)
 		.await?;
 		Ok(UploadReceipt {
 			id,
-			part_bytes: PART_BYTES,
+			uploaded_bytes: input.offset + bytes.len() as u64,
 		})
 	}
 	.await;
-	// Keep the blob reservation until the foreign key has committed.
+	// Keep reservations until the part references are committed.
 	let result = access.finish(result).await;
 	drop(sealed);
 	result
 }
 
-pub(super) async fn finish(
+struct DriveAssembly<'a> {
+	blobs: &'a dyn BlobStore,
+	tenant: &'a str,
+	pending: &'a mut PendingObject,
+}
+
+#[async_trait::async_trait]
+impl multipart::Assembly for DriveAssembly<'_> {
+	type Part = Part;
+
+	async fn read_part(&mut self, part: Part) -> aidash_application::Result<Vec<u8>> {
+		let unavailable = || aidash_application::Error::Conflict("UPLOAD_PART_UNAVAILABLE".into());
+		let digest = part.digest.parse().map_err(|_| unavailable())?;
+		let stream = self
+			.blobs
+			.get(self.tenant, digest, None)
+			.await?
+			.ok_or_else(unavailable)?;
+		let mut bytes = Vec::new();
+		stream
+			.take(CHUNK_BYTES + 1)
+			.read_to_end(&mut bytes)
+			.await
+			.map_err(|error| aidash_application::Error::External(error.to_string()))?;
+		if bytes.len() as i64 != part.size {
+			return Err(unavailable());
+		}
+		Ok(bytes)
+	}
+
+	async fn append(&mut self, bytes: &[u8]) -> aidash_application::Result<()> {
+		self.pending.write_block(bytes).await.map_err(Into::into)
+	}
+}
+
+pub(super) async fn commit(
 	store: &Store,
 	mut access: Access,
 	drive: &Drive,
@@ -197,19 +290,13 @@ pub(super) async fn finish(
 		if upload.published_version.is_some() {
 			return db::publish(access.tx.as_mut(), drive, grant, &base, changes, provenance).await;
 		}
-		let query = db::select("drive_upload_parts", &grant.tenant)
-			.and_where(col("upload_id").eq(Expr::value(id)))
+		if progress(&mut access, grant, id).await? != upload.spec.size as u64 {
+			return Err(Error::Conflict("UPLOAD_INCOMPLETE_OR_EXPIRED".into()));
+		}
+		let query = part_query(grant, id)
 			.order_by(Alias::new("number"), Order::Asc)
 			.to_owned();
 		let parts = db::rows::<Part>(access.tx.as_mut(), &query).await?;
-		if parts
-			.iter()
-			.enumerate()
-			.any(|(number, part)| part.number != number as i64)
-			|| parts.iter().map(|part| part.size).sum::<i64>() != upload.spec.size
-		{
-			return Err(Error::Conflict("upload parts are incomplete".into()));
-		}
 		let blobs = store.capabilities.blob_store().await?;
 		let mut pending = store
 			.capabilities
@@ -222,24 +309,16 @@ pub(super) async fn finish(
 				true,
 			)
 			.await?;
-		let mut buffer = vec![0; 128 * 1024];
-		for part in parts {
-			let digest = part
-				.digest
-				.parse()
-				.map_err(|_| Error::Conflict("OBJECT_INTEGRITY".into()))?;
-			let Some(mut stream) = blobs.get(&grant.tenant, digest, None).await? else {
-				return Err(Error::Conflict("upload part bytes are missing".into()));
-			};
-			loop {
-				let count = stream.read(&mut buffer).await?;
-				if count == 0 {
-					break;
-				}
-				pending.write_block(&buffer[..count]).await?;
-			}
-		}
-		let object = sealed.insert(pending.seal(None).await?);
+		multipart::assemble(
+			&mut DriveAssembly {
+				blobs: blobs.as_ref(),
+				tenant: &grant.tenant,
+				pending: &mut pending,
+			},
+			parts,
+		)
+		.await?;
+		let object = sealed.insert(pending.seal(Some(&upload.spec.digest)).await?);
 		let media_type = mime_guess::from_path(&path)
 			.first_or_octet_stream()
 			.to_string();

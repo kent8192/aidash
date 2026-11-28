@@ -920,11 +920,10 @@ def render():
             name = route["name"]
             if name == "drive-download":
                 uri += "?path=bruno-missing-file.txt"
-            if name == "drive-upload-part":
-                uri += "?number=0"
             valid_body = {
                 "drive-update": {"action": "close", "closed": True},
-                "drive-upload-start": {"path": "bruno.txt", "size": 0, "base_version": "new", "index": True},
+                "drive-upload-start": {"path": "bruno.txt", "size": 0, "digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "idempotency_key": "00000000-0000-0000-0000-000000000001", "base_version": "new", "index": True},
+                "drive-upload-part": {"offset": 0, "data": "YnJ1bm8="},
             }.get(name)
             body = json.dumps(valid_body) if valid_body is not None else None
             add(endpoint, "Anonymous request is rejected", 401, path=uri, body=body)
@@ -933,10 +932,9 @@ def render():
             if name == "drive-browse":
                 add(endpoint, "Tenant member can browse an open Drive", 200, path=uri,
                     headers=SUBJECT, checks='expect(res.getBody().files).to.be.an("array");expect(res.getBody().drive.node).to.equal(bru.getEnvVar("tenant_node"));')
-            elif name in {"drive-download", "drive-upload-part", "drive-upload-finish"}:
+            elif name in {"drive-download", "drive-upload-part", "drive-upload-commit"}:
                 add(endpoint, "Unknown file or upload returns not found", 404, path=uri,
-                    headers=SUBJECT, body="bruno" if name == "drive-upload-part" else None,
-                    media="application/octet-stream")
+                    headers=SUBJECT, body=body)
             else:
                 add(endpoint, "Mutation requires its typed Drive input", 422, path=uri,
                     headers=SUBJECT, body="{}")

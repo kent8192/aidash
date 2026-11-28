@@ -64992,13 +64992,13 @@
                 "format": "uuid",
                 "type": "string"
               },
-              "part_bytes": {
-                "format": "uint",
+              "uploaded_bytes": {
+                "format": "uint64",
                 "minimum": 0,
                 "type": "integer"
               }
             },
-            "required": ["id", "part_bytes"],
+            "required": ["id", "uploaded_bytes"],
             "type": "object"
           }
         },
@@ -65011,10 +65011,43 @@
     "uuid_parameters": []
   },
   {
+    "json": true,
+    "method": "POST",
+    "name": "drive-upload-part",
+    "path": "/api/nodes/{node}/drive/uploads/{id}/chunks",
+    "query_parameters": [],
+    "responses": {
+      "200": {
+        "definitions": {
+          "DriveUploadReceipt": {
+            "properties": {
+              "id": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "uploaded_bytes": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": ["id", "uploaded_bytes"],
+            "type": "object"
+          }
+        },
+        "schema": {
+          "$ref": "#/components/schemas/DriveUploadReceipt"
+        }
+      }
+    },
+    "source": "server/src/apps/drives/views.rs",
+    "uuid_parameters": ["id"]
+  },
+  {
     "json": false,
     "method": "POST",
-    "name": "drive-upload-finish",
-    "path": "/api/nodes/{node}/drive/uploads/{id}/finish",
+    "name": "drive-upload-commit",
+    "path": "/api/nodes/{node}/drive/uploads/{id}/commit",
     "query_parameters": [],
     "responses": {
       "200": {
@@ -65075,39 +65108,6 @@
         },
         "schema": {
           "$ref": "#/components/schemas/DrivePublication"
-        }
-      }
-    },
-    "source": "server/src/apps/drives/views.rs",
-    "uuid_parameters": ["id"]
-  },
-  {
-    "json": false,
-    "method": "PUT",
-    "name": "drive-upload-part",
-    "path": "/api/nodes/{node}/drive/uploads/{id}/chunks",
-    "query_parameters": ["number"],
-    "responses": {
-      "200": {
-        "definitions": {
-          "DriveUploadReceipt": {
-            "properties": {
-              "id": {
-                "format": "uuid",
-                "type": "string"
-              },
-              "part_bytes": {
-                "format": "uint",
-                "minimum": 0,
-                "type": "integer"
-              }
-            },
-            "required": ["id", "part_bytes"],
-            "type": "object"
-          }
-        },
-        "schema": {
-          "$ref": "#/components/schemas/DriveUploadReceipt"
         }
       }
     },
