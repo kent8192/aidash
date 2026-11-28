@@ -132,7 +132,7 @@ fn workspace_attachment_tools_keep_original_declarations_immutable() {
 			if legacy.id == "aidash.workspace_observe" {
 				"1.0.1"
 			} else {
-				"1.1.0"
+				"1.2.0"
 			}
 		);
 		assert_ne!(new.description, legacy.description);
