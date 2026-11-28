@@ -22,14 +22,6 @@ impl Channels {
 		input: ChannelMessageInput,
 	) -> Result<ChannelMessage> {
 		crate::http::validate(&input)?;
-		// A File version cited from a Run on another Node is retained there, so
-		// its grant's chain is re-evaluated before this message's transaction.
-		crate::apps::execution::capabilities::services::federation_previews::require_cited_chains(
-			&self.runtime,
-			&self.actor,
-			&input.file_versions,
-		)
-		.await?;
 		let mut lease =
 			Lease::begin_message_create(&self.runtime.store, self.actor.clone(), thread).await?;
 		let result = posting::post(

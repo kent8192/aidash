@@ -320,7 +320,6 @@ async fn live_preview_start_requires_termination_proof_after_cancel_or_failure(
 		|what: &str, value: &dyn std::fmt::Debug| eprintln!("#781 {case} | {what} | {value:?}");
 	let c = capability_fixture.await;
 	let run = admit(&c).await;
-	let (_area, _) = working_area(&c, run.id).await;
 	let run = c.f.store.run(&TEST_FIXTURE, run.id).await.unwrap();
 	// The stub Runner.
 	let released = Arc::new(AtomicBool::new(false));

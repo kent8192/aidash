@@ -275,28 +275,6 @@ async fn dispatch(
 				.await,
 			)
 		}
-		("POST", ["scoped", "previews", "retain"]) => {
-			let input = input!(body, aidash_domain::federation::preview::RetainRequest);
-			respond(
-				boxed(|| {
-					crate::apps::execution::capabilities::services::federation_previews::retain(
-						f, admitted, input,
-					)
-				})
-				.await,
-			)
-		}
-		("POST", ["scoped", "previews", "release"]) => {
-			let input = input!(body, aidash_domain::federation::preview::ReleaseRequest);
-			respond(
-				boxed(|| {
-					crate::apps::execution::capabilities::services::federation_previews::release(
-						f, admitted, input,
-					)
-				})
-				.await,
-			)
-		}
 		("POST", ["scoped", "execution", "commands"]) => {
 			let input = checked!(body, remote_execution::commands::Input);
 			respond(boxed(|| remote_execution::commands::handle(f, admitted, input)).await)

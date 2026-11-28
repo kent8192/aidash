@@ -1037,78 +1037,8 @@ pub(crate) async fn file_download(
 					provenance: json!({"kind":kind,"area_id":id}),
 				}
 			} else {
-				// A Retained version left the manifest but an active hold keeps
-				// it; its recorded path and media type serve it as it was cited.
-				let held: Option<(String, i64, String, String)> = {
-					let tenant = &access.identity.tenant;
-					crate::database::native::query_as(
-						&reinhardt::query::Query::select()
-							.column((Alias::new("o"), Alias::new("digest")))
-							.column((Alias::new("o"), Alias::new("size")))
-							.column((Alias::new("f"), Alias::new("path")))
-							.column((Alias::new("f"), Alias::new("media_type")))
-							.from_as(Alias::new("core_objects"), Alias::new("o"))
-							.join(
-								reinhardt::query::JoinType::InnerJoin,
-								reinhardt::query::TableRef::table_alias(
-									Alias::new("core_retention_files"),
-									Alias::new("f"),
-								),
-								Expr::col((Alias::new("f"), Alias::new("file_id")))
-									.equals((Alias::new("o"), Alias::new("id"))),
-							)
-							.join(
-								reinhardt::query::JoinType::InnerJoin,
-								reinhardt::query::TableRef::table_alias(
-									Alias::new("core_retention_holds"),
-									Alias::new("h"),
-								),
-								Expr::col((Alias::new("h"), Alias::new("id")))
-									.equals((Alias::new("f"), Alias::new("hold_id"))),
-							)
-							.and_where(
-								Expr::col((Alias::new("o"), Alias::new("id")))
-									.eq(Expr::value(file)),
-							)
-							.and_where(
-								Expr::col((Alias::new("o"), Alias::new("area_id")))
-									.eq(Expr::value(id)),
-							)
-							.and_where(
-								Expr::col((Alias::new("o"), Alias::new("tenant")))
-									.eq(Expr::value(tenant.to_owned())),
-							)
-							.and_where(
-								Expr::col((Alias::new("o"), Alias::new("kind")))
-									.eq(Expr::value("superseded_working")),
-							)
-							.and_where(Expr::cust(
-								"(h.expires_at IS NULL OR h.expires_at > CURRENT_TIMESTAMP)",
-							))
-							.limit(1)
-							.to_string(PostgresQueryBuilder),
-					)
-					.columns(&["digest", "size", "path", "media_type"])
-					.fetch_optional(&mut **access.tx)
-					.await?
-				};
-				let Some((digest, size, path, media_type)) = held else {
-					// No current File, output or held version: report the Area's
-					// state first, so a deleted or busy Area answers
-					// AREA_UNAVAILABLE/AREA_BUSY rather than pretending the File
-					// never existed.
-					service::available(&area)?;
-					return Err(Error::NotFound("file unavailable".into()));
-				};
-				FileEntry {
-					file_id: file,
-					path,
-					digest,
-					size: size as u64,
-					media_type,
-					scope: FileScope::Working,
-					provenance: json!({"kind":"superseded_working","area_id":id}),
-				}
+				service::available(&area)?;
+				return Err(Error::NotFound("file unavailable".into()));
 			}
 		};
 		download(&f.store, &mut access, entry, input.offset.unwrap_or(0)).await
@@ -1192,27 +1122,8 @@ pub(crate) async fn thread_delete(
 	input: super::thread_lifecycle::DeleteThread,
 ) -> Result<DeletedThread> {
 	let mut access = access(&f, actor).await?;
-	let releases =
-		match super::federation_previews::releases_for_thread(&f, &mut access, thread).await {
-			Ok(releases) => releases,
-			Err(error) => {
-				tracing::warn!(%error, "remote File version release routes could not be gathered");
-				Vec::new()
-			}
-		};
 	let result = super::thread_lifecycle::delete(&f.store, &mut access, thread, input).await;
 	let result = access.finish(result).await?;
-	if tokio::time::timeout(
-		std::time::Duration::from_secs(10),
-		super::federation_previews::notify_releases(&f, releases),
-	)
-	.await
-	.is_err()
-	{
-		tracing::warn!(
-			"remote File version release notifications timed out; H expiry remains in force"
-		);
-	}
 	f.notify.notify_waiters();
 	typed(result)
 }

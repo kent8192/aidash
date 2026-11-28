@@ -2159,12 +2159,6 @@ pub(crate) fn session_scope<'a>(
 	crate::apps::execution::repositories::sessions::Scope { store, access }
 }
 
-pub(crate) fn retention_scope<'a>(
-	store: Option<&'a Store>,
-	access: &'a mut crate::authorization::access::Access,
-) -> crate::apps::execution::repositories::retention::Scope<'a> {
-	crate::apps::execution::repositories::retention::Scope { store, access }
-}
 pub(crate) fn file_scope<'a>(
 	store: Option<&'a Store>,
 	access: &'a mut crate::authorization::access::Access,

@@ -29,8 +29,6 @@ pub mod reclamation;
 pub(crate) mod records;
 #[path = "references.rs"]
 pub(crate) mod references;
-#[path = "retention.rs"]
-pub mod retention;
 #[path = "service.rs"]
 pub(crate) mod service;
 #[path = "sessions.rs"]

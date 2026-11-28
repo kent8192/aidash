@@ -10,7 +10,6 @@ use crate::{
 };
 use aidash_application::preview::live::{self as application, RunFacts, Start, Started, Status};
 use aidash_application::tenancy::TenancyScope;
-use aidash_domain::capabilities::retention::Holder;
 use aidash_domain::preview::live::{Limits, LivePreview, State, StopReason};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -706,9 +705,6 @@ async fn release_hold(
 	tenant: &str,
 	preview: Uuid,
 ) -> NativeResult<()> {
-	let holder = Holder::LivePreview {
-		live_preview_id: preview,
-	};
 	crate::database::native::query(
 		&reinhardt::query::Query::delete()
 			.from_table(reinhardt::query::Alias::new("core_retention_holds"))
@@ -718,11 +714,11 @@ async fn release_hold(
 			)
 			.and_where(
 				reinhardt::query::Expr::col(reinhardt::query::Alias::new("holder_kind"))
-					.eq(reinhardt::query::Expr::value(holder.kind())),
+					.eq(reinhardt::query::Expr::value("live_preview")),
 			)
 			.and_where(
 				reinhardt::query::Expr::col(reinhardt::query::Alias::new("holder_id"))
-					.eq(reinhardt::query::Expr::value(holder.id())),
+					.eq(reinhardt::query::Expr::value(preview.to_string())),
 			)
 			.to_string(reinhardt::query::PostgresQueryBuilder),
 	)

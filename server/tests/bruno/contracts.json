@@ -47354,24 +47354,6 @@
   {
     "json": true,
     "method": "POST",
-    "name": "peer-preview-release",
-    "path": "/federation/v0.1/scoped/previews/release",
-    "query_parameters": [],
-    "source": "server/src/apps/identity/views/execution.rs",
-    "uuid_parameters": []
-  },
-  {
-    "json": true,
-    "method": "POST",
-    "name": "peer-preview-retain",
-    "path": "/federation/v0.1/scoped/previews/retain",
-    "query_parameters": [],
-    "source": "server/src/apps/identity/views/execution.rs",
-    "uuid_parameters": []
-  },
-  {
-    "json": true,
-    "method": "POST",
     "name": "peer-preview-ticket",
     "path": "/federation/v0.1/scoped/previews/tickets",
     "query_parameters": [],

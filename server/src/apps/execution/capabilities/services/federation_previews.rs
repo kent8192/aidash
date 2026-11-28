@@ -1,13 +1,9 @@
 //! Hosting Node authority for Federation File and Live preview tickets.
 use crate::{Error, Result, authorization::identity::Actor, federation::Federation};
 use aidash_application::federation::inbound::Admitted;
-use aidash_domain::capabilities::retention::Holder;
 use aidash_domain::federation::{
 	execution::Description,
-	preview::{
-		File, InspectRequest, Inspection, Live, ReleaseRequest, RetainRequest, Retained, Target,
-		Ticket, TicketRequest,
-	},
+	preview::{File, InspectRequest, Inspection, Live, Target, Ticket, TicketRequest},
 };
 use aidash_domain::{federation::route::Sender, nodes::NodeAddress, tenancy::TenantName};
 use http::Method;
@@ -43,22 +39,6 @@ async fn require_live_admission(
 	Ok(())
 }
 
-fn reference_id(sender: &str, message: uuid::Uuid, file: uuid::Uuid) -> String {
-	format!("{sender}:{message}:{file}")
-}
-
-pub(crate) struct ReleaseDelivery {
-	pub sender: Sender,
-	pub node: String,
-	pub request: ReleaseRequest,
-}
-
-#[derive(Clone, Copy)]
-enum SourceAudience {
-	Viewer,
-	ThreadCleanup(uuid::Uuid),
-}
-
 /// The source Deployment has a durable admission binding, but no copy of H's
 /// Run row. Resolve the exact requester and target from that binding, and the
 /// grant it binds.
@@ -66,7 +46,6 @@ async fn source_target(
 	f: &Federation,
 	access: &mut crate::authorization::access::Access,
 	run_id: uuid::Uuid,
-	audience: SourceAudience,
 ) -> Result<(Sender, String, uuid::Uuid)> {
 	let binding: Option<(uuid::Uuid, uuid::Uuid)> = crate::database::native::query_as(
 		&Query::select()
@@ -87,30 +66,20 @@ async fn source_target(
 		.and_where(Expr::col("id").eq(Expr::value(grant_id)))
 		.and_where(Expr::col("task_id").eq(Expr::value(task_id)))
 		.and_where(Expr::col("tenant").eq(Expr::value(&access.identity.tenant)));
-	// A release is cleanup for a previously authorized hold, so V can still
-	// notify H after the source grant expires or is revoked.
-	if matches!(audience, SourceAudience::Viewer) {
-		grant_query.and_where(
-			crate::apps::identity::repositories::remote_grants::live_condition(
-				"authorization_remote_grants",
-			),
-		);
-	}
+	grant_query.and_where(
+		crate::apps::identity::repositories::remote_grants::live_condition(
+			"authorization_remote_grants",
+		),
+	);
 	let grant: Option<(String, String, uuid::Uuid)> =
 		crate::database::native::query_as(&grant_query.to_string(PostgresQueryBuilder))
 			.columns(&["node_id", "root_subject", "thread_id"])
 			.fetch_optional(&mut **access.tx)
 			.await?;
 	let (target, requester, thread_id) = grant.ok_or(Error::Forbidden)?;
-	match audience {
-		SourceAudience::Viewer => {
-			let task = access.task_read(task_id).await?;
-			if requester != access.identity.subject || task.thread_id != thread_id {
-				return Err(Error::Forbidden);
-			}
-		}
-		SourceAudience::ThreadCleanup(thread) if thread == thread_id => {}
-		SourceAudience::ThreadCleanup(_) => return Err(Error::Forbidden),
+	let task = access.task_read(task_id).await?;
+	if requester != access.identity.subject || task.thread_id != thread_id {
+		return Err(Error::Forbidden);
 	}
 	let source = f
 		.config
@@ -140,7 +109,7 @@ async fn viewer_target(
 	run_id: uuid::Uuid,
 ) -> Result<(Sender, String)> {
 	let mut access = crate::authorization::access::Access::begin(&f.store, identity).await?;
-	let result = source_target(f, &mut access, run_id, SourceAudience::Viewer).await;
+	let result = source_target(f, &mut access, run_id).await;
 	let (sender, node, grant) = access.finish(result).await?;
 	let (lease, _) = crate::authorization::remote::description_lease(f, &node, grant)
 		.await
@@ -152,32 +121,6 @@ async fn viewer_target(
 	Ok((sender, node))
 }
 
-/// A message that cites File versions of Runs another Node executes for this
-/// Home asks that Node to retain each one ([`retain_remote`]). Each cited
-/// Run's grant is described first, its whole chain re-evaluated as for a
-/// preview ticket (#1013), before the message's own transaction opens:
-/// describing a grant inside that transaction could wait on its locks.
-pub(crate) async fn require_cited_chains(
-	f: &Federation,
-	actor: &Actor,
-	citations: &[aidash_domain::threads::channels::CitedFileVersion],
-) -> Result<()> {
-	let runs: std::collections::BTreeSet<uuid::Uuid> = citations
-		.iter()
-		.filter_map(|citation| citation.run_id)
-		.collect();
-	if runs.is_empty() {
-		return Ok(());
-	}
-	let Actor::Subject(identity) = actor else {
-		return Err(Error::Forbidden);
-	};
-	for run in runs {
-		viewer_target(f, identity, run).await?;
-	}
-	Ok(())
-}
-
 /// V can display a remote citation only to the original requester while the
 /// source Task is still readable. No local Run row exists on V.
 pub(crate) async fn source_viewer(
@@ -185,220 +128,9 @@ pub(crate) async fn source_viewer(
 	access: &mut crate::authorization::access::Access,
 	run_id: uuid::Uuid,
 ) -> Result<()> {
-	source_target(f, access, run_id, SourceAudience::Viewer)
-		.await
-		.map(|_| ())
+	source_target(f, access, run_id).await.map(|_| ())
 }
 
-/// Gather routing before Thread deletion hides its Runs from normal reads.
-pub(crate) async fn releases_for_thread(
-	f: &Federation,
-	access: &mut crate::authorization::access::Access,
-	thread: uuid::Uuid,
-) -> Result<Vec<ReleaseDelivery>> {
-	let refs =
-		crate::apps::workspaces::repositories::citations::remote_for_thread(access, thread).await?;
-	let mut deliveries = Vec::new();
-	for (message_id, run_id, file_id) in refs {
-		let Ok((sender, node, _)) =
-			source_target(f, access, run_id, SourceAudience::ThreadCleanup(thread)).await
-		else {
-			continue;
-		};
-		deliveries.push(ReleaseDelivery {
-			sender,
-			node,
-			request: ReleaseRequest {
-				run_id,
-				file_id,
-				message_id,
-			},
-		});
-	}
-	Ok(deliveries)
-}
-
-pub(crate) async fn notify_releases(f: &Federation, deliveries: Vec<ReleaseDelivery>) {
-	for delivery in deliveries {
-		let outcome: Result<u64> = f
-			.request(
-				&delivery.sender,
-				&delivery.node,
-				Method::POST,
-				"/scoped/previews/release",
-				Some(&json!(delivery.request)),
-			)
-			.await;
-		if let Err(error) = outcome {
-			tracing::warn!(%error, "remote File version release notification failed; H expiry remains in force");
-		}
-	}
-}
-
-/// H retains the exact File version for one V message. H's configured File
-/// Retention Rule bounds this hold even when V never sends a release.
-pub(crate) async fn retain(
-	f: Federation,
-	admitted: Admitted,
-	request: RetainRequest,
-) -> Result<Retained> {
-	let preview = f
-		.config
-		.preview
-		.as_ref()
-		.ok_or_else(|| Error::Conflict("PREVIEW_UNAVAILABLE".into()))?;
-	let mut access = crate::apps::identity::services::peer::access(&f, &admitted).await?;
-	let result = async {
-		let registration = crate::apps::identity::repositories::node_registrations::get_locked(
-			&mut **access.tx,
-			admitted.tenant.as_str(),
-			admitted.receiver.node.as_str(),
-			&admitted.sender,
-			true,
-		)
-		.await?
-		.ok_or(Error::Forbidden)?;
-		if !registration.enabled
-			|| (admitted.sender.deployment != f.config.deployment
-				&& registration.dashboard_origin.is_none())
-		{
-			return Err(Error::Forbidden);
-		}
-		let record = crate::apps::execution::repositories::previews::peer_run_admission(
-			&mut access,
-			request.run_id,
-			&admitted.sender.to_string(),
-		)
-		.await?;
-		let description: Description = serde_json::from_value(record.description)?;
-		if record.node != admitted.receiver.node.as_str()
-			|| record.tenant != admitted.tenant.as_str()
-			|| record.credential_id != access.identity.credential_id
-			|| description.source_subject != admitted.subject().ok_or(Error::Forbidden)?
-			|| description.source_node != admitted.sender.to_string()
-			|| description.target_node != admitted.receiver.to_string()
-		{
-			return Err(Error::Forbidden);
-		}
-		let persisted = crate::apps::execution::models::Run::read_in(
-			&mut **access.tx,
-			request.run_id,
-			None,
-		)
-		.await?
-		.ok_or(Error::Forbidden)?;
-		let run = persisted;
-		if run.node != admitted.receiver.node
-			|| run.home_node != description.source_node
-			|| run.task_id != record.task_id
-			|| run.thread_id != description.task.thread_id
-		{
-			return Err(Error::Forbidden);
-		}
-		require_live_admission(&mut access, &description, &run).await?;
-		let area = super::sessions::for_run(&mut access, &run).await?;
-		if area.id != request.area_id {
-			return Err(Error::Forbidden);
-		}
-		let expires_at = chrono::Utc::now()
-			+ chrono::TimeDelta::days(preview.federation_hold_days);
-		let holder = Holder::Federation {
-			peer: admitted.sender.to_string(),
-			reference_id: reference_id(
-				&admitted.sender.to_string(),
-				request.message_id,
-				request.file_id,
-			),
-			expires_at,
-		};
-		let hold = super::retention::retain(
-			&f.store,
-			&mut access,
-			request.area_id,
-			request.file_id,
-			holder,
-		)
-		.await
-		.map_err(|error| match error {
-			Error::Conflict(message) if message.starts_with("QUOTA_EXCEEDED") => {
-				Error::Conflict(format!(
-					"FILE_VERSION_QUOTA_EXCEEDED: File version {} of Working Area {} cannot be retained; send the message without the citation",
-					request.file_id, request.area_id,
-				))
-			}
-			other => other,
-		})?;
-		let expires_at = hold.holder.expires_at().ok_or(Error::Forbidden)?;
-		let retained = hold
-			.files
-			.iter()
-			.find(|file| file.file_id == request.file_id)
-			.ok_or(Error::Forbidden)?;
-		let digest = crate::apps::workspaces::repositories::citations::object_digest(
-			&mut access,
-			&area.tenant,
-			request.area_id,
-			request.file_id,
-		)
-		.await?;
-		Ok(Retained {
-			file: File {
-				file_id: request.file_id,
-				path: retained.path.clone(),
-				digest,
-				size: retained.size,
-				media_type: retained.media_type.clone(),
-			},
-			revision: hold.revision,
-			expires_at,
-		})
-	}
-	.await;
-	access.finish(result).await
-}
-
-/// H releases a V reference after its message is removed. Expiry is the
-/// fallback when V cannot deliver this notification.
-pub(crate) async fn release(
-	f: Federation,
-	admitted: Admitted,
-	request: ReleaseRequest,
-) -> Result<u64> {
-	let mut access = crate::apps::identity::services::peer::access(&f, &admitted).await?;
-	let result = async {
-		let record = crate::apps::execution::repositories::previews::peer_run_admission(
-			&mut access,
-			request.run_id,
-			&admitted.sender.to_string(),
-		)
-		.await?;
-		let description: Description = serde_json::from_value(record.description)?;
-		if record.node != admitted.receiver.node.as_str()
-			|| record.tenant != admitted.tenant.as_str()
-			|| record.credential_id != access.identity.credential_id
-			|| description.source_subject != admitted.subject().ok_or(Error::Forbidden)?
-			|| description.source_node != admitted.sender.to_string()
-			|| description.target_node != admitted.receiver.to_string()
-		{
-			return Err(Error::Forbidden);
-		}
-		let holder = Holder::Federation {
-			peer: admitted.sender.to_string(),
-			reference_id: reference_id(
-				&admitted.sender.to_string(),
-				request.message_id,
-				request.file_id,
-			),
-			expires_at: chrono::Utc::now(),
-		};
-		super::retention::release(&f.store, &mut access, &holder).await
-	}
-	.await;
-	access.finish(result).await
-}
-
-/// H exposes only the Run's authorized File version metadata and Live preview
-/// state. The viewing address is never part of this read-only response.
 pub(crate) async fn inspect(
 	f: Federation,
 	admitted: Admitted,
@@ -662,31 +394,6 @@ pub(crate) async fn inspect_remote(
 		Method::POST,
 		"/scoped/previews/inspect",
 		Some(&json!(InspectRequest { run_id })),
-	)
-	.await
-}
-
-/// V asks H to retain a File version before committing the citing message.
-pub(crate) async fn retain_remote(
-	f: &Federation,
-	actor: Actor,
-	request: RetainRequest,
-) -> Result<Retained> {
-	let Actor::Subject(identity) = actor else {
-		return Err(Error::Forbidden);
-	};
-	// The citing message's transaction is open here, so the grant's chain was
-	// described before it opened ([`require_cited_chains`]); this rechecks the
-	// binding, the live grant and the requester.
-	let mut access = crate::authorization::access::Access::begin(&f.store, &identity).await?;
-	let result = source_target(f, &mut access, request.run_id, SourceAudience::Viewer).await;
-	let (sender, node, _) = access.finish(result).await?;
-	f.request(
-		&sender,
-		&node,
-		Method::POST,
-		"/scoped/previews/retain",
-		Some(&json!(request)),
 	)
 	.await
 }

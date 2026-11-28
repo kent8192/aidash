@@ -1862,12 +1862,6 @@ mod session_boundary_tests;
 #[path = "core_capabilities/content_limits.rs"]
 mod content_limit_tests;
 
-#[path = "core_capabilities/retention_boundaries.rs"]
-mod retention_boundary_tests;
-
-#[path = "core_capabilities/retained_versions.rs"]
-mod retained_version_tests;
-
 #[path = "core_capabilities/previews.rs"]
 mod preview_tests;
 
@@ -1876,9 +1870,6 @@ mod scratch_save;
 
 #[path = "core_capabilities/live_previews.rs"]
 mod live_preview_tests;
-
-#[path = "core_capabilities/message_citations.rs"]
-mod message_citation_tests;
 
 #[cfg(feature = "capability-runtime-tests")]
 #[path = "core_capabilities/extraction_lifecycle.rs"]

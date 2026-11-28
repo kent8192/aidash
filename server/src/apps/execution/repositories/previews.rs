@@ -9,7 +9,7 @@ use crate::{
 	apps::execution::capabilities::{
 		models::CoreLivePreviews,
 		serializers::contracts::FileEntry,
-		services::{retention, service, sessions},
+		services::{service, sessions},
 	},
 	apps::identity::services::identity::SubjectIdentity,
 	authorization::access::Access,
@@ -19,7 +19,6 @@ use aidash_application::preview::{
 	self as application, Exchange, FileVersion, Page, Preview, TicketIssue,
 };
 use aidash_application::tenancy::{DeploymentScopeReason, TenancyScope};
-use aidash_domain::capabilities::retention::RetainedFile;
 use aidash_domain::preview::{
 	PreviewKind, PreviewLabel, PreviewSecret, Session, label_of,
 	live::{State as LiveState, StopReason},
@@ -140,25 +139,10 @@ impl Scope<'_> {
 		file_id: Uuid,
 	) -> NativeResult<FileVersion> {
 		let area = sessions::load(self.access, area_id).await?;
-		// The current manifest pins today's File version; a superseded version
-		// opens only while a hold keeps its manifest (ADR 0095).
-		let current = service::files(&area)?
+		let entry = service::files(&area)?
 			.into_iter()
-			.find(|entry| entry.file_id == file_id);
-		let entry = match current {
-			Some(entry) => entry,
-			None => {
-				let retained =
-					retention::retained_manifest(self.store, self.access, area_id, file_id)
-						.await?
-						.ok_or_else(|| NativeError::NotFound("file unavailable".into()))?;
-				let file = retained
-					.into_iter()
-					.find(|file| file.file_id == file_id)
-					.ok_or_else(|| NativeError::NotFound("file unavailable".into()))?;
-				retained_entry(self.access, area_id, &file).await?
-			}
-		};
+			.find(|entry| entry.file_id == file_id)
+			.ok_or_else(|| NativeError::NotFound("file unavailable".into()))?;
 		Ok(FileVersion {
 			area_id,
 			file_id,
@@ -792,30 +776,12 @@ impl Gateway {
 			.await?;
 		let result = async {
 			let area = sessions::load(&mut access, area_id).await?;
-			let current = super::super::capabilities::services::operations::pod_files(&area)?;
-			let current_root = current
+			let files = super::super::capabilities::services::operations::pod_files(&area)?;
+			let root = files
 				.iter()
 				.find(|entry| entry.file_id == file_id)
-				.cloned();
-			let (files, root) = match current_root {
-				Some(root) => (current, root),
-				None => {
-					let retained =
-						retention::retained_manifest(&self.store, &mut access, area_id, file_id)
-							.await?
-							.ok_or_else(|| NativeError::NotFound("file unavailable".into()))?;
-					let mut files = Vec::with_capacity(retained.len());
-					for file in &retained {
-						files.push(retained_entry(&mut access, area_id, file).await?);
-					}
-					let root = files
-						.iter()
-						.find(|entry| entry.file_id == file_id)
-						.cloned()
-						.ok_or_else(|| NativeError::NotFound("file unavailable".into()))?;
-					(files, root)
-				}
-			};
+				.cloned()
+				.ok_or_else(|| NativeError::NotFound("file unavailable".into()))?;
 			let root_kind = application::media_type(&root.media_type);
 			let wanted = relative_path(path)?;
 			let entry = if wanted.is_empty() {
@@ -1072,36 +1038,6 @@ fn relative_path(path: &str) -> NativeResult<String> {
 		return Err(NativeError::NotFound("file unavailable".into()));
 	}
 	Ok(relative.to_owned())
-}
-
-/// The immutable object behind a held manifest entry.
-async fn retained_entry(
-	access: &mut Access,
-	area_id: Uuid,
-	file: &RetainedFile,
-) -> NativeResult<FileEntry> {
-	let digest: Option<String> = crate::database::native::query_scalar(
-		&Query::select()
-			.column(Alias::new("digest"))
-			.from(Alias::new("core_objects"))
-			.and_where(Expr::col(Alias::new("id")).eq(Expr::value(file.file_id)))
-			.and_where(Expr::col(Alias::new("tenant")).eq(Expr::value(&access.identity.tenant)))
-			.and_where(Expr::col(Alias::new("area_id")).eq(Expr::value(area_id)))
-			.and_where(Expr::col(Alias::new("kind")).is_in(["working", "superseded_working"]))
-			.limit(1)
-			.to_string(PostgresQueryBuilder),
-	)
-	.scalar_optional(&mut **access.tx)
-	.await?;
-	Ok(FileEntry {
-		file_id: file.file_id,
-		path: file.path.clone(),
-		digest: digest.ok_or_else(|| NativeError::NotFound("file unavailable".into()))?,
-		size: file.size,
-		media_type: file.media_type.clone(),
-		scope: crate::apps::execution::capabilities::serializers::contracts::FileScope::Working,
-		provenance: serde_json::json!({"kind": "working", "area_id": area_id}),
-	})
 }
 
 async fn read_all(store: &Store, access: &mut Access, entry: &FileEntry) -> NativeResult<Vec<u8>> {
