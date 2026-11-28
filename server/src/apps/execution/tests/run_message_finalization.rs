@@ -1164,7 +1164,7 @@ async fn a_cancelled_finalizing_run_settles_its_saved_abandonment(
 
 #[rstest::rstest]
 #[tokio::test]
-async fn a_new_input_discards_pending_tool_calls_without_spending_the_last_inference_step(
+async fn a_new_input_discards_pending_tool_calls_without_advancing_the_step(
 	#[future(awt)]
 	#[from(common::native_application)]
 	fixture: common::ApplicationFixture,
@@ -1177,25 +1177,14 @@ async fn a_new_input_discards_pending_tool_calls_without_spending_the_last_infer
 	})).await;
 	assert_eq!(status, 200, "{created}");
 	let run = f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
-	let agent = f
-		.registry
-		.get(
-			&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
-			&run.agent_id,
-			&run.agent_version,
-		)
-		.await
-		.unwrap();
-	let max_steps = serde_json::from_value::<aidash_server::registry::AgentConfig>(agent.config)
-		.unwrap()
-		.max_steps;
 	let harness = Harness {
 		federation: f.clone(),
 	};
 	assert!(harness.worker_once().await.unwrap());
 	let worker = Uuid::new_v4();
 	let mut leased = f.store.lease_run(worker, 30).await.unwrap().unwrap();
-	leased.step = max_steps - 1;
+	let response_step = 3;
+	leased.step = response_step;
 
 	leased.state = aidash_server::domain::RunState::ToolCall(Box::new(common::tool_call(json!({
 		"response_epoch":leased.revision + i64::from(leased.step) + 1,
@@ -1242,11 +1231,7 @@ async fn a_new_input_discards_pending_tool_calls_without_spending_the_last_infer
 	assert!(harness.worker_once().await.unwrap());
 	let current = f.store.run(&TEST_FIXTURE, run.id).await.unwrap();
 	assert_eq!(current.phase().as_str(), "THINKING");
-	assert_eq!(current.step, max_steps - 1);
-	assert!(
-		current.step < max_steps,
-		"the correction can still be inferred"
-	);
+	assert_eq!(current.step, response_step);
 	assert!(json!(current.state)["data"].get("response").is_none());
 	assert!(
 		f.store
@@ -1302,7 +1287,7 @@ async fn a_new_input_discards_pending_tool_calls_without_spending_the_last_infer
 #[case::empty("", false)]
 #[case::oversized("summary that is too long", true)]
 #[tokio::test]
-async fn rejected_catchup_summary_consumes_the_last_step(
+async fn rejected_catchup_summary_consumes_one_step(
 	#[case] response_text: &str,
 	#[case] oversized: bool,
 	#[future(awt)]
@@ -1326,20 +1311,9 @@ async fn rejected_catchup_summary_consumes_the_last_step(
 	);
 	let worker = Uuid::new_v4();
 	let mut leased = f.store.lease_run(worker, 30).await.unwrap().unwrap();
-	let agent = f
-		.registry
-		.get(
-			&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
-			"research",
-			"1.0.0",
-		)
-		.await
-		.unwrap();
-	let max_steps = serde_json::from_value::<aidash_server::registry::AgentConfig>(agent.config)
-		.unwrap()
-		.max_steps;
 	let selected = json!({"file_id":Uuid::new_v4(),"expected_digest":"digest"});
-	leased.step = max_steps - 1;
+	let response_step = 3;
+	leased.step = response_step;
 
 	leased.context.media_inferred_seq = 7;
 	leased.observed_input_seq = 7;
@@ -1370,7 +1344,7 @@ async fn rejected_catchup_summary_consumes_the_last_step(
 	);
 	let current = f.store.run(&TEST_FIXTURE, run.id).await.unwrap();
 	assert_eq!(current.phase().as_str(), "THINKING");
-	assert_eq!(current.step, max_steps);
+	assert_eq!(current.step, response_step + 1);
 	assert_eq!(json!(current.context)["run_message_summary_seq"], 0);
 	assert_eq!(json!(current.context)["run_message_summary"], "");
 	assert_eq!(json!(current.context)["media_inferred_seq"], 0);
@@ -1389,16 +1363,6 @@ async fn rejected_catchup_summary_consumes_the_last_step(
 					&& (!oversized || entry["event"]["max_bytes"] == 8)
 			)
 	);
-	assert!(
-		(Harness {
-			federation: f.clone()
-		})
-		.worker_once()
-		.await
-		.unwrap()
-	);
-	let bounded = f.store.run(&TEST_FIXTURE, run.id).await.unwrap();
-	assert_eq!(json!(bounded.state)["data"]["target"], "FAILED");
 	cleanup(f, &url, &schema).await;
 }
 

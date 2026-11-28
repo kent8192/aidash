@@ -475,7 +475,6 @@ fn job(model: Arc<Model>) -> Job {
 			revision: 0,
 		},
 		context_window: 20000,
-		agent_max_steps: 3,
 		model_provider: model,
 		request: ModelRequest {
 			provider_tools: vec![],
@@ -1224,7 +1223,6 @@ async fn a_discoverable_plugin_tool_is_answered_only_after_it_is_loaded() {
 	);
 	let mut job = offering(job(model.clone()), &snapshot, pinned, true);
 	job.limits.max_steps = 8;
-	job.agent_max_steps = 8;
 	job.input
 		.fixtures
 		.insert(PLUGIN_TOOL.into(), plugin_fixture());

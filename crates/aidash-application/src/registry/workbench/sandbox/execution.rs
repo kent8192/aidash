@@ -40,7 +40,6 @@ pub struct Job {
 	pub tool_references: std::collections::BTreeMap<String, EntityRef>,
 	pub limits: TestLimits,
 	pub context_window: usize,
-	pub agent_max_steps: i32,
 	pub model_provider: std::sync::Arc<dyn ModelProvider>,
 	pub request: ModelRequest,
 	pub initial_conversation: Vec<Value>,
@@ -67,7 +66,6 @@ pub async fn simulate(execution: &Execution, session_id: Uuid, job: &Job) -> Res
 		tool_references,
 		limits,
 		context_window,
-		agent_max_steps,
 		model_provider,
 		..
 	} = job;
@@ -84,7 +82,7 @@ pub async fn simulate(execution: &Execution, session_id: Uuid, job: &Job) -> Res
 	let mut usage_complete = true;
 	let mut status = "blocked";
 	let mut error = None;
-	for step in 0..limits.max_steps.min(*agent_max_steps) {
+	for step in 0..limits.max_steps {
 		let admitted_session = execution.repository.read_session(session_id).await?;
 		let still_running = admitted_session.status == "running";
 		if !still_running {
