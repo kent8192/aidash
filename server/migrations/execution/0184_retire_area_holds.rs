@@ -178,9 +178,7 @@ pub(super) fn migration() -> Migration {
 		.add_operation(Operation::RunSQL {
 			// Generated from the Reinhardt Query seed. The old contents are disposable.
 			sql: include_str!("sql/forward/0184_retire_area_manifests.sql").into(),
-			reverse_sql: Some(
-				include_str!("sql/backward/0184_retire_area_manifests.sql").into(),
-			),
+			reverse_sql: Some("".into()),
 		})
 		.add_operation(Operation::DropConstraintDefinition {
 			table: "core_blob_references".into(),
@@ -194,8 +192,13 @@ pub(super) fn migration() -> Migration {
 				deferrable: None,
 			},
 		})
-		.add_operation(Operation::DropTable {
-			name: "core_manifest_revisions".into(),
+		.add_operation(Operation::RunSQL {
+			// This database-only table has no ProjectState model. Reinhardt
+			// cannot reconstruct it when reversing a typed DropTable.
+			sql: "DROP TABLE public.core_manifest_revisions;".into(),
+			reverse_sql: Some(
+				include_str!("sql/backward/0184_retire_area_manifests.sql").into(),
+			),
 		})
 		.add_operation(Operation::DropColumn {
 			table: "core_areas".into(),
