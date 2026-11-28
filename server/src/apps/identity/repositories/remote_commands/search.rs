@@ -36,7 +36,7 @@ pub(super) async fn thread_search(
 		let spec = spec.as_ref().ok_or(Error::Forbidden)?;
 		let search = crate::apps::knowledge::serializers::contracts::Search {
 			query: input["query"].as_str().unwrap_or_default().to_owned(),
-			image: None,
+
 			attachment: None,
 			agent: None,
 			metadata: json!({}),

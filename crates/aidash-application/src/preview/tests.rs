@@ -8,7 +8,6 @@ struct Fixture {
 	origin: String,
 	subject: String,
 	credential: Uuid,
-	version: Option<FileVersion>,
 	preview: Option<Preview>,
 	tickets: Vec<TicketIssue>,
 }
@@ -30,47 +29,29 @@ impl Scope for Fixture {
 	fn credential_id(&self) -> Uuid {
 		self.credential
 	}
-	async fn authorize_file(&mut self, _: Uuid, _: Uuid) -> Result<FileVersion> {
-		self.version.clone().ok_or(Error::NotFound("file".into()))
+	async fn ticket(&mut self, ticket: TicketIssue) -> Result<()> {
+		self.tickets.push(ticket);
+		Ok(())
 	}
-	async fn preview(&mut self, kind: &PreviewKind) -> Result<Preview> {
+	async fn live_preview(&mut self, live_preview_id: Uuid) -> Result<Preview> {
 		Ok(self
 			.preview
 			.get_or_insert(Preview {
 				id: Uuid::new_v4(),
 				label: PreviewLabel::generate()?,
-				kind: kind.clone(),
+				kind: PreviewKind::Live { live_preview_id },
 			})
 			.clone())
 	}
-	async fn ticket(&mut self, ticket: TicketIssue) -> Result<()> {
-		self.tickets.push(ticket);
-		Ok(())
-	}
-	async fn authorize_area(&mut self, _: Uuid) -> Result<()> {
-		self.version
-			.clone()
-			.map(drop)
-			.ok_or(Error::NotFound("file".into()))
-	}
-	async fn live_preview(&mut self, _: Uuid) -> Result<Preview> {
-		Err(Error::NotFound("live preview".into()))
-	}
 }
 
-fn fixture(media: &str) -> Fixture {
+fn fixture() -> Fixture {
 	Fixture {
 		domain: Some("aidashusercontent.app".into()),
 		port: None,
 		origin: "https://dashboard.example".into(),
 		subject: "alice".into(),
 		credential: Uuid::new_v4(),
-		version: Some(FileVersion {
-			area_id: Uuid::new_v4(),
-			file_id: Uuid::new_v4(),
-			path: "index.html".into(),
-			media_type: media.into(),
-		}),
 		preview: None,
 		tickets: Vec::new(),
 	}
@@ -78,31 +59,17 @@ fn fixture(media: &str) -> Fixture {
 
 #[tokio::test]
 async fn a_deployment_without_a_preview_domain_reports_unavailable() {
-	let mut fixture = fixture("text/html");
+	let mut fixture = fixture();
 	fixture.domain = None;
-	let error = issue(&mut fixture, Uuid::new_v4(), Uuid::new_v4())
-		.await
-		.unwrap_err();
+	let error = issue_live(&mut fixture, Uuid::new_v4()).await.unwrap_err();
 	assert_eq!(error.to_string(), "PREVIEW_UNAVAILABLE");
 	assert!(fixture.tickets.is_empty());
 }
 
 #[tokio::test]
-async fn only_html_and_pdf_versions_open_on_the_preview_domain() {
-	let mut fixture = fixture("image/png");
-	let error = issue(&mut fixture, Uuid::new_v4(), Uuid::new_v4())
-		.await
-		.unwrap_err();
-	assert!(error.to_string().contains("HTML and PDF"));
-}
-
-#[tokio::test]
 async fn a_ticket_url_names_the_preview_domain_and_hides_only_the_digest() {
-	let mut fixture = fixture("text/html; charset=utf-8");
-	let version = fixture.version.clone().unwrap();
-	let issued = issue(&mut fixture, version.area_id, version.file_id)
-		.await
-		.unwrap();
+	let mut fixture = fixture();
+	let issued = issue_live(&mut fixture, Uuid::new_v4()).await.unwrap();
 	let ticket = fixture.tickets.pop().unwrap();
 	assert!(issued.url.starts_with("https://"));
 	assert!(
@@ -120,12 +87,9 @@ async fn a_ticket_url_names_the_preview_domain_and_hides_only_the_digest() {
 
 #[tokio::test]
 async fn a_public_port_is_carried_into_the_ticket_url() {
-	let mut fixture = fixture("application/pdf");
+	let mut fixture = fixture();
 	fixture.port = Some(8443);
-	let version = fixture.version.clone().unwrap();
-	let issued = issue(&mut fixture, version.area_id, version.file_id)
-		.await
-		.unwrap();
+	let issued = issue_live(&mut fixture, Uuid::new_v4()).await.unwrap();
 	assert!(
 		issued
 			.url
@@ -143,10 +107,4 @@ fn availability_reflects_the_configured_domain() {
 		}
 	);
 	assert!(!Availability::of(None).available);
-}
-
-#[test]
-fn media_types_strip_parameters() {
-	assert_eq!(media_type("text/html; charset=utf-8"), "text/html");
-	assert_eq!(media_type("application/pdf"), "application/pdf");
 }

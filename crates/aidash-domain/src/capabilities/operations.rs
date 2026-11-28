@@ -77,15 +77,8 @@ pub fn has_input_path_collision(files: &[MountedFile]) -> bool {
 	}
 	false
 }
-pub fn request_size(files: &[MountedFile]) -> Result<u64> {
-	files.iter().try_fold(0_u64, |total, file| {
-		total
-			.checked_add(file.size)
-			.ok_or_else(|| Error::Conflict("WORKING_QUOTA_EXCEEDED".into()))
-	})
-}
 pub fn request_validation_failure(
-	working_bytes: u64,
+	input_budget: u64,
 	files: &[MountedFile],
 ) -> Option<(&'static str, &'static str)> {
 	if has_input_path_collision(files) {
@@ -94,68 +87,24 @@ pub fn request_validation_failure(
 			"Mounted input files contain a duplicate path in the same scope.",
 		));
 	}
-	let exceeds_quota = match request_size(files) {
-		Ok(size) => {
-			size > working_bytes
-				|| files
-					.iter()
-					.filter(|file| !matches!(file.scope, FileScope::Working))
-					.map(|file| file.size)
-					.sum::<u64>() >= working_bytes
-		}
-		Err(_) => true,
-	};
+	let exceeds_quota = files
+		.iter()
+		.try_fold(0_u64, |total, file| total.checked_add(file.size))
+		.is_none_or(|size| size >= input_budget);
 	if exceeds_quota {
 		Some((
 			"WORKING_QUOTA_EXCEEDED",
-			"Mounted files exceed the configured quota or leave no writable capacity.",
+			"Mounted files exhaust the configured input budget.",
 		))
 	} else {
 		None
 	}
 }
-/// Error code of an operation whose `/work` export was refused (#682): a link,
-/// a hard-link alias, a quota or an unsafe name. Nothing is published, so the
-/// Area keeps its previous revision and only this operation fails.
-pub const WORKING_EXPORT_REFUSED: &str = "WORKING_EXPORT_REFUSED";
-/// Most entries one Working Area manifest holds, mounted inputs included.
-pub const MAX_AREA_FILES: usize = 4096;
 impl MountedFile {
-	/// A Reference file stays in the manifest for the file tools, but no Pod
-	/// receives it and it uses none of the Working Area's capacity.
+	/// A Reference file is read through the file tools.
 	pub fn is_reference_file(&self) -> bool {
 		matches!(self.scope, FileScope::References) && self.provenance["kind"] == "reference"
 	}
-}
-/// The files that count against a Working Area's file and byte limits.
-pub fn counted_files(files: &[MountedFile]) -> impl Iterator<Item = &MountedFile> {
-	files.iter().filter(|file| !file.is_reference_file())
-}
-/// A Working Area quota an export can exceed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ExportQuota {
-	Files,
-	Bytes,
-}
-/// The stored tool error refusing an export over `quota`, in the same shape the
-/// runner reports: the first offending relative `path` and the `limit`.
-pub fn export_quota_refusal(quota: ExportQuota, path: &str, limit: u64) -> Value {
-	let (reason, message) = match quota {
-		ExportQuota::Files => (
-			"file_count",
-			format!(
-				"the working area holds at most {limit} files; remove files (first over the limit: {path}), or keep dependency trees under /tmp"
-			),
-		),
-		ExportQuota::Bytes => (
-			"bytes",
-			format!(
-				"the working area holds at most {limit} bytes; remove files (first over the limit: {path}), or keep large output under /tmp"
-			),
-		),
-	};
-	json!({"code":WORKING_EXPORT_REFUSED,"message":message,"retryable":false,
-		"details":{"reason":reason,"path":path,"limit":limit}})
 }
 /// A lost outcome leaves the last saved Area intact. It remains fenced while
 /// the original writer may still run, and reopens once its stop is proven.

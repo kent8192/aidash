@@ -8,6 +8,8 @@ use uuid::Uuid;
 #[model(app_label = "workspaces", table_name = "scratch_spaces")]
 #[derive(Serialize, Deserialize)]
 pub struct ScratchSpace {
+	#[field(default = false)]
+	pub is_default: bool,
 	#[field(primary_key = true)]
 	pub id: Uuid,
 	#[field(field_type = "text")]
@@ -24,6 +26,8 @@ pub struct ScratchSpace {
 	pub revision: i64,
 	#[field]
 	pub wipe_generation: i64,
+	#[field(default = 0)]
+	pub wipe_completed_generation: i64,
 	#[field]
 	pub created_at: DateTime<Utc>,
 	#[field]

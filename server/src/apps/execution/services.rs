@@ -2,15 +2,19 @@
 //!
 //! Adapt application use cases for views, commands, and worker scopes.
 
+pub(crate) mod area_association_backfill;
+pub(crate) mod area_manifest_cleanup;
 pub(crate) mod area_queue_sleep_backfill;
 pub mod context_rules;
 pub(crate) mod execution_event_backfill;
 pub(crate) mod goal_backfill;
 pub(crate) mod human_interaction;
 pub(crate) mod input_ledger;
+pub(crate) mod live_preview_backfill;
 pub(crate) mod migration_backfill;
 pub(crate) mod node_cancellations;
 pub(crate) mod research_record_cleanup;
+pub(crate) mod run_binding_backfill;
 pub(crate) mod task_evidence;
 
 pub use super::models::states;

@@ -300,12 +300,17 @@ pub async fn selected(
 			"model media input exceeds count limit".into(),
 		));
 	}
+	if selections.iter().any(|selection| {
+        matches!(selection, ModelMedia::File(file) if file.thread_id.is_some() || file.area_id.is_some())
+    }) {
+        return Err(Error::NotFound("file unavailable".into()));
+    }
 	// Only page images, the Run's own evidence, skip the file authority; an
 	// empty request still requires it.
 	let files = if selections.is_empty()
 		|| selections
 			.iter()
-			.any(|selection| matches!(selection, ModelMedia::File(_) | ModelMedia::WorkingImage(_)))
+			.any(|selection| matches!(selection, ModelMedia::File(_)))
 	{
 		scope.current_files().await?
 	} else {
@@ -316,22 +321,10 @@ pub async fn selected(
 	for selection in selections {
 		let (label, media_type, bytes) = match selection {
 			ModelMedia::File(selection) => {
-				let selected;
-				let file = match (selection.thread_id, selection.area_id) {
-					(Some(thread), Some(area)) => {
-						selected = scope.subnode_file(thread, area, selection.file_id).await?;
-						&selected
-					}
-					(None, None) => files
-						.iter()
-						.find(|file| file.file_id == selection.file_id)
-						.ok_or_else(|| Error::NotFound("file unavailable".into()))?,
-					_ => {
-						return Err(Error::Invalid(
-							"thread_id and area_id must be supplied together".into(),
-						));
-					}
-				};
+				let file = files
+					.iter()
+					.find(|file| file.file_id == selection.file_id)
+					.ok_or_else(|| Error::NotFound("file unavailable".into()))?;
 				if file.digest != selection.expected_digest {
 					return Err(Error::Conflict("FILE_CHANGED".into()));
 				}
@@ -347,32 +340,20 @@ pub async fn selected(
 					scope.read(file.file_id).await?,
 				)
 			}
-			ModelMedia::WorkingImage(selection) => {
-				let file = scope
-					.thread_image(
-						selection.area_id,
-						selection.generation,
-						selection.file_id,
-						&selection.path,
-					)
-					.await?
-					.ok_or_else(|| Error::NotFound("file unavailable".into()))?;
-				if file.digest != selection.expected_digest {
-					return Err(Error::Conflict("FILE_CHANGED".into()));
-				}
-				if !file.media_type.starts_with("image/") {
-					return Err(Error::Invalid("selected File is not an image".into()));
-				}
-				total = total.saturating_add(file.size);
+			ModelMedia::ScratchImage(selection) => {
+				let (media_type, bytes) = scope
+					.scratch_image(selection, (8 * 1024 * 1024_u64).saturating_sub(total))
+					.await?;
+				total = total.saturating_add(bytes.len() as u64);
 				if total > 8 * 1024 * 1024 {
 					return Err(Error::Invalid(
 						"model media input exceeds byte limit".into(),
 					));
 				}
 				(
-					format!("Selected file: {}", file.path),
-					file.media_type,
-					scope.read(file.file_id).await?,
+					format!("Selected Scratch Space image: {}", selection.scratch_path),
+					media_type,
+					bytes,
 				)
 			}
 			ModelMedia::DriveFile(selection) => {

@@ -271,13 +271,6 @@ pub enum Source {
 	Message {
 		id: Uuid,
 	},
-	/// An immutable File version; source content remains in its Working Area.
-	WorkingImage {
-		area_id: Uuid,
-		generation: i64,
-		file_id: Uuid,
-		path: String,
-	},
 	/// An image Thread Attachment. Its bytes and Image Description stay with
 	/// the attachment, so the point holds neither.
 	AttachmentImage {
@@ -286,13 +279,15 @@ pub enum Source {
 	},
 }
 
+/// Older indexes may still contain rows for Working Area files.
+pub fn retired_working_image(source: &serde_json::Value) -> bool {
+	source["kind"] == "working_image"
+}
+
 impl Source {
 	/// Image sources are disclosed only as pointers, never as text.
 	pub fn is_image(&self) -> bool {
-		matches!(
-			self,
-			Self::WorkingImage { .. } | Self::AttachmentImage { .. }
-		)
+		matches!(self, Self::AttachmentImage { .. })
 	}
 	pub fn same_origin(&self, other: &Self) -> bool {
 		match (self, other) {

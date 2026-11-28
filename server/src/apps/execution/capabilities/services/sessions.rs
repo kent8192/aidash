@@ -8,7 +8,7 @@ use crate::{
 	registry::AgentConfig,
 	store::Store,
 };
-use aidash_application::capabilities::sessions::{self as application, Initialization};
+use aidash_application::capabilities::sessions::{self as application};
 use serde_json::Value;
 use uuid::Uuid;
 pub(crate) async fn load(access: &mut Access, id: Uuid) -> Result<Area> {
@@ -80,19 +80,6 @@ async fn area_readable(access: &mut Access, run: Uuid) -> Result<bool> {
 		Err(error) => Err(error),
 	}
 }
-pub(crate) async fn authorize_sources(
-	access: &mut Access,
-	thread: Uuid,
-	constraints: &Value,
-) -> Result<()> {
-	application::authorize_sources(
-		&mut crate::bootstrap::session_scope(None, access),
-		thread,
-		constraints,
-	)
-	.await
-	.map_err(Into::into)
-}
 pub(crate) async fn for_run(access: &mut Access, run: &Run) -> Result<Area> {
 	application::for_run(
 		&mut crate::bootstrap::session_scope(None, access),
@@ -100,29 +87,6 @@ pub(crate) async fn for_run(access: &mut Access, run: &Run) -> Result<Area> {
 	)
 	.await
 	.map(Into::into)
-	.map_err(Into::into)
-}
-/// The Run's own Working Area, checked current, or `None` for a Run admitted
-/// without one (no core capabilities). Reads of another authorized Area need
-/// no own Area; a bound Run must still hold its own.
-pub(crate) async fn current_own_area(access: &mut Access, run: &Run) -> Result<Option<Area>> {
-	if crate::apps::execution::repositories::sessions::run_area(access, run.id)
-		.await?
-		.is_none()
-	{
-		return Ok(None);
-	}
-	let own = for_run(access, run).await?;
-	require_current_run(access, &own, run).await?;
-	Ok(Some(own))
-}
-pub(crate) async fn require_current_run(access: &mut Access, area: &Area, run: &Run) -> Result<()> {
-	application::require_current_run(
-		&mut crate::bootstrap::session_scope(None, access),
-		&area.into(),
-		&run.metadata(),
-	)
-	.await
 	.map_err(Into::into)
 }
 pub(crate) async fn context_authority(
@@ -177,7 +141,7 @@ pub(crate) async fn initialize(
 	access: &mut Access,
 	run: &Run,
 	config: &AgentConfig,
-) -> Result<Initialization> {
+) -> Result<()> {
 	application::initialize(
 		&mut crate::bootstrap::session_scope(Some(store), access),
 		&run.metadata(),
@@ -196,7 +160,7 @@ pub(crate) async fn initialize_remote(
 	access: &mut Access,
 	run: &Run,
 	config: &AgentConfig,
-) -> Result<Initialization> {
+) -> Result<()> {
 	let metadata = run.metadata();
 	let owner =
 		crate::apps::workspaces::repositories::scratch::remote_person(access, &metadata).await?;

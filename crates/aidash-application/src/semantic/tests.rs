@@ -857,17 +857,17 @@ async fn sweep_releases_selection_visibility_and_reacquires_it_for_each_effect()
 }
 
 #[tokio::test]
-async fn working_image_is_embedded_as_image_without_storing_bytes_in_vector_payload() {
+async fn attachment_image_vector_payload_contains_only_provenance() {
 	let fixture = Fixture::default();
 	{
 		let mut state = fixture.0.lock().unwrap();
-		state.entry.source = json!({"kind":"working_image", "area_id": Uuid::from_u128(8), "generation": 1, "file_id": Uuid::from_u128(9), "path":"image.png"});
+		state.entry.source = json!({"kind":"attachment_image", "message_id": Uuid::from_u128(8), "attachment_id": Uuid::from_u128(9)});
 		state.plan.spec["embedding"]["inputs"] = json!(["text", "image"]);
 	}
 	process(&fixture, &fixture, fixture.id()).await.unwrap();
 	assert!(
 		fixture.has("embed_image"),
-		"working image must use the image embedding input"
+		"attachment image must use the image embedding input"
 	);
 	let payload = fixture.0.lock().unwrap().payload.clone().unwrap();
 	assert_eq!(
@@ -886,7 +886,7 @@ async fn working_image_is_embedded_as_image_without_storing_bytes_in_vector_payl
 #[case::modality(false, 100, "modality")]
 #[case::too_large(true, 1, "too_large")]
 #[tokio::test]
-async fn unsupported_working_images_do_not_call_embedding(
+async fn unsupported_attachment_images_do_not_call_embedding(
 	#[case] image_modality: bool,
 	#[case] max_image_bytes: usize,
 	#[case] reason: &str,
@@ -894,7 +894,7 @@ async fn unsupported_working_images_do_not_call_embedding(
 	let fixture = Fixture::default();
 	{
 		let mut state = fixture.0.lock().unwrap();
-		state.entry.source = json!({"kind":"working_image", "area_id": Uuid::from_u128(8), "generation": 1, "file_id": Uuid::from_u128(9), "path":"image.png"});
+		state.entry.source = json!({"kind":"attachment_image", "message_id": Uuid::from_u128(8), "attachment_id": Uuid::from_u128(9)});
 		state.plan.spec["embedding"]["inputs"] = if image_modality {
 			json!(["text", "image"])
 		} else {
@@ -913,7 +913,7 @@ async fn image_read_failure_is_recorded_and_does_not_abort_the_index_sweep() {
 	let fixture = Fixture::default();
 	{
 		let mut state = fixture.0.lock().unwrap();
-		state.entry.source = json!({"kind":"working_image", "area_id": Uuid::from_u128(8), "generation": 1, "file_id": Uuid::from_u128(9), "path":"image.png"});
+		state.entry.source = json!({"kind":"attachment_image", "message_id": Uuid::from_u128(8), "attachment_id": Uuid::from_u128(9)});
 		state.plan.spec["embedding"]["inputs"] = json!(["text", "image"]);
 	}
 	fixture.fault("image");
@@ -962,4 +962,14 @@ async fn an_attachment_image_on_a_text_only_index_is_unsupported() {
 	assert!(fixture.has("unsupported:modality"));
 	assert!(!fixture.has("embed_image"));
 	assert!(!fixture.has("embed"));
+}
+
+#[tokio::test]
+async fn a_retired_working_image_is_never_embedded() {
+	let fixture = Fixture::default();
+	fixture.0.lock().unwrap().entry.source = json!({"kind":"working_image"});
+	assert!(process(&fixture, &fixture, fixture.id()).await.unwrap());
+	assert!(fixture.has("retire"));
+	assert!(!fixture.has("image"));
+	assert!(!fixture.has("embed_image"));
 }

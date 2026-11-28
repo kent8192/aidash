@@ -89,12 +89,12 @@ impl WorkerStep for Scope {
 		self.calls.push("cancel");
 		Ok(self.cancelled)
 	}
-	async fn admit(&mut self) -> Result<aidash_application::ports::execution::worker::Admission> {
+	async fn admit(&mut self) -> Result<()> {
 		self.calls.push("admit");
 		if self.denied {
 			Err(Error::Forbidden)
 		} else {
-			Ok(aidash_application::ports::execution::worker::Admission::Ready)
+			Ok(())
 		}
 	}
 	async fn invoke(&mut self, _: Uuid) -> Result<()> {

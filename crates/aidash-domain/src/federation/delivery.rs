@@ -1,11 +1,5 @@
 //! Admission-bound delivery of files from a Run executing for another Home back to that Home
-//! (ADR 0139, decision 20).
-//!
-//! `file-transfer/1` identifies its sender by a Peer Mapping and reads its snapshot from a
-//! Thread the sender holds, so it cannot serve a Run whose Thread lives at the Home. A
-//! delivery is named by the Remote Grant, the admission and the Run's own call key instead. The
-//! Home derives everything else (the delegating Run's Working Area, the Thread, the sender)
-//! from the live grant and never from the request.
+//! (ADR 0139, decision 20). The Home resolves the Thread and sender from the live grant.
 use crate::capabilities::operations::{FileScope, MountedFile};
 use crate::capabilities::sharing::Recipient;
 use crate::capabilities::transfer::Description;
@@ -31,9 +25,6 @@ pub const MESSAGE_BYTES: u64 = 8 * 1024 * 1024;
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Purpose {
-	/// `file_share` to the Home: the files become a delivered share in the Working Area of the
-	/// Run that delegated.
-	FileShare,
 	/// `thread_message` with files: the files become Thread Attachments of the message the
 	/// Home posts for the Agent. `descriptions` is keyed by path, as in the local tool.
 	Message {
@@ -49,7 +40,6 @@ impl Purpose {
 	/// The tool of the Run's Binding the Home checks.
 	pub fn tool(&self) -> &'static str {
 		match self {
-			Self::FileShare => "file_share",
 			Self::Message { .. } => "thread_message",
 			Self::CompletionAttachments { .. } => "completion_attachments",
 		}
@@ -72,10 +62,9 @@ pub struct Limits {
 	pub bytes: u64,
 }
 impl Limits {
-	/// The Deployment's share limits for a file share, the local message limits for a message.
+	/// The receipt budget for the kind of message being delivered.
 	pub fn of(purpose: &Purpose, share: Limits) -> Self {
 		match purpose {
-			Purpose::FileShare => share,
 			Purpose::CompletionAttachments { .. } => Self {
 				files: crate::deliverable::MAX_COMPLETION_ATTACHMENTS,
 				file_bytes: crate::deliverable::MAX_COMPLETION_ATTACHMENT_BYTES,
@@ -115,35 +104,36 @@ pub fn validate(purpose: &Purpose, files: &[File], share: Limits) -> Result<u64>
 	if total > limits.bytes {
 		return Err(Error::Invalid("SHARE_BYTE_LIMIT".into()));
 	}
-	if let Purpose::Message {
+	let Purpose::Message {
 		content,
 		descriptions,
 	} = purpose
+	else {
+		return Ok(total);
+	};
+	// A message that carries files may have no text, as a local one may; its length is
+	// bounded as a message's is.
+	if content.len() > 64_000 {
+		return Err(Error::Invalid(
+			"message must contain 1 to 64000 bytes".into(),
+		));
+	}
+	if descriptions
+		.keys()
+		.any(|path| !paths.contains(path.as_str()))
 	{
-		// A message that carries files may have no text, as a local one may; its length is
-		// bounded as a message's is.
-		if content.len() > 64_000 {
-			return Err(Error::Invalid(
-				"message must contain 1 to 64000 bytes".into(),
-			));
-		}
-		if descriptions
-			.keys()
-			.any(|path| !paths.contains(path.as_str()))
-		{
-			return Err(Error::Invalid(
-				"an image description names a file that is not attached".into(),
-			));
-		}
-		// As the local tool: an Agent describes every image it posts.
-		if let Some(file) = files.iter().find(|file| {
-			file.media_type.starts_with("image/") && !descriptions.contains_key(&file.path)
-		}) {
-			return Err(Error::Invalid(format!(
-				"{} is an image: give it an Image Description in image_descriptions",
-				file.path
-			)));
-		}
+		return Err(Error::Invalid(
+			"an image description names a file that is not attached".into(),
+		));
+	}
+	// As the local tool: an Agent describes every image it posts.
+	if let Some(file) = files.iter().find(|file| {
+		file.media_type.starts_with("image/") && !descriptions.contains_key(&file.path)
+	}) {
+		return Err(Error::Invalid(format!(
+			"{} is an image: give it an Image Description in image_descriptions",
+			file.path
+		)));
 	}
 	Ok(total)
 }

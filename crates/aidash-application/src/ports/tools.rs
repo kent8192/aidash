@@ -325,14 +325,6 @@ pub trait ToolOperations: Send + Sync {
 	) -> Result<Value> {
 		Err(crate::Error::Forbidden)
 	}
-	/// Resolve a Thread File pointer under the Run's current authority.
-	async fn thread_image(
-		&self,
-		_selection: &aidash_domain::media::WorkingImageSelection,
-		_representation: &str,
-	) -> Result<Value> {
-		Err(crate::Error::Forbidden)
-	}
 	/// Search the Run's Thread under its current authority.
 	async fn thread_search(&self, _input: Value) -> Result<Value> {
 		Err(crate::Error::Forbidden)

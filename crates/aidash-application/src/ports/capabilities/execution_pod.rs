@@ -125,6 +125,7 @@ pub type Result<T> = std::result::Result<T, ExecutionPodError>;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ExecutionPodSettings {
+	pub command_slots: u32,
 	pub scratch_space_id: String,
 	pub image: String,
 	pub cpu: u32,
@@ -412,6 +413,15 @@ pub trait ExecutionPodRuntime: Send + Sync {
 	async fn file_search(&self, request: &FileSearchRequest) -> Result<FileSearchResult>;
 	async fn file_patch(&self, request: &FilePatchRequest) -> Result<FilePatchResult>;
 	async fn file_write(&self, request: &FileWriteRequest) -> Result<FileWriteResult>;
+	async fn clear_thread(
+		&self,
+		_settings: &ExecutionPodSettings,
+		_thread: uuid::Uuid,
+	) -> Result<()> {
+		Err(ExecutionPodError::Transport(crate::Error::External(
+			"this runtime cannot clear a Thread directory".into(),
+		)))
+	}
 	async fn file_manifest(&self, request: &FileManifestRequest) -> Result<FileManifestResult>;
 	async fn preview_start(&self, request: &PreviewStartRequest) -> Result<PreviewTarget>;
 	async fn preview_stop(&self, operation_id: &str) -> Result<()>;

@@ -3,7 +3,7 @@ use reinhardt::db::migrations::prelude::*;
 
 pub(super) fn migration() -> Migration {
 	Migration::new("0123_goal_judge_model", "identity")
-		.add_dependency("identity", "0115_suspension_resume_refusal")
+		.add_dependency("identity", "0122_tenant_embedding_settings_guard")
 		.atomic(true)
 		.add_operation(Operation::AddColumn {
 			table: "tenants".into(),

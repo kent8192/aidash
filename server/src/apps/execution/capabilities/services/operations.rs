@@ -1,27 +1,14 @@
 //! Durable operation admission and reconciliation. Workers never run host commands.
-use super::{contracts::*, service};
+use super::contracts::*;
 use crate::{Result, authorization::access::Access, domain::Run, store::Store};
 use serde_json::Value;
 use uuid::Uuid;
 
-/// What a Pod receives from an Area: Reference files stay with the file tools.
-pub(crate) fn pod_files(area: &Area) -> Result<Vec<FileEntry>> {
-	Ok(service::files(area)?
-		.into_iter()
-		.filter(|file| {
-			!(matches!(file.scope, FileScope::References) && file.provenance["kind"] == "reference")
-		})
-		.collect())
-}
-
 pub(in crate::apps::execution) async fn request_files(
 	access: &mut Access,
 	run: Uuid,
-	area: &Area,
 ) -> Result<Vec<FileEntry>> {
-	let mut files = pod_files(area)?;
-	files.extend(super::skills::mounted(access, run).await?);
-	Ok(files)
+	super::skills::mounted(access, run).await
 }
 
 /// Run the complete capability set for callers that own a single lifecycle.
@@ -42,7 +29,6 @@ pub async fn run(store: Store, stopping: tokio::sync::watch::Receiver<bool>) -> 
 		Box::pin(read_recheck_maintenance(&store, stopping.clone())),
 		Box::pin(jobs.network(stopping.clone())),
 		Box::pin(jobs.references(stopping.clone())),
-		Box::pin(jobs.cleanup(stopping.clone())),
 		Box::pin(jobs.reclamation(stopping)),
 	)
 	.map_err(crate::Error::from)?;
@@ -63,7 +49,17 @@ pub(crate) async fn read_recheck_maintenance(
 		// again from the database on restart.
 		tokio::select! {
 			_ = stopping.changed() => break,
-			() = passes.run(repository.maintain_read_recheck_targets()) => {}
+			() = passes.run(async {
+				let (recheck, wipe) = tokio::join!(
+					repository.maintain_read_recheck_targets(),
+					crate::apps::workspaces::repositories::scratch::wipe_pending_space(store),
+				);
+				recheck?;
+				wipe?;
+				crate::apps::workspaces::repositories::scratch::wipe_pending_thread(store)
+					.await
+					.map_err(Into::into)
+			}) => {}
 		}
 		passes.pause(&mut stopping).await;
 	}
@@ -113,6 +109,12 @@ pub(crate) async fn prepare_pod(
 		area.id,
 	)
 	.await?;
+	let working_directory =
+		crate::apps::execution::repositories::operations::pods::working_directory(
+			access,
+			&run.metadata(),
+		)
+		.await?;
 	aidash_application::capabilities::pod::accept(
 		&mut crate::bootstrap::operation_admission_scope(store, access, run, area),
 		&run.metadata(),
@@ -120,6 +122,7 @@ pub(crate) async fn prepare_pod(
 		expected_session_id,
 		kind,
 		scratch_space_id,
+		&working_directory,
 	)
 	.await
 	.map_err(Into::into)

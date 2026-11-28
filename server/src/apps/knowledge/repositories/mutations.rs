@@ -313,10 +313,7 @@ impl SemanticConfigurationSession for Configuration {
 			.lease
 			.as_mut()
 			.ok_or_else(|| Error::Conflict("semantic index configuration ended".into()))?;
-		// Posted images first take back their places in posting order, so the
-		// ledger rebuilds Working Area images into the room they leave.
 		super::attachment_images::relimit(lease, thread, max_images).await?;
-		super::image_publications::rebuild(lease, thread, max_images).await?;
 		// Images posted before the index existed or was enabled enter it now,
 		// under the authority of the person configuring it (#622).
 		super::attachment_images::backfill(lease, thread, max_images)
@@ -431,17 +428,12 @@ impl SemanticEntriesSession for Entries<'_, '_> {
 		self.lease.source(thread, source).await.map_err(Into::into)
 	}
 	async fn image_visible(&mut self, thread: Uuid, source: &Source) -> Result<bool> {
-		if matches!(source, Source::AttachmentImage { .. }) {
-			return super::attachment_images::visible(self.lease, thread, source)
-				.await
-				.map_err(Into::into);
-		}
-		let Some(access) = self.lease.access() else {
+		if !matches!(source, Source::AttachmentImage { .. }) {
 			return Ok(false);
-		};
-		Ok(super::image_files::current(access, thread, source)
-			.await?
-			.is_some())
+		}
+		super::attachment_images::visible(self.lease, thread, source)
+			.await
+			.map_err(Into::into)
 	}
 	async fn schedule(&mut self, entry: &Entry, collection: &str) -> Result<()> {
 		service::schedule_point(

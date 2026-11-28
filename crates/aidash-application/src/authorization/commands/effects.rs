@@ -619,32 +619,6 @@ pub async fn execute(
 			}
 			json!({"acknowledged":true})
 		}
-		"run_queued" => {
-			scope.require(&task_resource, "task.execute").await?;
-			let queued: aidash_domain::federation::execution::admission::RunQueued =
-				serde_json::from_value(data.clone())?;
-			if queued.task_id != task.id || queued.run_id != input.admission_id {
-				return Err(Error::Forbidden);
-			}
-			if !(1..100).contains(&queued.runs_ahead) {
-				return Err(Error::Invalid("invalid Run queue position".into()));
-			}
-			scope
-				.apply(
-					context(),
-					Effect::Event {
-						kind: "remote_run.queued",
-						data: json!({
-							"task_id": task.id,
-							"remote_run_id": input.admission_id,
-							"runs_ahead": queued.runs_ahead,
-							"queued_at": queued.queued_at,
-						}),
-					},
-				)
-				.await?
-				.value
-		}
 		"event" => {
 			let (kind, detail) =
 				audit_event(data, input.admission_id).map_err(|error| match error {

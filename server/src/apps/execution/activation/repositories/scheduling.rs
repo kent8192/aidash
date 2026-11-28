@@ -100,7 +100,7 @@ fn requirements_covered(capabilities: &[PersistedCapability]) -> Condition {
 /// Run only when its requirement is covered.
 fn selectable_by(capabilities: &[PersistedCapability]) -> Condition {
 	Condition::any()
-		.add(Expr::col("control").eq(Expr::value("CANCELLED")))
+		.add(run_unblocked())
 		.add(requirements_covered(capabilities))
 }
 
@@ -116,7 +116,6 @@ fn leasable() -> SelectStatement {
 				.add(Expr::col("lease_until").is_null())
 				.add(Expr::col("lease_until").lte(Expr::current_timestamp())),
 		)
-		.and_where(run_unblocked())
 		.to_owned()
 }
 
@@ -275,17 +274,6 @@ impl<E: Executor> SchedulingScope for Scope<E> {
 			None => aidash_domain::run_state::LEASE_RECOVERY_LIMIT,
 		})
 	}
-	async fn unblocked(&mut self, id: Uuid) -> aidash_application::Result<bool> {
-		let candidate = Query::select()
-			.expr(Expr::value(1_i64))
-			.from(Alias::new("task_executions"))
-			.and_where(Expr::col("id").eq(Expr::value(id)))
-			.and_where(run_unblocked())
-			.to_owned();
-		exists(self.tx.executor(), candidate)
-			.await
-			.map_err(Into::into)
-	}
 	async fn human_answered(&mut self, id: Uuid) -> aidash_application::Result<bool> {
 		let answered = Query::select()
 			.expr(Expr::value(1_i64))
@@ -413,49 +401,6 @@ impl<E: Executor> SchedulingScope for Scope<E> {
 			.map_err(FrameworkError::from)
 			.map_err(Error::from)
 			.map_err(Into::into)
-	}
-	async fn rejoin(&mut self, run: Uuid) -> aidash_application::Result<bool> {
-		use crate::apps::execution::repositories::store::run_state::{
-			asleep_in, lock_queue_tail, rejoin_queue,
-		};
-		let (sql, values) = asleep_in(run).build(PostgresQueryBuilder);
-		let Some(area) = self
-			.tx
-			.executor()
-			.fetch_optional(&sql, convert_values(values))
-			.await
-			.map_err(Error::from)?
-		else {
-			// Awake in its queue, or no core Run: the candidate query ordered it.
-			return Ok(true);
-		};
-		let area: Uuid = area
-			.get("area_id")
-			.map_err(FrameworkError::from)
-			.map_err(Error::from)?;
-		let (sql, values) = lock_queue_tail(area).build(PostgresQueryBuilder);
-		let Some(tail) = self
-			.tx
-			.executor()
-			.fetch_optional(&sql, convert_values(values))
-			.await
-			.map_err(Error::from)?
-		else {
-			return Ok(false);
-		};
-		let tail: i64 = tail
-			.get("next_sequence")
-			.map_err(FrameworkError::from)
-			.map_err(Error::from)?;
-		for statement in rejoin_queue(run, area, tail) {
-			let (sql, values) = statement.build(PostgresQueryBuilder);
-			self.tx
-				.executor()
-				.execute(&sql, convert_values(values))
-				.await
-				.map_err(Error::from)?;
-		}
-		self.unblocked(run).await
 	}
 	async fn lease(
 		&mut self,

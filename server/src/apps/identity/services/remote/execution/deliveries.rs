@@ -1,19 +1,14 @@
 //! The Home's side of a delivery from a Run executing for another Home (ADR 0139, decision 20).
 //!
 //! Three requests, each bound to the grant and its admission: `prepare` stages a manifest,
-//! `chunks` stage the bytes, `commit` stores them. A delivery is named by the admission and the
-//! Run's call key, so a repeated request finds what the first made. Staging, quota reservation
-//! and publication are the existing `file-transfer/1` receiver's, run under the live grant's own
-//! authority instead of a Peer Mapping; only where the bytes go is new: the Working Area of the
-//! Run that delegated for `file_share`, and the Thread Attachments of a message the Home posts
-//! for the Agent for `thread_message`.
+//! `chunks` stage the bytes and `commit` posts the message with its Thread Attachments.
+//! The admission and the Run's call key identify a delivery across retries.
 use super::*;
-use crate::apps::execution::repositories::{home_delivery, transfer::HomeDelivery};
+use crate::apps::execution::repositories::transfer;
 use crate::apps::identity::serializers::remote_execution_commands::{DeliveryChunk, DeliveryOpen};
 use aidash_application::{
 	capabilities::transfer::receiver,
 	federation::{deliveries, inbound::Admitted},
-	ports::capabilities::transfer::receiver::{DeliveryMode, ReceiverRepository as _},
 };
 use aidash_domain::{
 	capabilities::{
@@ -27,13 +22,10 @@ use aidash_domain::{
 use serde_json::json;
 use std::collections::BTreeMap;
 
-const TOOLS: [&str; 3] = ["file_share", "thread_message", "completion_attachments"];
-
 /// What the Home resolved from the live grant for one request of a delivery. None of it comes
 /// from the request.
 struct Admission {
-	/// Where the delivery lands: for a share, the Working Area of the Run that delegated; for a
-	/// message, which lands in no Area, this Node, the executing Agent and the grant's Thread.
+	/// The Home Node, the executing Agent and the grant's Thread.
 	target: Recipient,
 	/// The grant's root subject, whose authority the delivery is made under.
 	subject: String,
@@ -48,16 +40,7 @@ struct Admission {
 	staging_seconds: i64,
 }
 
-fn mode(tool: &str) -> DeliveryMode {
-	DeliveryMode {
-		bound_operation: (tool == "file_share").then_some("file_share"),
-	}
-}
-
-/// Admit one request: the live grant, its Binding, the tool the Run called and the task, then,
-/// for a share, the Working Area of the delegating Run. A message is posted in the grant's
-/// Thread, so it needs no delegating Run and a grant a person made can send one (ADR 0139).
-/// Opens and closes its own transaction.
+/// Resolve the message destination from the live grant and its admission.
 async fn admit(
 	f: &Federation,
 	admitted: &Admitted,
@@ -65,6 +48,9 @@ async fn admit(
 	admission: Uuid,
 	tool: &str,
 ) -> Result<Admission> {
+	if !matches!(tool, "thread_message" | "completion_attachments") {
+		return Err(crate::Error::Forbidden);
+	}
 	use aidash_application::ports::authorization::source::grants::GrantRepository as _;
 	let node = admitted.sender.to_string();
 	let (mut access, description) = super::super::delivery_lease(f, &node, grant).await?;
@@ -104,39 +90,11 @@ async fn admit(
 			.deployment
 			.node(admitted.receiver.node.clone())
 			.to_string();
-		let target = if mode(tool).into_area() {
-			// The chain is the sending subjects and then the executor: the one before the
-			// executor is the Run that delegated. A grant nobody's Run made has no such Run to
-			// deliver to.
-			let delegator = row
-				.subject_chain
-				.len()
-				.checked_sub(2)
-				.and_then(|index| row.subject_chain.get(index))
-				.ok_or(crate::Error::Forbidden)?;
-			let parent = task
-				.parent_id
-				.ok_or_else(|| crate::Error::NotFound("DELIVERY_NO_DELEGATING_RUN".into()))?;
-			let (area, version) = home_delivery::delegating_area(
-				&mut access,
-				f.config.deployment.as_str(),
-				parent,
-				delegator,
-			)
-			.await?;
-			Recipient {
-				node_id,
-				agent_id: area.agent_id.clone(),
-				agent_version: version,
-				thread_id: area.thread_id,
-			}
-		} else {
-			Recipient {
-				node_id,
-				agent_id: agent.id.clone(),
-				agent_version: agent.version.clone(),
-				thread_id: task.thread_id,
-			}
+		let target = Recipient {
+			node_id,
+			agent_id: agent.id.clone(),
+			agent_version: agent.version.clone(),
+			thread_id: task.thread_id,
 		};
 		let profile = &f.store.capabilities.0;
 		Ok(Admission {
@@ -167,30 +125,23 @@ fn repository<'a>(
 	admitted: &Admitted,
 	grant: Uuid,
 	description: Description,
-	tool: &str,
-) -> crate::apps::execution::repositories::transfer::Repository<'a> {
-	crate::bootstrap::home_delivery_repository(
-		f,
-		admitted.receiver.node.clone(),
-		HomeDelivery {
-			grant,
-			description,
-			mode: mode(tool),
-			completion: tool == "completion_attachments",
-		},
-	)
+	completion: bool,
+) -> transfer::Repository<'a> {
+	let node = admitted.receiver.node.clone();
+	let address = f.config.deployment.node(node.clone()).to_string();
+	transfer::Repository {
+		federation: f,
+		node,
+		address,
+		grant,
+		description,
+		completion,
+	}
 }
 
 /// The description a staged delivery was opened with, from its record.
 async fn stored(f: &Federation, admitted: &Admitted, id: Uuid) -> Result<Option<Description>> {
-	let base = crate::bootstrap::transfer_receiver_repository(f, admitted.receiver.node.clone());
-	match base.incoming(id).await {
-		Ok(record) => Ok(Some(serde_json::from_value(
-			record.data["description"].clone(),
-		)?)),
-		Err(aidash_application::Error::NotFound(_)) => Ok(None),
-		Err(error) => Err(error.into()),
-	}
+	transfer::incoming(f, &admitted.receiver.node, id).await
 }
 
 fn key(input_key: &str) -> Result<()> {
@@ -242,7 +193,13 @@ pub(crate) async fn prepare(
 			chrono::Utc::now() + chrono::Duration::seconds(admission.staging_seconds),
 		),
 	};
-	let repository = repository(&f, &admitted, input.grant_id, description, tool);
+	let repository = repository(
+		&f,
+		&admitted,
+		input.grant_id,
+		description,
+		tool == "completion_attachments",
+	);
 	receiver::require_admission(&repository)?;
 	receiver::prepare(
 		&repository,
@@ -263,9 +220,6 @@ pub(crate) async fn chunk(
 	input: DeliveryChunk,
 ) -> Result<Value> {
 	key(&input.key)?;
-	if !TOOLS.contains(&aidash_domain::tool::thread_tools::current(&input.tool)) {
-		return Err(crate::Error::Invalid("unknown delivery tool".into()));
-	}
 	admit(
 		&f,
 		&admitted,
@@ -280,7 +234,13 @@ pub(crate) async fn chunk(
 		.ok_or_else(|| crate::Error::NotFound("transfer unavailable".into()))?;
 	let digest = description.input_digest.clone();
 	let node = admitted.sender.to_string();
-	let repository = repository(&f, &admitted, input.grant_id, description, &input.tool);
+	let repository = repository(
+		&f,
+		&admitted,
+		input.grant_id,
+		description,
+		input.tool == "completion_attachments",
+	);
 	receiver::require_admission(&repository)?;
 	receiver::chunk(
 		&repository,
@@ -321,7 +281,13 @@ pub(crate) async fn commit(
 		return Err(crate::Error::Forbidden);
 	}
 	let node = admitted.sender.to_string();
-	let repository = repository(&f, &admitted, input.grant_id, description, tool);
+	let repository = repository(
+		&f,
+		&admitted,
+		input.grant_id,
+		description,
+		tool == "completion_attachments",
+	);
 	receiver::require_admission(&repository)?;
 	let identity = Identity {
 		transfer_id: id,
@@ -352,9 +318,7 @@ pub(crate) async fn commit(
 		descriptions,
 	} = &input.purpose
 	else {
-		return receiver::commit(&repository, &node, identity)
-			.await
-			.map_err(Into::into);
+		return Err(crate::Error::Forbidden);
 	};
 	let (description, files) =
 		match receiver::staged_files(&repository, &node, identity.clone()).await? {

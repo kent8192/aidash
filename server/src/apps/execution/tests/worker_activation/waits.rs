@@ -303,7 +303,7 @@ async fn operation_completion_wakes_worker_without_intermediate_model_call(
 		.unwrap();
 	let db = f.store.pool.fixture_driver();
 	let credential: Uuid = sqlx::query_scalar("SELECT id FROM authorization_credentials WHERE tenant = 'acme' AND subject = 'alice' ORDER BY created_at DESC LIMIT 1").fetch_one(db).await.unwrap();
-	let (area, epoch, generation, revision): (Uuid, i64, i64, i64) = sqlx::query_as("SELECT a.id, a.epoch, a.generation, a.revision FROM core_areas a JOIN core_runs r ON r.area_id = a.id WHERE r.run_id = $1").bind(run.id).fetch_one(db).await.unwrap();
+	let (area, epoch, generation, revision): (Uuid, i64, i64, i64) = sqlx::query_as("SELECT a.id, a.epoch, a.generation, a.revision FROM core_execution_scopes a JOIN core_run_scopes r ON r.area_id = a.id WHERE r.run_id = $1").bind(run.id).fetch_one(db).await.unwrap();
 	sqlx::query("INSERT INTO core_operations (id, area_id, run_id, credential_id, tenant, principal, request_key, digest, kind, state, epoch, generation, revision, policy_revision, subjects, input, result) VALUES ($1,$2,$3,$4,'acme','alice','wait-fixture','fixture','shell','running',$5,$6,$7,2,'[]'::jsonb,'{\"seconds\":3600}'::jsonb,'{}'::jsonb)").bind(operation).bind(area).bind(run.id).bind(credential).bind(epoch).bind(generation).bind(revision).execute(db).await.unwrap();
 	let harness = aidash_server::harness::Harness {
 		federation: f.clone(),

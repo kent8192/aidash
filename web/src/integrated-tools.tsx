@@ -17,11 +17,6 @@ import { useI18n } from "./ui";
 import { Alert, Hint, Loading } from "./components/patterns";
 import type { State } from "./types";
 import { ChannelFiles } from "./collaboration/attachments";
-const WorkingFileSettings = lazy(() =>
-  import("./capabilities/management").then((m) => ({
-    default: m.WorkingFileSettings,
-  })),
-);
 const TransactionsPage = lazy(() =>
   import("./transactions").then((m) => ({ default: m.TransactionsPage })),
 );
@@ -203,8 +198,8 @@ export function ConversationTools({
           <SheetDescription>
             {view === "files"
               ? ja
-                ? "この依頼の添付・成果物・作業ファイルを管理します。"
-                : "Manage attachments, results and working files for this request."
+                ? "この依頼の添付と成果物を確認します。"
+                : "View attachments and results for this request."
               : ja
                 ? "実行の整合性・待機・復旧状況を確認します。"
                 : "Inspect execution consistency, waiting and recovery."}
@@ -215,16 +210,6 @@ export function ConversationTools({
             fallback={<Loading>{ja ? "読み込み中…" : "Loading…"}</Loading>}
           >
             {view === "files" && thread && <RequestFiles thread={thread} />}
-            {view === "files" &&
-              (deploymentAdministrator ? (
-                <Hint role="status">
-                  {ja
-                    ? "作業ファイルを管理するには、利用者アカウントで接続してください。"
-                    : "Connect with a user account to manage working files."}
-                </Hint>
-              ) : (
-                <WorkingFileSettings thread={thread} />
-              ))}
             {view === "progress" && (
               <>
                 {stateError && <Alert>{stateError}</Alert>}

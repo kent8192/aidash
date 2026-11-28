@@ -1,105 +1,55 @@
-//! Native transfer adapters preserve snapshot identity, receipt row locks and retry predicates.
+//! Storage and live grant checks for remote Thread Attachment delivery.
 use super::capability_records::{domain, native};
-use crate::apps::execution::capabilities::{
-	serializers::{
-		contracts::{Area as NativeArea, FileEntry},
-		records::Record as NativeRecord,
-		transfer::{Description as NativeDescription, Identity as NativeIdentity},
-	},
-	services::{objects::PendingObject, records, sessions},
-};
 use crate::{
-	Error as NativeError, Result as NativeResult,
-	authorization::{access::Access, catalog, identity::SubjectIdentity, peer},
+	Error as NativeError,
+	apps::execution::capabilities::{
+		serializers::{contracts::FileEntry, records::Record as NativeRecord},
+		services::records,
+	},
+	authorization::access::Access,
 	federation::Federation,
-	registry::{EntityRef, Entry},
 	store::Store,
 };
-use aidash_application::tenancy::{DeploymentScopeReason, TenancyScope};
 use aidash_application::{
-	Error, Result,
-	ports::capabilities::transfer::{Limits, ReceiptScope, TransferRepository, TransferScope},
+	Result,
+	ports::capabilities::transfer::receiver::{ReceiverRepository, ReceiverScope},
+	tenancy::{DeploymentScopeReason, TenancyScope},
 };
 use aidash_domain::{
-	RunMetadata,
 	capabilities::{
 		operations::MountedFile,
 		records::Record,
-		sessions::Area,
-		transfer::{Description, Identity},
+		transfer::{Description, receiver::ManifestLimits},
 	},
-	policy::Resource,
+	federation::delivery::{MESSAGE_BYTES, MESSAGE_FILES},
+	nodes::NodeName,
 };
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use reinhardt::query::{
-	Alias, Expr, ExprTrait as _, PostgresQueryBuilder, Query, QueryStatementBuilder as _,
-	SimpleExpr,
+	Expr, ExprTrait as _, PostgresQueryBuilder, Query, QueryStatementBuilder as _, SimpleExpr,
 };
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
-/// The transfer loop reaches every Tenant's outbound transfer records.
-const MAINTENANCE: TenancyScope =
-	TenancyScope::Deployment(DeploymentScopeReason::CapabilityMaintenance);
 pub(crate) struct Repository<'a> {
 	pub(crate) federation: &'a Federation,
-	/// The receiving Node of an inbound transfer; `None` for the sending side,
-	/// which acts for the Tenant that owns each transfer.
-	pub(crate) receiver: Option<Receiver>,
-	/// Set when the Home takes a delivery from a Run executing for another Home (ADR 0139): the
-	/// grant stands in for the Peer Mapping, and the description is the one the Home built.
-	pub(crate) delivery: Option<HomeDelivery>,
-}
-/// A delivery from a Run executing for another Home, as the Home takes it.
-pub(crate) struct HomeDelivery {
+	pub(crate) node: NodeName,
+	pub(crate) address: String,
 	pub(crate) grant: Uuid,
 	pub(crate) description: Description,
-	pub(crate) mode: aidash_application::ports::capabilities::transfer::receiver::DeliveryMode,
 	pub(crate) completion: bool,
 }
-/// The Node a transfer arrives at.
-pub(crate) struct Receiver {
-	pub(crate) node: aidash_domain::nodes::NodeName,
-	pub(crate) address: String,
-}
-impl Repository<'_> {
-	pub(crate) fn receiving(&self) -> Result<&Receiver> {
-		self.receiver.as_ref().ok_or_else(|| {
-			aidash_application::Error::External("transfer receiver scope invariant".into())
-		})
-	}
-}
-pub(crate) enum Authority<'a> {
-	Owned(Box<Access>),
-	Borrowed(&'a mut Access),
-}
-impl Authority<'_> {
-	pub(crate) fn get(&self) -> &Access {
-		match self {
-			Self::Owned(v) => v,
-			Self::Borrowed(v) => v,
-		}
-	}
-	pub(crate) fn get_mut(&mut self) -> &mut Access {
-		match self {
-			Self::Owned(v) => v,
-			Self::Borrowed(v) => v,
-		}
-	}
-}
-pub(crate) struct Scope<'a> {
-	pub(crate) store: Option<&'a Store>,
-	pub(crate) authority: Authority<'a>,
-	pub(crate) receiving: Option<aidash_domain::nodes::NodeName>,
-	pub(crate) pending: Option<PendingObject>,
+
+struct Scope<'a> {
+	store: &'a Store,
+	access: Access,
+	node: &'a NodeName,
 }
 
-/// A sibling sender and receiver share core_records, while the protocol keeps
-/// one transfer ID. Namespaced version-8 storage IDs also cannot collide with
-/// the version-4 IDs generated for outbound transfers.
-pub(super) fn incoming_record_id(id: Uuid, node: &aidash_domain::nodes::NodeName) -> Uuid {
+// Keep the storage key stable for messages already staged before this upgrade.
+fn incoming_record_id(id: Uuid, node: &NodeName) -> Uuid {
 	let hash = Sha256::new()
 		.chain_update(b"aidash-file-transfer-in-v1\0")
 		.chain_update(node.as_str())
@@ -110,419 +60,184 @@ pub(super) fn incoming_record_id(id: Uuid, node: &aidash_domain::nodes::NodeName
 	uuid::Builder::from_custom_bytes(bytes).into_uuid()
 }
 
-pub(super) fn logical_record(mut row: NativeRecord, id: Uuid) -> Record {
+fn logical_record(mut row: NativeRecord, id: Uuid) -> Record {
 	row.id = id;
 	domain(row)
 }
 
-impl Scope<'_> {
-	fn storage_id(&self, id: Uuid, kind: &str) -> Result<Uuid> {
-		Ok(if kind == "transfer_in" {
-			incoming_record_id(id, self.receiving.as_ref().ok_or_else(missing)?)
-		} else {
-			id
-		})
-	}
+pub(crate) async fn incoming(
+	federation: &Federation,
+	node: &NodeName,
+	id: Uuid,
+) -> crate::Result<Option<Description>> {
+	let scope = TenancyScope::Deployment(DeploymentScopeReason::FederationInbound);
+	let row: Option<Value> = crate::database::native::query_scalar(
+		&Query::select()
+			.column("data")
+			.from("core_records")
+			.and_where(Expr::col("id").eq(Expr::value(incoming_record_id(id, node))))
+			.and_where(Expr::col("kind").eq("transfer_in"))
+			.and_where(Expr::col("area_id").is_null())
+			.to_string(PostgresQueryBuilder),
+	)
+	.scalar_optional(federation.store.pool.in_scope(&scope))
+	.await?;
+	row.map(|data| serde_json::from_value(data["description"].clone()).map_err(Into::into))
+		.transpose()
 }
-fn missing() -> Error {
-	Error::External("transfer repository scope invariant".into())
-}
-fn limits(store: &Store) -> Limits {
-	let p = &store.capabilities.0;
-	Limits {
-		admission: p.admission,
-		share_files: p.limits.share_files,
-		share_file_bytes: p.limits.share_file_bytes,
-		share_bytes: p.limits.share_bytes,
-		staging_seconds: p.staging_seconds,
-		working_bytes: p.working_bytes,
-	}
-}
-impl From<NativeIdentity> for Identity {
-	fn from(v: NativeIdentity) -> Self {
-		Self {
-			transfer_id: v.transfer_id,
-			input_digest: v.input_digest,
-		}
-	}
-}
-impl From<Description> for NativeDescription {
-	fn from(v: Description) -> Self {
-		Self {
-			protocol: v.protocol,
-			transfer_id: v.transfer_id,
-			source_node: v.source_node,
-			target: v.target.into(),
-			source_tenant: v.source_tenant,
-			source_subject: v.source_subject,
-			source_agent: v.source_agent,
-			input_digest: v.input_digest,
-			manifest_digest: v.manifest_digest,
-			files: v.files.into_iter().map(Into::into).collect(),
-			expires_at: v.expires_at,
-		}
-	}
-}
-impl From<NativeDescription> for Description {
-	fn from(v: NativeDescription) -> Self {
-		Self {
-			protocol: v.protocol,
-			transfer_id: v.transfer_id,
-			source_node: v.source_node,
-			target: v.target.into(),
-			source_tenant: v.source_tenant,
-			source_subject: v.source_subject,
-			source_agent: v.source_agent,
-			input_digest: v.input_digest,
-			manifest_digest: v.manifest_digest,
-			files: v.files.into_iter().map(Into::into).collect(),
-			expires_at: v.expires_at,
-		}
-	}
-}
+
 #[async_trait]
-impl TransferRepository for Repository<'_> {
-	fn limits(&self) -> Limits {
-		let mut limits = limits(&self.federation.store);
-		if self
-			.delivery
-			.as_ref()
-			.is_some_and(|delivery| delivery.completion)
-		{
-			limits.share_files = aidash_domain::deliverable::MAX_COMPLETION_ATTACHMENTS;
-			limits.share_file_bytes = aidash_domain::deliverable::MAX_COMPLETION_ATTACHMENT_BYTES;
-			limits.share_bytes = aidash_domain::deliverable::MAX_COMPLETION_ATTACHMENT_BYTES;
-		}
-		limits
+impl ReceiverRepository for Repository<'_> {
+	fn admission_enabled(&self) -> bool {
+		self.federation.store.capabilities.0.admission
 	}
-	async fn snapshot(&self, id: Uuid) -> Result<Record> {
-		let result: NativeResult<NativeRecord> = async {
-			let f = self.federation;
-			{
-				let query_bind_1 = id;
-				crate::database::native::query_as(
-					&sessions::select("core_records")
-						.and_where(
-							Expr::col(Alias::new("id")).eq(Expr::value(query_bind_1.to_owned())),
-						)
-						.and_where(
-							Expr::col(Alias::new("kind"))
-								.eq(reinhardt::query::Expr::value("transfer_out")),
-						)
-						.to_string(PostgresQueryBuilder),
-				)
-				.fetch_optional(f.store.pool.in_scope(&MAINTENANCE))
-				.await?
-			}
-			.ok_or_else(|| NativeError::NotFound("transfer unavailable".into()))
+
+	fn limits(&self) -> ManifestLimits {
+		if self.completion {
+			use aidash_domain::deliverable::{
+				MAX_COMPLETION_ATTACHMENT_BYTES, MAX_COMPLETION_ATTACHMENTS,
+			};
+			return ManifestLimits {
+				files: MAX_COMPLETION_ATTACHMENTS,
+				file_bytes: MAX_COMPLETION_ATTACHMENT_BYTES,
+				bytes: MAX_COMPLETION_ATTACHMENT_BYTES,
+			};
 		}
-		.await;
-		result.map(domain).map_err(Into::into)
+		let limits = &self.federation.store.capabilities.0.limits;
+		ManifestLimits {
+			files: MESSAGE_FILES.min(limits.share_files),
+			file_bytes: MESSAGE_BYTES.min(limits.share_file_bytes),
+			bytes: MESSAGE_BYTES.min(limits.share_bytes),
+		}
 	}
-	async fn begin_sender(&self, record: &Record) -> Result<Box<dyn TransferScope + '_>> {
-		let identity = SubjectIdentity {
-			http_session: None,
-			credential_id: serde_json::from_value(record.data["credential_id"].clone())?,
-			tenant: record.tenant.clone(),
-			subject: record.owner.clone(),
-		};
-		let description: Description = serde_json::from_value(record.data["description"].clone())?;
-		let source = aidash_domain::nodes::NodeAddress::parse(&description.source_node)?;
-		if source.deployment != self.federation.config.deployment {
-			return Err(Error::Forbidden);
-		}
-		let mut access = Access::begin(&self.federation.store, &identity).await?;
-		access.set_node(source.node);
+
+	fn node_id(&self) -> &str {
+		&self.address
+	}
+
+	fn description(&self) -> &Description {
+		&self.description
+	}
+
+	async fn begin(&self, source: &str) -> Result<Box<dyn ReceiverScope + '_>> {
+		let (mut access, _) = crate::apps::identity::services::remote::delivery_lease(
+			self.federation,
+			source,
+			self.grant,
+		)
+		.await?;
+		access.set_node(self.node.clone());
 		Ok(Box::new(Scope {
-			store: Some(&self.federation.store),
-			authority: Authority::Owned(Box::new(access)),
-			receiving: None,
-			pending: None,
+			store: &self.federation.store,
+			access,
+			node: &self.node,
 		}))
 	}
-	async fn begin_receipt(&self, id: Uuid) -> Result<Box<dyn ReceiptScope + '_>> {
-		let tx = self.federation.store.pool.begin(&MAINTENANCE).await?;
-		Ok(Box::new(Receipt { tx, id }))
-	}
-	async fn request(
-		&self,
-		tenant: &str,
-		source: &str,
-		node: &str,
-		path: &str,
-		body: &Value,
-	) -> Result<Value> {
-		let source = aidash_domain::nodes::NodeAddress::parse(source)?;
-		if source.deployment != self.federation.config.deployment {
-			return Err(Error::Forbidden);
-		}
-		let sender = aidash_domain::federation::route::Sender {
-			node: Some(source.node),
-			..peer::node_sender(tenant)?
-		};
-		peer::authority_request(self.federation, &sender, node, path, body)
-			.await
-			.map_err(Into::into)
-	}
-	async fn jobs(&self) -> Result<Vec<Uuid>> {
-		let result: NativeResult<Vec<Uuid>> = async {
-			let f = self.federation;
-
-			let ids: Vec<Uuid> = crate::database::native::query_scalar(
-				&Query::select()
-					.column(Alias::new("id"))
-					.from(Alias::new("core_records"))
-					.and_where(
-						Expr::col(Alias::new("kind"))
-							.eq(reinhardt::query::Expr::value("transfer_out")),
-					)
-					.and_where(Expr::col(Alias::new("state")).is_in([
-						"pending",
-						"transferring",
-						"committing",
-					]))
-					.and_where(Expr::cust(
-						"COALESCE((data->>'retry_after')::timestamptz, '-infinity'::timestamptz) < CURRENT_TIMESTAMP",
-					))
-					.limit(8)
-					.to_string(PostgresQueryBuilder),
-			)
-			.scalar_all(f.store.pool.in_scope(&MAINTENANCE))
-			.await?;
-			Ok(ids)
-		}
-		.await;
-		result.map_err(Into::into)
-	}
-	async fn record_failure(&self, id: Uuid, terminal: bool) -> Result<()> {
-		let result:NativeResult<()>=async {let mut tx=self.federation.store.pool.begin(&MAINTENANCE).await?;
-{
-					let query_bind_1 = id;
-					let query_bind_2 = terminal;
-					crate::database::native::query(&Query::update().table(Alias::new("core_records")).value_expr(Alias::new("state"),SimpleExpr::CustomWithExpr("(CASE WHEN ? THEN 'blocked' WHEN COALESCE((data->>'retry_count')::int,0) >= 11 THEN 'uncertain' ELSE state END)".into(), vec![Expr::value(query_bind_2.to_owned()).into()])).value_expr(Alias::new("data"),Expr::cust("data || jsonb_build_object('error','TRANSFER_PENDING_OR_DENIED','retry_count',COALESCE((data->>'retry_count')::int,0)+1,'retry_after',CURRENT_TIMESTAMP + INTERVAL '5 seconds')")).and_where(Expr::col(Alias::new("id")).eq(Expr::value(query_bind_1.to_owned()))).and_where(Expr::col(Alias::new("state")).ne(reinhardt::query::Expr::value("delivered"))).to_string(PostgresQueryBuilder)).execute(&mut *tx).await?
-				};tx.commit().await?;Ok(())}.await;
-		result.map_err(Into::into)
-	}
 }
+
 #[async_trait]
-impl TransferScope for Scope<'_> {
-	async fn require_bound_operation(&mut self, run: Uuid, operation: &str) -> Result<()> {
-		crate::apps::registry::repositories::bindings::require_operation(
-			self.authority.get_mut(),
-			run,
-			operation,
-		)
-		.await
+impl ReceiverScope for Scope<'_> {
+	fn credential(&self) -> Uuid {
+		self.access.identity.credential_id
 	}
 
-	fn limits(&self) -> Result<Limits> {
-		Ok(limits(self.store.ok_or_else(missing)?))
-	}
-	async fn retained_bytes(&mut self, area: &Area) -> Result<u64> {
-		super::retention::retained_bytes_of(self.authority.get_mut(), area.id)
-			.await
-			.map_err(Into::into)
-	}
-	fn node_id(&self) -> &str {
-		self.store.map_or("", |s| s.deployment.as_str())
-	}
-	fn principal(&self) -> &str {
-		&self.authority.get().identity.subject
-	}
-	fn tenant(&self) -> &str {
-		&self.authority.get().identity.tenant
-	}
-	fn credential(&self) -> Uuid {
-		self.authority.get().identity.credential_id
-	}
-	fn subjects(&self) -> &[String] {
-		&self.authority.get().subjects
-	}
-	fn set_subjects(&mut self, subjects: Vec<String>) {
-		self.authority.get_mut().subjects = subjects;
-	}
-	fn set_context(&mut self, value: Value) {
-		self.authority.get_mut().context = value;
-	}
-	fn resource(&self, kind: &str, id: &str, attributes: Value) -> Resource {
-		self.authority.get().resource(kind, id, attributes)
-	}
-	async fn thread(&mut self, id: Uuid) -> Result<Resource> {
-		let access = self.authority.get_mut();
-		let node = access.node.clone();
-		let result = access.thread(id).await;
-		if let Some(node) = node {
-			access.set_node(node);
-		}
-		result.map_err(Into::into)
-	}
-	async fn require(&mut self, resource: &Resource, action: &str) -> Result<()> {
-		self.authority
-			.get_mut()
-			.require(resource, action)
-			.await
-			.map_err(Into::into)
-	}
-	async fn authorize(&mut self, area: &Area, action: &str) -> Result<()> {
-		sessions::authorize(
-			self.authority.get_mut(),
-			&NativeArea::from(area.clone()),
-			action,
+	async fn record(&mut self, id: Uuid) -> Result<Record> {
+		// Serialize the first lookup even when no staging row exists yet.
+		let storage_id = incoming_record_id(id, self.node);
+		crate::database::native::query(
+			&Query::select()
+				.expr(SimpleExpr::CustomWithExpr(
+					"(pg_advisory_xact_lock(hashtextextended(?, 0)))".into(),
+					vec![Expr::value(storage_id.to_string()).into()],
+				))
+				.to_string(PostgresQueryBuilder),
 		)
-		.await
-		.map_err(Into::into)
-	}
-	async fn sources(&mut self, thread: Uuid, constraints: &Value) -> Result<()> {
-		sessions::authorize_sources(self.authority.get_mut(), thread, constraints)
-			.await
-			.map_err(Into::into)
-	}
-	async fn run(&mut self, id: Uuid) -> Result<RunMetadata> {
-		self.authority
-			.get_mut()
-			.run_for_action(id)
-			.await
-			.map(|r| r.metadata())
-			.map_err(Into::into)
-	}
-	async fn entry(&mut self, reference: &EntityRef, action: &str) -> Result<Entry> {
-		catalog::entry(self.authority.get_mut(), reference, action)
-			.await
-			.map_err(Into::into)
-	}
-	async fn check_pinned(&mut self, entry: &Entry) -> Result<()> {
-		crate::marketplace::check_pinned(self.authority.get_mut(), entry)
-			.await
-			.map_err(Into::into)
-	}
-	async fn peer_enabled(&mut self, node: &str) -> Result<Option<bool>> {
-		// The sender addresses the Node when it holds an enabled route to it.
-		Ok(self.authority.get_mut().route_to(node).await?.map(|_| true))
-	}
-	async fn record(&mut self, id: Uuid, kind: &str) -> Result<Record> {
-		let stored = self.storage_id(id, kind)?;
-		records::get(self.authority.get_mut(), stored, kind)
+		.execute(&mut **self.access.tx)
+		.await?;
+		records::get(&mut self.access, storage_id, "transfer_in")
 			.await
 			.map(|row| logical_record(row, id))
 			.map_err(Into::into)
 	}
-	async fn insert(
-		&mut self,
-		id: Uuid,
-		area: Option<Uuid>,
-		kind: &str,
-		state: &str,
-		data: Value,
-		expires: Option<DateTime<Utc>>,
-	) -> Result<Record> {
-		let stored = self.storage_id(id, kind)?;
+
+	async fn insert(&mut self, id: Uuid, data: Value, expires: DateTime<Utc>) -> Result<Record> {
 		records::insert(
-			self.authority.get_mut(),
-			stored,
-			area,
-			kind,
-			state,
+			&mut self.access,
+			incoming_record_id(id, self.node),
+			None,
+			"transfer_in",
+			"staging",
 			data,
-			expires,
+			Some(expires),
 		)
 		.await
 		.map(|row| logical_record(row, id))
 		.map_err(Into::into)
 	}
+
 	async fn update(&mut self, record: &mut Record) -> Result<()> {
 		let id = record.id;
 		let mut row = native(record);
-		row.id = self.storage_id(id, &record.kind)?;
-		let result = records::update(self.authority.get_mut(), &mut row).await;
+		row.id = incoming_record_id(id, self.node);
+		records::update(&mut self.access, &mut row).await?;
 		*record = logical_record(row, id);
-		result.map_err(Into::into)
+		Ok(())
 	}
-	async fn copy_snapshot(&mut self, file: &MountedFile) -> Result<MountedFile> {
+
+	async fn reserve(&mut self, bytes: i64) -> Result<()> {
 		self.store
-			.ok_or_else(missing)?
 			.capabilities
-			.copy_object(
-				self.authority.get_mut(),
+			.reserve(&mut self.access, bytes)
+			.await
+			.map_err(Into::into)
+	}
+
+	async fn lock_conversion(&mut self) -> Result<()> {
+		let key = format!("core-transfer-conversion:{}", self.access.identity.tenant);
+		crate::database::native::query(
+			&Query::select()
+				.expr(SimpleExpr::CustomWithExpr(
+					"(pg_advisory_xact_lock(hashtextextended(?, 0)))".into(),
+					vec![Expr::value(key).into()],
+				))
+				.to_string(PostgresQueryBuilder),
+		)
+		.execute(&mut **self.access.tx)
+		.await?;
+		Ok(())
+	}
+
+	async fn put_staging(&mut self, bytes: &[u8]) -> Result<(Uuid, String)> {
+		let mut pending = self
+			.store
+			.capabilities
+			.begin_object_converting(
+				&mut self.access,
 				None,
-				"transfer_snapshot",
-				&FileEntry::from(file.clone()),
+				"transfer_staging",
+				bytes.len() as u64,
+				bytes.len() as i64,
 			)
+			.await?;
+		pending.write_block(bytes).await?;
+		pending
+			.finish(&mut self.access, None)
 			.await
-			.map(Into::into)
 			.map_err(Into::into)
 	}
-	async fn read_chunk(&mut self, file: &MountedFile, offset: u64) -> Result<Vec<u8>> {
+
+	async fn read_file(&mut self, file: &MountedFile) -> Result<Vec<u8>> {
 		self.store
-			.ok_or_else(missing)?
 			.capabilities
-			.read_chunk(
-				self.authority.get_mut(),
-				&FileEntry::from(file.clone()),
-				offset,
-			)
+			.read(&mut self.access, &FileEntry::from(file.clone()))
 			.await
 			.map_err(Into::into)
 	}
-	async fn cached(&mut self, key: Uuid, digest: &str) -> Result<Option<Value>> {
-		sessions::cached(self.authority.get_mut(), key, digest)
-			.await
-			.map_err(Into::into)
-	}
-	async fn cache(&mut self, key: Uuid, digest: &str, result: &Value) -> Result<()> {
-		sessions::cache(self.authority.get_mut(), key, digest, result)
-			.await
-			.map_err(Into::into)
-	}
+
 	async fn finish(self: Box<Self>, result: Result<()>) -> Result<()> {
-		let Scope { authority, .. } = *self;
-		match authority {
-			Authority::Owned(access) => (*access)
-				.finish(result.map_err(NativeError::from))
-				.await
-				.map_err(Into::into),
-			Authority::Borrowed(_) => Err(missing()),
-		}
-	}
-}
-struct Receipt {
-	tx: crate::database::native::Transaction,
-	id: Uuid,
-}
-#[async_trait]
-impl ReceiptScope for Receipt {
-	async fn load(&mut self) -> Result<Record> {
-		let result: NativeResult<NativeRecord> = async {
-			let id = self.id;
-			let tx = &mut self.tx;
-			Ok({
-				let query_bind_1 = id;
-				crate::database::native::query_as(
-					&sessions::select("core_records")
-						.and_where(
-							Expr::col(Alias::new("id")).eq(Expr::value(query_bind_1.to_owned())),
-						)
-						.and_where(
-							Expr::col(Alias::new("kind"))
-								.eq(reinhardt::query::Expr::value("transfer_out")),
-						)
-						.lock(reinhardt::query::LockType::Update)
-						.to_string(PostgresQueryBuilder),
-				)
-				.fetch_one(&mut **tx)
-				.await?
-			})
-		}
-		.await;
-		result.map(domain).map_err(Into::into)
-	}
-	async fn update(&mut self, record: &mut Record) -> Result<()> {
-		let mut row = native(record);
-		let result = records::update_committed(&mut self.tx, &mut row).await;
-		*record = domain(row);
-		result.map_err(Into::into)
-	}
-	async fn finish(self: Box<Self>, result: Result<()>) -> Result<()> {
-		result?;
-		self.tx.commit().await.map_err(Into::into)
+		self.access
+			.finish(result.map_err(NativeError::from))
+			.await
+			.map_err(Into::into)
 	}
 }

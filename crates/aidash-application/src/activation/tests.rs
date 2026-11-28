@@ -328,7 +328,6 @@ struct State {
 	suspended: AtomicBool,
 	committed: AtomicBool,
 	newer: AtomicBool,
-	unblocked: AtomicBool,
 	answered: AtomicBool,
 	/// Whether the Run accepted input after the sequence asked about.
 	input: AtomicBool,
@@ -376,7 +375,6 @@ fn repository(now: DateTime<Utc>) -> Repository {
 		suspended: AtomicBool::new(false),
 		committed: AtomicBool::new(false),
 		newer: AtomicBool::new(false),
-		unblocked: AtomicBool::new(true),
 		answered: AtomicBool::new(false),
 		input: AtomicBool::new(false),
 		operation_done: AtomicBool::new(false),
@@ -439,10 +437,6 @@ impl SchedulingScope for Scope {
 			.into_iter()
 			.filter(|r| target.is_none_or(|id| r.id == id))
 			.collect())
-	}
-	async fn unblocked(&mut self, _: Uuid) -> Result<bool> {
-		self.state.record("unblocked");
-		Ok(self.state.unblocked.load(Ordering::Acquire))
 	}
 	async fn human_answered(&mut self, _: Uuid) -> Result<bool> {
 		self.state.record("answered");
@@ -946,12 +940,12 @@ async fn blocked_recovery_rows_advance_the_keyset_cursor(
 		.map(|index| {
 			let mut row = raw(now);
 			row.metadata.id = Uuid::from_u128(index as u128);
+			row.metadata.control = RunControl::Paused;
 			row
 		})
 		.collect();
 	let last = rows.last().unwrap().metadata.id;
 	*repository.0.rows.lock().unwrap() = Some(rows);
-	repository.0.unblocked.store(false, Ordering::Release);
 	let mut scope = Scope {
 		state: repository.0.clone(),
 		committed: false,

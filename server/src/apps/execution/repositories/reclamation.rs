@@ -22,41 +22,6 @@ use uuid::Uuid;
 /// The capability worker reaches every Tenant's operations and work areas.
 const MAINTENANCE: TenancyScope =
 	TenancyScope::Deployment(DeploymentScopeReason::CapabilityMaintenance);
-/// A superseded object may be reclaimed only after its active holds expire.
-pub(crate) fn no_active_hold() -> SimpleExpr {
-	Expr::not_exists(
-		Query::select()
-			.expr(Expr::value(1))
-			.from_as(Alias::new("core_retention_files"), Alias::new("f"))
-			.join(
-				reinhardt::query::JoinType::InnerJoin,
-				reinhardt::query::TableRef::table_alias(
-					Alias::new("core_retention_holds"),
-					Alias::new("h"),
-				),
-				Expr::col((Alias::new("h"), Alias::new("id")))
-					.equals((Alias::new("f"), Alias::new("hold_id"))),
-			)
-			.and_where(
-				Expr::col((Alias::new("f"), Alias::new("file_id")))
-					.equals((Alias::new("core_objects"), Alias::new("id"))),
-			)
-			.and_where(
-				Expr::col((Alias::new("f"), Alias::new("tenant")))
-					.equals((Alias::new("core_objects"), Alias::new("tenant"))),
-			)
-			.cond_where(
-				Condition::any()
-					.add(Expr::col((Alias::new("h"), Alias::new("expires_at"))).is_null())
-					.add(
-						Expr::col((Alias::new("h"), Alias::new("expires_at")))
-							.gt(Expr::current_timestamp()),
-					),
-			)
-			.to_owned(),
-	)
-	.into()
-}
 pub(crate) fn no_revision_references() -> reinhardt::query::SimpleExpr {
 	Expr::not_exists(
 		Query::select()
@@ -170,7 +135,6 @@ let ids: Vec<Uuid> = {
 						.and_where(
 							Expr::col(Alias::new("id")).gt(Expr::value(query_bind_1.to_owned())),
 						)
-						.and_where(no_active_hold())
 						.and_where(no_revision_references())
 						.order_by(Alias::new("id"), reinhardt::query::Order::Asc)
 						.limit(16)
@@ -180,23 +144,6 @@ let ids: Vec<Uuid> = {
 				.await?
 			};
 			Ok(ids)
-		}
-		.await;
-		result.map_err(Into::into)
-	}
-	async fn expire_holds(&self) -> Result<()> {
-		let result: NativeResult<()> = async {
-			crate::database::native::query(
-				&Query::delete()
-					.from_table(Alias::new("core_retention_holds"))
-					.and_where(Expr::cust(
-						"expires_at IS NOT NULL AND expires_at <= CURRENT_TIMESTAMP",
-					))
-					.to_string(PostgresQueryBuilder),
-			)
-			.execute(self.store.pool.in_scope(&MAINTENANCE))
-			.await?;
-			Ok(())
 		}
 		.await;
 		result.map_err(Into::into)
@@ -222,7 +169,6 @@ let ids: Vec<Uuid> = {
 		super::journal_query::reap(self.store, cursor).await
 	}
 	async fn orphans(&self) -> Result<()> {
-		prune_revisions(self.store).await?;
 		let mut cursor = self.orphan_cursor.lock().await;
 		let reconciliation = self
 			.store
@@ -234,115 +180,6 @@ let ids: Vec<Uuid> = {
 		reconciliation?;
 		reclamation.map_err(Into::into)
 	}
-}
-
-/// An Area row lock serializes pruning with creation of a retention hold.
-async fn prune_revisions(store: &Store) -> NativeResult<()> {
-	let held = || {
-		Expr::exists(
-			Query::select()
-				.expr(Expr::value(1))
-				.from(Alias::new("core_retention_holds"))
-				.and_where(
-					Expr::col((Alias::new("core_retention_holds"), Alias::new("tenant")))
-						.equals((Alias::new("core_manifest_revisions"), Alias::new("tenant"))),
-				)
-				.and_where(
-					Expr::col((Alias::new("core_retention_holds"), Alias::new("area_id")))
-						.equals((Alias::new("core_manifest_revisions"), Alias::new("area_id"))),
-				)
-				.and_where(
-					Expr::col((Alias::new("core_retention_holds"), Alias::new("revision"))).equals(
-						(
-							Alias::new("core_manifest_revisions"),
-							Alias::new("revision"),
-						),
-					),
-				)
-				.cond_where(
-					Condition::any()
-						.add(
-							Expr::col((
-								Alias::new("core_retention_holds"),
-								Alias::new("expires_at"),
-							))
-							.is_null(),
-						)
-						.add(
-							Expr::col((
-								Alias::new("core_retention_holds"),
-								Alias::new("expires_at"),
-							))
-							.gt(Expr::current_timestamp()),
-						),
-				)
-				.to_owned(),
-		)
-	};
-	let candidates: Vec<(String, Uuid)> = crate::database::native::query_as(
-		&Query::select()
-			.columns(["tenant", "id"].map(Alias::new))
-			.from(Alias::new("core_areas"))
-			.and_where(Expr::exists(
-				Query::select()
-					.expr(Expr::value(1))
-					.from(Alias::new("core_manifest_revisions"))
-					.and_where(
-						Expr::col((Alias::new("core_manifest_revisions"), Alias::new("tenant")))
-							.equals((Alias::new("core_areas"), Alias::new("tenant"))),
-					)
-					.and_where(
-						Expr::col((Alias::new("core_manifest_revisions"), Alias::new("area_id")))
-							.equals((Alias::new("core_areas"), Alias::new("id"))),
-					)
-					.and_where(
-						Expr::col((
-							Alias::new("core_manifest_revisions"),
-							Alias::new("revision"),
-						))
-						.ne(Expr::col((
-							Alias::new("core_areas"),
-							Alias::new("revision"),
-						))),
-					)
-					.and_where(held().not())
-					.to_owned(),
-			))
-			.limit(16)
-			.to_string(PostgresQueryBuilder),
-	)
-	.columns(&["tenant", "id"])
-	.fetch_all(store.pool.in_scope(&MAINTENANCE))
-	.await?;
-	for (tenant, area) in candidates {
-		let mut tx = store.pool.begin(&MAINTENANCE).await?;
-		let current: Option<i64> = crate::database::native::query_scalar(
-			&Query::select()
-				.column(Alias::new("revision"))
-				.from(Alias::new("core_areas"))
-				.and_where(Expr::col(Alias::new("tenant")).eq(Expr::value(&tenant)))
-				.and_where(Expr::col(Alias::new("id")).eq(Expr::value(area)))
-				.lock(LockType::Update)
-				.to_string(PostgresQueryBuilder),
-		)
-		.scalar_optional(&mut *tx)
-		.await?;
-		if let Some(current) = current {
-			crate::database::native::query(
-				&Query::delete()
-					.from_table(Alias::new("core_manifest_revisions"))
-					.and_where(Expr::col(Alias::new("tenant")).eq(Expr::value(&tenant)))
-					.and_where(Expr::col(Alias::new("area_id")).eq(Expr::value(area)))
-					.and_where(Expr::col(Alias::new("revision")).ne(Expr::value(current)))
-					.and_where(held().not())
-					.to_string(PostgresQueryBuilder),
-			)
-			.execute(&mut *tx)
-			.await?;
-		}
-		tx.commit().await?;
-	}
-	Ok(())
 }
 
 /// Blobs nothing names any more: no object, reference or upload.
@@ -685,26 +522,18 @@ impl ReclamationScope for Scope<'_> {
 					.await?;
 			return Ok(existing.is_some());
 		}
-		for (table, column) in [
-			("core_blob_references", "object_id"),
-			("core_retention_files", "file_id"),
-		] {
-			let found: Option<Uuid> = crate::database::native::query_scalar(
-				&Query::select()
-					.column(Alias::new(column))
-					.from(Alias::new(table))
-					.and_where(Expr::col(Alias::new("tenant")).eq(Expr::value(tenant)))
-					.and_where(Expr::col(Alias::new(column)).eq(Expr::value(id)))
-					.limit(1)
-					.to_string(PostgresQueryBuilder),
-			)
-			.scalar_optional(&mut *self.tx)
-			.await?;
-			if found.is_some() {
-				return Ok(true);
-			}
-		}
-		Ok(false)
+		let found: Option<Uuid> = crate::database::native::query_scalar(
+			&Query::select()
+				.column("object_id")
+				.from("core_blob_references")
+				.and_where(Expr::col("tenant").eq(Expr::value(tenant)))
+				.and_where(Expr::col("object_id").eq(Expr::value(id)))
+				.limit(1)
+				.to_string(PostgresQueryBuilder),
+		)
+		.scalar_optional(&mut *self.tx)
+		.await?;
+		Ok(found.is_some())
 	}
 	async fn working_tenant(&mut self, id: Uuid) -> Result<Option<String>> {
 		let result: NativeResult<Option<String>> = async {
@@ -720,7 +549,6 @@ impl ReclamationScope for Scope<'_> {
 						.cond_where(reclaimable_working())
 						// A hold written between the selection and this lock refuses the
 						// erase instead of dropping the bytes a reference still names.
-						.and_where(no_active_hold())
 						.and_where(no_revision_references())
 						.lock(LockType::Update)
 						.to_string(PostgresQueryBuilder),

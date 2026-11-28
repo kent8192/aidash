@@ -1,4 +1,4 @@
-//! A Live preview: one Run's Web server, pinned to a Working Area revision,
+//! A Live preview: one Run's Web server in its Execution Pod,
 //! which keeps serving only inside its idle and absolute limits (ADR 0070).
 //!
 //! The rules here are free of storage, clocks and transports: the Runner starts
@@ -88,10 +88,9 @@ impl Limits {
 pub enum State {
 	/// A start is being dispatched: it has no Pod it can serve from yet.
 	Starting,
-	/// Its Pod is serving the revision it pinned.
+	/// Its Pod is serving its declared port.
 	Running,
-	/// It still serves its pinned revision, but a later publication has left it
-	/// behind; a later turn restarts it. Visible, not stopped.
+	/// A stored preview that predated direct access to the Execution Pod.
 	Stale,
 	/// It is not serving: the process stopped, or a stop is in progress.
 	Stopped,
@@ -189,9 +188,6 @@ pub struct LivePreview {
 	pub id: Uuid,
 	pub tenant: String,
 	pub run_id: Uuid,
-	pub area_id: Uuid,
-	/// The Working Area revision the Pod mounted; never changes while it serves.
-	pub revision: i64,
 	/// The port the Pod declares and the Preview gateway reaches.
 	pub port: u16,
 	pub state: State,
@@ -220,8 +216,6 @@ impl LivePreview {
 		id: Uuid,
 		tenant: impl Into<String>,
 		run_id: Uuid,
-		area_id: Uuid,
-		revision: i64,
 		port: u16,
 		limits: Limits,
 		now: DateTime<Utc>,
@@ -231,8 +225,6 @@ impl LivePreview {
 			id,
 			tenant: tenant.into(),
 			run_id,
-			area_id,
-			revision,
 			port,
 			state: State::Starting,
 			stop_reason: None,
@@ -255,15 +247,6 @@ impl LivePreview {
 		self.last_request_at = now;
 		self.expires_at = now + self.limits.absolute();
 		self.termination_confirmed = false;
-	}
-
-	/// The state as a reader sees it now: a later revision makes a running
-	/// preview stale without stopping it (it still serves the pinned revision).
-	pub fn view(&self, area_revision: i64) -> State {
-		match self.state {
-			State::Running if area_revision > self.revision => State::Stale,
-			state => state,
-		}
 	}
 
 	/// Whether a start that never became ready has exhausted its wait. The

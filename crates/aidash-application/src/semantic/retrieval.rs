@@ -67,15 +67,6 @@ fn image_pointer(source: &Source, pointer: Value) -> Option<(Value, String)> {
 		return None;
 	}
 	match source {
-		Source::WorkingImage { file_id, path, .. } => {
-			if pointer["file_id"] != file_id.to_string() || pointer["path"] != *path {
-				return None;
-			}
-			Some((
-				json!({"file_id":file_id,"path":path,"name":name,"media_type":media_type,"size":size,"digest":digest}),
-				digest.to_owned(),
-			))
-		}
 		// A match names the message and attachment, carries the message text
 		// and Image Description, and never the bytes (#622 decision 5).
 		Source::AttachmentImage {
@@ -210,6 +201,9 @@ async fn prepare_reads(
 	let mut incomplete = false;
 	let mut unconfirmed = Tally::new();
 	for entry in rows {
+		if aidash_domain::semantic::retired_working_image(&entry.source) {
+			continue;
+		}
 		scope.begin_row();
 		let source: Source = serde_json::from_value(entry.source.clone())?;
 		let optional = source.is_image()
@@ -221,9 +215,7 @@ async fn prepare_reads(
 		if agent_controls.is_some_and(|agent| match &source {
 			Source::Unit { .. } => true,
 			Source::Memory { .. } => bound_provider(agent) || !agent.semantic_memory,
-			Source::Message { .. }
-			| Source::WorkingImage { .. }
-			| Source::AttachmentImage { .. } => !agent.thread_context,
+			Source::Message { .. } | Source::AttachmentImage { .. } => !agent.thread_context,
 		}) {
 			continue;
 		}
@@ -496,11 +488,6 @@ async fn search_or_outage(
 	partial: bool,
 ) -> Result<Retrieval> {
 	let outage = |error: &Error| matches!(error, Error::RemoteSemantic(Failure::Unavailable));
-	if let Some(image) = &input.image
-		&& run != Some(image.run_id)
-	{
-		return Err(Error::Forbidden);
-	}
 	// An attachment is a query only once this Run selected it for its own
 	// inference; anything else would disclose an image it never opened (#622
 	// decision 4). Check before any read of the bytes.
@@ -523,16 +510,6 @@ async fn search_or_outage(
 			.query_attachment(thread, attachment, prepared.spec.max_image_bytes)
 			.await?;
 		content.input().validate(&prepared.spec.embedding)?;
-		Some(content)
-	} else if let Some(image) = &input.image {
-		let content = scope
-			.query_image(thread, image, prepared.spec.max_image_bytes)
-			.await?;
-		aidash_domain::semantic::EmbeddingInput::Image {
-			media_type: &content.media_type,
-			bytes: &content.bytes,
-		}
-		.validate(&prepared.spec.embedding)?;
 		Some(content)
 	} else {
 		None
@@ -568,17 +545,10 @@ async fn search_or_outage(
 		Err(error) if outage(&error) => Ok(Retrieval::Outage(OutageCause::VectorBackend)),
 		Err(error) => Err(error),
 		Ok(result) => {
-			if let Some(original) = &query_image {
-				let current = if let Some(attachment) = &input.attachment {
-					scope
-						.query_attachment(thread, attachment, max_image_bytes)
-						.await?
-				} else {
-					let selection = input.image.as_ref().expect("image query");
-					scope
-						.query_image(thread, selection, max_image_bytes)
-						.await?
-				};
+			if let (Some(original), Some(attachment)) = (&query_image, &input.attachment) {
+				let current = scope
+					.query_attachment(thread, attachment, max_image_bytes)
+					.await?;
 				if current.media_type != original.media_type || current.bytes != original.bytes {
 					return Err(Error::Conflict(
 						"image query changed during retrieval".into(),
@@ -680,7 +650,6 @@ pub async fn thread_context(
 		run.thread_id,
 		&Search {
 			query,
-			image: None,
 			attachment: None,
 			agent: Some(aidash_domain::agent_subject(
 				&run.home_node,

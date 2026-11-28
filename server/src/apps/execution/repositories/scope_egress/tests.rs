@@ -778,6 +778,7 @@ async fn insert_space(
 ) -> Uuid {
 	let now = Utc::now();
 	let space = aidash_domain::scratch::ScratchSpace {
+		is_default: false,
 		id: Uuid::new_v4(),
 		node: tenant_roots::fixture_node_name(tenant),
 		name: "scope".to_owned(),
@@ -785,6 +786,7 @@ async fn insert_space(
 		state: aidash_domain::scratch::ScratchState::Active,
 		revision: 0,
 		wipe_generation: 0,
+		wipe_completed_generation: 0,
 		settings,
 		members: Default::default(),
 		created_at: now,

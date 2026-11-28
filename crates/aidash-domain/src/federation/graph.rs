@@ -144,10 +144,7 @@ pub fn kind_allowed(kind: &str, options: &GraphOptions) -> bool {
 	match options.mode.as_str() {
 		"topology" => matches!(kind, "agent" | "tool"),
 		"execution" => matches!(kind, "task" | "run" | "agent"),
-		"collaboration" => matches!(
-			kind,
-			"thread" | "conversation" | "task" | "agent"
-		),
+		"collaboration" => matches!(kind, "thread" | "conversation" | "task" | "agent"),
 		"knowledge" => kind != "run",
 		_ => true,
 	}

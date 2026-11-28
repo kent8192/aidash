@@ -338,7 +338,7 @@ fn remote_media_bytes(media_type: &str, bytes: Vec<u8>) -> Option<Vec<u8>> {
 	}
 }
 
-use crate::apps::execution::capabilities::{contracts::FileEntry, service, sessions};
+use crate::apps::execution::capabilities::contracts::FileEntry;
 use aidash_domain::{Run, media::SelectedFile};
 use std::sync::Arc;
 use tokio::sync::{OwnedRwLockWriteGuard, RwLock};
@@ -397,14 +397,17 @@ impl aidash_application::ports::execution::media::SelectedMediaScope for Selecte
 			.lease
 			.as_mut()
 			.ok_or(aidash_application::Error::Forbidden)?;
-		// A Run without its own Working Area can still open authorized
-		// Thread image matches; it simply has no own Files to select.
-		let Some(area) = sessions::current_own_area(access, self.run).await? else {
-			self.files = Vec::new();
-			return Ok(Vec::new());
+		use aidash_application::{
+			capabilities::files, ports::capabilities::files::FileScopePort as _,
 		};
-		sessions::authorize(access, &area, "file.read").await?;
-		let files = service::files(&area)?;
+		let mut scope = crate::bootstrap::file_scope(Some(self.store), access, Some(self.run));
+		let config = files::settings(&mut scope, &self.run.metadata()).await?;
+		let files: Vec<FileEntry> = scope
+			.bound_references(&config)
+			.await?
+			.into_iter()
+			.map(Into::into)
+			.collect();
 		let selected = files
 			.iter()
 			.map(|file| SelectedFile {
@@ -418,85 +421,40 @@ impl aidash_application::ports::execution::media::SelectedMediaScope for Selecte
 		self.files = files;
 		Ok(selected)
 	}
-	async fn subnode_file(&mut self, thread: Uuid, area: Uuid, id: Uuid) -> Result<SelectedFile> {
-		use aidash_application::ports::capabilities::files::FileScopePort;
-		let access = self
-			.lease
-			.as_mut()
-			.ok_or(aidash_application::Error::Forbidden)?;
-		let area = crate::bootstrap::file_scope(Some(self.store), access, Some(self.run))
-			.subnode_area(&self.run.metadata(), thread, area)
-			.await?;
-		// A member's Reference set stays inside the member's own Run (ADR 0114).
-		let file = serde_json::from_value::<Vec<FileEntry>>(area.manifest)?
-			.into_iter()
-			.find(|file| {
-				file.file_id == id
-					&& !(matches!(
-						file.scope,
-						crate::apps::execution::capabilities::contracts::FileScope::References
-					) && file.provenance["kind"] == "reference")
-			})
-			.ok_or_else(|| aidash_application::Error::NotFound("file unavailable".into()))?;
-		let selected = SelectedFile {
-			file_id: file.file_id,
-			path: file.path.clone(),
-			digest: file.digest.clone(),
-			size: file.size,
-			media_type: file.media_type.clone(),
-		};
-		self.files.push(file);
-		Ok(selected)
-	}
-	async fn thread_image(
+	async fn scratch_image(
 		&mut self,
-		area_id: Uuid,
-		generation: i64,
-		file_id: Uuid,
-		path: &str,
-	) -> Result<Option<SelectedFile>> {
+		selection: &aidash_domain::media::ScratchImageSelection,
+		max_bytes: u64,
+	) -> Result<(String, Vec<u8>)> {
+		if self.lease.is_none() {
+			self.lease = Some(self.access.clone().write_owned().await);
+		}
 		let access = self
 			.lease
 			.as_mut()
 			.ok_or(aidash_application::Error::Forbidden)?;
-		let area = match sessions::load(access, area_id).await {
-			Ok(area) => area,
-			Err(crate::Error::Forbidden | crate::Error::NotFound(_)) => return Ok(None),
-			Err(error) => return Err(error.into()),
-		};
-		if area.thread_id != self.run.thread_id || area.generation != generation {
-			return Ok(None);
-		}
-		let files = service::files(&area)?;
-		let Some(file) = files.into_iter().find(|file| {
-			file.file_id == file_id
-				&& file.path == path
-				&& matches!(
-					file.scope,
-					crate::apps::execution::capabilities::contracts::FileScope::Working
-						| crate::apps::execution::capabilities::contracts::FileScope::Received
-				)
-		}) else {
-			return Ok(None);
-		};
-		// `read` resolves by File ID, so never let another Area shadow a
-		// different version already in this batch.
-		if self
-			.files
-			.iter()
-			.any(|known| known.file_id == file.file_id && known.digest != file.digest)
-		{
+		let pod = crate::apps::execution::repositories::operations::pods::tool_context(
+			self.store,
+			access,
+			&self.run.metadata(),
+		)
+		.await?
+		.ok_or_else(|| aidash_application::Error::NotFound("Execution Pod".into()))?;
+		let (digest, bytes) = aidash_application::capabilities::pod::files::read_snapshot(
+			&pod,
+			&selection.scratch_path,
+			max_bytes,
+		)
+		.await?;
+		if digest != selection.expected_digest {
 			return Err(aidash_application::Error::Conflict("FILE_CHANGED".into()));
 		}
-		let selected = SelectedFile {
-			file_id: file.file_id,
-			path: file.path.clone(),
-			digest: file.digest.clone(),
-			size: file.size,
-			media_type: file.media_type.clone(),
-		};
-		self.files.push(file);
-		Ok(Some(selected))
+		let media_type = aidash_domain::provider::detect_image(&bytes).ok_or_else(|| {
+			aidash_application::Error::Invalid(
+				"Scratch Space file must be a supported image".into(),
+			)
+		})?;
+		Ok((media_type.to_owned(), bytes))
 	}
 	async fn read(&mut self, file: Uuid) -> Result<Vec<u8>> {
 		let access = self

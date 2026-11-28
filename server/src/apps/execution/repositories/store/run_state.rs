@@ -1,9 +1,7 @@
 use super::*;
 use aidash_application::tenancy::{DeploymentScopeReason, TenancyScope};
 use chrono::{DateTime, Utc};
-use reinhardt::query::{
-	Alias, Condition, Expr, JoinType, PostgresQueryBuilder, Query, SelectStatement, UpdateStatement,
-};
+use reinhardt::query::{Alias, Condition, Expr, PostgresQueryBuilder, Query};
 use std::time::Duration;
 use tokio::time::Instant;
 fn a(name: &str) -> Alias {
@@ -62,135 +60,9 @@ pub(crate) struct FailureDelivery {
 	pub target: FailureTarget,
 }
 
-/// The same ordering and Area blockers govern claims and deferred notifications.
-///
-/// An execution waits behind the awake executions queued before it in its
-/// Working Area. One that sleeps, or is paused, holds no place (#1008, ADR
-/// 0140): the database sets `core_runs.asleep` when it falls asleep, and
-/// [`rejoin_queue`] puts it back at the tail when it wakes.
+/// Cancelled Runs can settle even when no worker covers their requirements.
 pub(crate) fn run_unblocked() -> Condition {
-	let earlier = Query::select()
-		.expr(Expr::val(1))
-		.from_as(Alias::new("core_runs"), Alias::new("mine"))
-		.join(
-			JoinType::InnerJoin,
-			reinhardt::query::TableRef::table_alias(Alias::new("core_runs"), Alias::new("earlier")),
-			Condition::all()
-				.add(
-					Expr::col((Alias::new("mine"), Alias::new("area_id")))
-						.equals((Alias::new("earlier"), Alias::new("area_id"))),
-				)
-				.add(
-					Expr::col((Alias::new("mine"), Alias::new("generation")))
-						.equals((Alias::new("earlier"), Alias::new("generation"))),
-				)
-				.add(
-					reinhardt::query::SimpleExpr::from(Expr::col((
-						Alias::new("earlier"),
-						Alias::new("sequence"),
-					)))
-					.lt(Expr::col((Alias::new("mine"), Alias::new("sequence")))),
-				),
-		)
-		.join(
-			JoinType::InnerJoin,
-			reinhardt::query::TableRef::table_alias(
-				Alias::new("task_executions"),
-				Alias::new("previous"),
-			),
-			Expr::col((Alias::new("earlier"), Alias::new("run_id")))
-				.equals((Alias::new("previous"), Alias::new("id"))),
-		)
-		.and_where(
-			Expr::col((Alias::new("mine"), Alias::new("run_id")))
-				.equals((Alias::new("task_executions"), Alias::new("id"))),
-		)
-		.and_where(
-			Expr::col((Alias::new("previous"), Alias::new("phase"))).is_not_in([
-				"COMPLETED",
-				"FAILED",
-				"CANCELLED",
-			]),
-		)
-		.and_where(
-			Expr::col((Alias::new("earlier"), Alias::new("asleep")))
-				.eq(reinhardt::query::Expr::value(false)),
-		)
-		.to_owned();
-	let unready = Query::select()
-		.expr(Expr::val(1))
-		.from_as(Alias::new("core_runs"), Alias::new("q"))
-		.join(
-			JoinType::InnerJoin,
-			reinhardt::query::TableRef::table_alias(Alias::new("core_areas"), Alias::new("a")),
-			Expr::col((Alias::new("q"), Alias::new("area_id")))
-				.equals((Alias::new("a"), Alias::new("id"))),
-		)
-		.and_where(
-			Expr::col((Alias::new("q"), Alias::new("run_id")))
-				.equals((Alias::new("task_executions"), Alias::new("id"))),
-		)
-		.and_where(
-			Expr::col((Alias::new("q"), Alias::new("initialized")))
-				.eq(reinhardt::query::Expr::value(false)),
-		)
-		.and_where(
-			Expr::col((Alias::new("a"), Alias::new("state")))
-				.ne(reinhardt::query::Expr::value("active")),
-		)
-		.to_owned();
-	Condition::any()
-		.add(Expr::col(a("control")).eq(reinhardt::query::Expr::value("CANCELLED")))
-		.add(
-			Condition::all()
-				.add(Expr::exists(earlier).not())
-				.add(Expr::exists(unready).not()),
-		)
-}
-
-/// The Working Area of `run` when the execution holds no place in its
-/// queue: it slept, or was paused, and has not re-entered (#1008, ADR 0140).
-pub(crate) fn asleep_in(run: Uuid) -> SelectStatement {
-	Query::select()
-		.column(a("area_id"))
-		.from(a("core_runs"))
-		.and_where(Expr::col(a("run_id")).eq(Expr::value(run)))
-		.and_where(Expr::col(a("asleep")).eq(Expr::value(true)))
-		.to_owned()
-}
-
-/// The Area's next queue position, its row locked as an admission locks it.
-/// Nothing when another transaction holds the row: a lease never waits for
-/// it, because it holds the rows it selected, which a deletion holding the
-/// Area may wait for. The execution is due again at the next notification
-/// or recovery scan.
-pub(crate) fn lock_queue_tail(area: Uuid) -> SelectStatement {
-	Query::select()
-		.column(a("next_sequence"))
-		.from(a("core_areas"))
-		.and_where(Expr::col(a("id")).eq(Expr::value(area)))
-		.lock(reinhardt::query::LockType::NoKeyUpdate)
-		.lock_behavior(reinhardt::query::LockBehavior::SkipLocked)
-		.to_owned()
-}
-
-/// Puts the waking execution `run` at the tail of its Area's queue, awake:
-/// it re-enters behind every execution queued while it slept, and is leased
-/// only once no awake one precedes it ([`run_unblocked`]).
-pub(crate) fn rejoin_queue(run: Uuid, area: Uuid, tail: i64) -> [UpdateStatement; 2] {
-	[
-		Query::update()
-			.table(a("core_runs"))
-			.value(a("asleep"), false)
-			.value(a("sequence"), tail)
-			.and_where(Expr::col(a("run_id")).eq(Expr::value(run)))
-			.to_owned(),
-		Query::update()
-			.table(a("core_areas"))
-			.value(a("next_sequence"), tail + 1)
-			.and_where(Expr::col(a("id")).eq(Expr::value(area)))
-			.to_owned(),
-	]
+	Condition::all().add(Expr::col(a("control")).eq(Expr::value("CANCELLED")))
 }
 
 impl Store {

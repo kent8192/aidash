@@ -150,14 +150,6 @@ pub fn validate_public_put(input: &Put) -> Result<()> {
 	input.validate()?;
 	if matches!(
 		input.source,
-		aidash_domain::semantic::Source::WorkingImage { .. }
-	) {
-		return Err(Error::Invalid(
-			"Working Area images are indexed through File publication".into(),
-		));
-	}
-	if matches!(
-		input.source,
 		aidash_domain::semantic::Source::AttachmentImage { .. }
 	) {
 		return Err(Error::Invalid(
@@ -279,7 +271,9 @@ pub async fn entries(
 	let mut unconfirmed = Tally::new();
 	for entry in scope.list(thread).await? {
 		scope.begin_row();
-		if !scope.permits(&entry, "semantic.read").await? {
+		if aidash_domain::semantic::retired_working_image(&entry.source)
+			|| !scope.permits(&entry, "semantic.read").await?
+		{
 			let silence = scope.take_row_silence();
 			unconfirmed.settle(silence, Kind::SemanticEntry, thread, false);
 			continue;
@@ -319,6 +313,9 @@ pub async fn change(
 		.lock_entry(thread, id)
 		.await?
 		.ok_or(Error::Forbidden)?;
+	if aidash_domain::semantic::retired_working_image(&entry.source) {
+		return Err(Error::Forbidden);
+	}
 	if delete
 		&& matches!(
 			serde_json::from_value::<aidash_domain::semantic::Source>(entry.source.clone())?,
@@ -332,11 +329,6 @@ pub async fn change(
 		return Err(Error::Forbidden);
 	}
 	match serde_json::from_value::<aidash_domain::semantic::Source>(entry.source.clone())? {
-		aidash_domain::semantic::Source::WorkingImage { .. } => {
-			return Err(Error::Invalid(
-				"Working Area images are managed through File publication".into(),
-			));
-		}
 		aidash_domain::semantic::Source::AttachmentImage { .. } => {
 			return Err(Error::Invalid(
 				"Thread Attachment images are managed through their attachment".into(),
@@ -399,7 +391,9 @@ pub async fn history(scope: &mut dyn SemanticEntriesSession, thread: Uuid) -> Re
 			cursor = row.sequence;
 			if let Some(id) = row.entry_id {
 				let entry = scope.history_entry(id).await?;
-				if !scope.permits(&entry, "semantic.read").await? {
+				if aidash_domain::semantic::retired_working_image(&entry.source)
+					|| !scope.permits(&entry, "semantic.read").await?
+				{
 					continue;
 				}
 				let source: aidash_domain::semantic::Source =

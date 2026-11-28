@@ -12,13 +12,6 @@ pub struct ConfiguredAgent {
 }
 
 #[derive(Serialize, Deserialize, schemars::JsonSchema, reinhardt::Validate)]
-pub struct MaterializedFile {
-	pub area_id: Uuid,
-	pub revision: i64,
-	pub file: FileEntry,
-}
-
-#[derive(Serialize, Deserialize, schemars::JsonSchema, reinhardt::Validate)]
 pub struct ApprovalCard {
 	pub id: Uuid,
 	/// `outbound` (an outbound read), `tool_call` (a call of a Tenant's tool
@@ -138,46 +131,6 @@ pub struct ReferenceRevocation {
 }
 
 #[derive(Serialize, Deserialize, schemars::JsonSchema, reinhardt::Validate)]
-pub struct DeletionConfirmation {
-	pub confirmation_id: Uuid,
-	pub area_id: Uuid,
-	pub revision: i64,
-	pub expires_at: DateTime<Utc>,
-	pub irreversible: bool,
-}
-
-#[derive(Serialize, Deserialize, schemars::JsonSchema, reinhardt::Validate)]
-pub struct TransferStatus {
-	pub operation_id: Uuid,
-	pub status: String,
-	#[serde(flatten)]
-	pub transfer: ShareResult,
-	pub revision: Option<i64>,
-	pub generation: Option<i64>,
-}
-
-#[derive(Serialize, Deserialize, schemars::JsonSchema, reinhardt::Validate)]
-pub struct TransferPage {
-	pub items: Vec<TransferStatus>,
-	pub next_cursor: Option<Uuid>,
-}
-
-#[derive(Serialize, Deserialize, schemars::JsonSchema, reinhardt::Validate)]
-pub struct FileRecipient {
-	pub node_id: String,
-	pub agent_id: String,
-	pub agent_version: String,
-	pub thread_id: Uuid,
-}
-
-#[derive(Serialize, Deserialize, schemars::JsonSchema, reinhardt::Validate)]
-pub struct RecipientPage {
-	pub protocol: String,
-	pub items: Vec<FileRecipient>,
-	pub next_cursor: Option<Uuid>,
-}
-
-#[derive(Serialize, Deserialize, schemars::JsonSchema, reinhardt::Validate)]
 pub struct OperationSummary {
 	pub operation_id: Uuid,
 	pub kind: String,
@@ -194,7 +147,6 @@ pub struct OperationPage {
 pub struct DeletedThread {
 	pub thread_id: Uuid,
 	pub state: String,
-	pub file_operations: Vec<super::cleanup::CleanupResult>,
 }
 
 #[derive(Serialize, Deserialize, schemars::JsonSchema, reinhardt::Validate)]

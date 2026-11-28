@@ -10,8 +10,6 @@ fn preview() -> LivePreview {
 		Uuid::nil(),
 		"acme",
 		Uuid::now_v7(),
-		Uuid::now_v7(),
-		3,
 		3000,
 		Limits::default(),
 		now(),
@@ -74,8 +72,6 @@ fn a_preview_must_declare_a_non_privileged_port() {
 			Uuid::nil(),
 			"acme",
 			Uuid::nil(),
-			Uuid::nil(),
-			1,
 			80,
 			Limits::default(),
 			now()
@@ -87,8 +83,6 @@ fn a_preview_must_declare_a_non_privileged_port() {
 			Uuid::nil(),
 			"acme",
 			Uuid::nil(),
-			Uuid::nil(),
-			1,
 			1024,
 			Limits::default(),
 			now()
@@ -101,7 +95,6 @@ fn a_preview_must_declare_a_non_privileged_port() {
 fn a_start_is_not_serving_until_the_runner_confirms_the_port() {
 	let preview = preview();
 	assert_eq!(preview.state, State::Starting);
-	assert_eq!(preview.view(3), State::Starting);
 	assert!(!preview.admits(now()));
 	assert!(!preview.start_expired(now() + TimeDelta::seconds(START_SECONDS)));
 	assert!(preview.start_expired(now() + TimeDelta::seconds(START_SECONDS + 30)));
@@ -110,7 +103,7 @@ fn a_start_is_not_serving_until_the_runner_confirms_the_port() {
 #[test]
 fn a_serving_preview_admits_until_its_idle_limit() {
 	let mut preview = running();
-	assert_eq!(preview.view(3), State::Running);
+	assert_eq!(preview.state, State::Running);
 	assert!(preview.admits(now()));
 	assert!(!preview.admits(now() + TimeDelta::seconds(preview.limits.idle_seconds + 1)));
 	assert_eq!(
@@ -129,15 +122,6 @@ fn the_absolute_limit_wins_over_a_fresh_idle_timer() {
 	preview.touched(absolute - TimeDelta::seconds(1));
 	assert_eq!(preview.expired(absolute), Some(StopReason::Absolute));
 	assert!(!preview.admits(absolute));
-}
-
-#[test]
-fn a_newer_revision_marks_it_stale_but_it_keeps_serving_its_pinned_one() {
-	let preview = running();
-	assert_eq!(preview.view(4), State::Stale);
-	assert_eq!(preview.revision, 3);
-	assert_eq!(preview.state, State::Running);
-	assert!(preview.admits(now()));
 }
 
 #[test]

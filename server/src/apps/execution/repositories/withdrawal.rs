@@ -47,7 +47,7 @@ impl OperationWithdrawalRepository for Repository<'_> {
 			let query_bind_1 = operation.area_id;
 			sessions::locked_area(
 				&mut *tx,
-				&sessions::select("core_areas")
+				&sessions::select("core_execution_scopes")
 					.and_where(
 						reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("id"))).eq(
 							SimpleExpr::CustomWithExpr(
@@ -201,7 +201,7 @@ impl OperationWithdrawalScope for Scope {
 				let query_bind_1 = operation.area_id;
 				crate::database::native::query(
 					&Query::update()
-						.table(Alias::new("core_areas"))
+						.table(Alias::new("core_execution_scopes"))
 						.value_expr(Alias::new("state"), Expr::val(area_state))
 						.and_where(
 							Expr::col(Alias::new("id")).eq(Expr::value(query_bind_1.to_owned())),

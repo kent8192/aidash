@@ -16,14 +16,6 @@ pub struct Area {
 	pub state: String,
 	pub manifest: Value,
 	pub constraints: Value,
-	pub next_sequence: i64,
-}
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SessionRun {
-	pub run_id: Uuid,
-	pub sequence: i64,
-	pub phase: String,
-	pub control: String,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionStatus {
@@ -31,14 +23,12 @@ pub struct SessionStatus {
 	pub last_run_id: Option<Uuid>,
 	pub last_agent_version: Option<String>,
 	pub active_run_id: Option<Uuid>,
-	pub queue: Vec<SessionRun>,
 }
 /// The constraint kind of a Working Area a receiving Node keeps for Runs executing for another
 /// Home (ADR 0139). It records the Home, whose Thread this Node does not hold, so reads of
 /// the Area are authorized by the Run's admission and the Area's owner instead.
-pub const QUEUED: &str = "execution.queued";
-pub const QUEUE_LIMIT: &str = "QUEUE_LIMIT";
 
+pub const QUEUE_LIMIT: &str = "QUEUE_LIMIT";
 pub const REMOTE_HOME: &str = "remote_home";
 pub fn remote_home_constraint(home_node: &str) -> Value {
 	serde_json::json!({"kind": REMOTE_HOME, "home_node": home_node})

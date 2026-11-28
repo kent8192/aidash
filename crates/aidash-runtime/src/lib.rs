@@ -140,10 +140,6 @@ pub mod references;
 
 pub mod reclamation;
 
-pub mod cleanup;
-
-pub mod transfer;
-
 pub mod sandbox;
 pub mod transactions;
 

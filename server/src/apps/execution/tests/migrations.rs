@@ -178,6 +178,9 @@ const TENANT_REGISTRY_MIGRATIONS: &[(&str, &str)] = &[
 	("workspaces", "0065_duty_pending_events"),
 	("workspaces", "0066_deleted_duty_flow_ancestry"),
 	("workspaces", "0067_task_duty_start"),
+	("workspaces", "0072_node_scratch_spaces"),
+	("workspaces", "0073_default_scratch_index"),
+	("workspaces", "0074_thread_scratch_wipes"),
 	("execution", "0148_threads"),
 	("execution", "0149_threads_state"),
 	("execution", "0150_task_executions"),
@@ -192,6 +195,11 @@ const TENANT_REGISTRY_MIGRATIONS: &[(&str, &str)] = &[
 	("execution", "0161_generation_subnode_cleanup"),
 	("execution", "0162_scope_host_debits"),
 	("execution", "0163_scope_host_debit_state"),
+	("execution", "0180_unorder_runs"),
+	("execution", "0181_unordered_run_bindings"),
+	("execution", "0182_unpin_live_previews"),
+	("execution", "0183_detach_run_area_bindings"),
+	("execution", "0184_retire_area_holds"),
 	("identity", "0110_threads"),
 	("identity", "0111_thread_member_policy"),
 	("identity", "0112_budget_lineage"),
@@ -260,6 +268,9 @@ const CONTENT_STORE_CUTOVER_MIGRATIONS: &[(&str, &str)] = &[
 	("workspaces", "0065_duty_pending_events"),
 	("workspaces", "0066_deleted_duty_flow_ancestry"),
 	("workspaces", "0067_task_duty_start"),
+	("workspaces", "0072_node_scratch_spaces"),
+	("workspaces", "0073_default_scratch_index"),
+	("workspaces", "0074_thread_scratch_wipes"),
 	("execution", "0148_threads"),
 	("execution", "0149_threads_state"),
 	("execution", "0150_task_executions"),
@@ -274,6 +285,11 @@ const CONTENT_STORE_CUTOVER_MIGRATIONS: &[(&str, &str)] = &[
 	("execution", "0161_generation_subnode_cleanup"),
 	("execution", "0162_scope_host_debits"),
 	("execution", "0163_scope_host_debit_state"),
+	("execution", "0180_unorder_runs"),
+	("execution", "0181_unordered_run_bindings"),
+	("execution", "0182_unpin_live_previews"),
+	("execution", "0183_detach_run_area_bindings"),
+	("execution", "0184_retire_area_holds"),
 	("identity", "0110_threads"),
 	("identity", "0111_thread_member_policy"),
 	("identity", "0112_budget_lineage"),
@@ -332,10 +348,15 @@ async fn reverse_task_executions(
 		"0161_generation_subnode_cleanup",
 		"0162_scope_host_debits",
 		"0163_scope_host_debit_state",
+		"0180_unorder_runs",
+		"0181_unordered_run_bindings",
+		"0182_unpin_live_previews",
+		"0183_detach_run_area_bindings",
+		"0184_retire_area_holds",
 	] {
 		renamed.push(source.get_migration("execution", name).await.unwrap());
 	}
-	for &(app, name) in DRIVE_MIGRATIONS {
+	for &(app, name) in GOAL_MIGRATIONS.iter().chain(DRIVE_MIGRATIONS) {
 		renamed.push(source.get_migration(app, name).await.unwrap());
 	}
 	executor.rollback_migrations(&renamed).await.unwrap();
@@ -442,10 +463,10 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 	};
 	assert_eq!(head("federation"), ["0033_completion_settlement_v2"]);
 	assert_eq!(head("registry"), ["0094_thread_target_kind_state"]);
-	assert_eq!(head("identity"), ["0122_tenant_embedding_settings_guard"]);
-	assert_eq!(head("execution"), ["0179_drive_tool_contract"]);
+	assert_eq!(head("identity"), ["0123_goal_judge_model"]);
+	assert_eq!(head("execution"), ["0184_retire_area_holds"]);
 	assert_eq!(head("knowledge"), ["0063_drive_index_state"]);
-	assert_eq!(head("workspaces"), ["0071_completion_messages"]);
+	assert_eq!(head("workspaces"), ["0074_thread_scratch_wipes"]);
 	// Assert: retain the physical graph, model snapshots, and all supported tables.
 	assert!(
 		migrations
@@ -736,15 +757,12 @@ async fn generation_with_existing_sql_assets_preserves_history_and_dependency(
 	);
 	assert_eq!(std::fs::read(history).unwrap(), original);
 	let generated = FilesystemSource::new(fixture.directory.path().join("migrations"))
-		.get_migration("execution", "0180_policy_probe")
+		.get_migration("execution", "0185_policy_probe")
 		.await
 		.unwrap();
 	assert_eq!(
 		generated.dependencies,
-		vec![(
-			"execution".to_owned(),
-			"0179_drive_tool_contract".to_owned()
-		)]
+		vec![("execution".to_owned(), "0184_retire_area_holds".to_owned())]
 	);
 	assert!(generated.operations.is_empty());
 }
@@ -830,6 +848,9 @@ async fn run_created_at_backfills_last_update_and_remains_fixed_on_later_updates
 			("workspaces", "0065_duty_pending_events"),
 			("workspaces", "0066_deleted_duty_flow_ancestry"),
 			("workspaces", "0067_task_duty_start"),
+			("workspaces", "0072_node_scratch_spaces"),
+			("workspaces", "0073_default_scratch_index"),
+			("workspaces", "0074_thread_scratch_wipes"),
 			("execution", "0148_threads"),
 			("execution", "0149_threads_state"),
 			("execution", "0150_task_executions"),
@@ -844,6 +865,11 @@ async fn run_created_at_backfills_last_update_and_remains_fixed_on_later_updates
 			("execution", "0161_generation_subnode_cleanup"),
 			("execution", "0162_scope_host_debits"),
 			("execution", "0163_scope_host_debit_state"),
+			("execution", "0180_unorder_runs"),
+			("execution", "0181_unordered_run_bindings"),
+			("execution", "0182_unpin_live_previews"),
+			("execution", "0183_detach_run_area_bindings"),
+			("execution", "0184_retire_area_holds"),
 			("identity", "0110_threads"),
 			("identity", "0111_thread_member_policy"),
 			("identity", "0112_budget_lineage"),
@@ -1041,12 +1067,15 @@ async fn nonempty_generation_reads_sql_assets_and_replays_only_logical_state(
 	let generated = after
 		.iter()
 		.find(|migration| {
-			migration.app_label == "workspaces" && migration.name == "0068_content_probe"
+			migration.app_label == "workspaces" && migration.name == "0075_content_probe"
 		})
 		.unwrap();
 	assert_eq!(
 		generated.dependencies,
-		vec![("workspaces".to_owned(), "0067_task_duty_start".to_owned())]
+		vec![(
+			"workspaces".to_owned(),
+			"0074_thread_scratch_wipes".to_owned()
+		)]
 	);
 	assert_eq!(generated.operations.len(), 1);
 	let reinhardt::db::migrations::Operation::AlterColumn {
@@ -1554,6 +1583,7 @@ async fn native_migrations_build_a_fresh_schema_and_preserve_records_on_replay(
 		.title("After native migration")
 		.revision(0)
 		.deleted_at(None)
+		.scratch_wipe_requested(false)
 		.finish();
 	Thread::objects()
 		.create_with_conn(&mut connection, &workspace)
@@ -2135,6 +2165,7 @@ async fn management_refuses_fake_baseline_rollback_without_changing_data_or_hist
 		.title("Retained")
 		.revision(0)
 		.deleted_at(None)
+		.scratch_wipe_requested(false)
 		.finish();
 	Thread::objects()
 		.create_with_conn(&mut lease.handle(), &workspace)
@@ -2322,6 +2353,7 @@ async fn escaped_whitespace_checks_still_reject_blank_content(
 		.title(whitespace)
 		.revision(0)
 		.deleted_at(None)
+		.scratch_wipe_requested(false)
 		.finish();
 	// Act
 	let error = Thread::objects()
@@ -2612,6 +2644,9 @@ async fn registry_upgrade_keeps_existing_compaction_decider(
 			("workspaces", "0065_duty_pending_events"),
 			("workspaces", "0066_deleted_duty_flow_ancestry"),
 			("workspaces", "0067_task_duty_start"),
+			("workspaces", "0072_node_scratch_spaces"),
+			("workspaces", "0073_default_scratch_index"),
+			("workspaces", "0074_thread_scratch_wipes"),
 			("execution", "0148_threads"),
 			("execution", "0149_threads_state"),
 			("execution", "0150_task_executions"),
@@ -2626,6 +2661,11 @@ async fn registry_upgrade_keeps_existing_compaction_decider(
 			("execution", "0161_generation_subnode_cleanup"),
 			("execution", "0162_scope_host_debits"),
 			("execution", "0163_scope_host_debit_state"),
+			("execution", "0180_unorder_runs"),
+			("execution", "0181_unordered_run_bindings"),
+			("execution", "0182_unpin_live_previews"),
+			("execution", "0183_detach_run_area_bindings"),
+			("execution", "0184_retire_area_holds"),
 			("identity", "0110_threads"),
 			("identity", "0111_thread_member_policy"),
 			("identity", "0112_budget_lineage"),
@@ -5302,6 +5342,9 @@ const THREAD_MIGRATIONS: &[(&str, &str)] = &[
 	("workspaces", "0065_duty_pending_events"),
 	("workspaces", "0066_deleted_duty_flow_ancestry"),
 	("workspaces", "0067_task_duty_start"),
+	("workspaces", "0072_node_scratch_spaces"),
+	("workspaces", "0073_default_scratch_index"),
+	("workspaces", "0074_thread_scratch_wipes"),
 	("execution", "0148_threads"),
 	("execution", "0149_threads_state"),
 	("identity", "0110_threads"),
@@ -5333,6 +5376,11 @@ const THREAD_MIGRATIONS: &[(&str, &str)] = &[
 	("registry", "0092_registry_kind_check"),
 	("registry", "0093_registry_kind_state"),
 	("registry", "0094_thread_target_kind_state"),
+	("execution", "0180_unorder_runs"),
+	("execution", "0181_unordered_run_bindings"),
+	("execution", "0182_unpin_live_previews"),
+	("execution", "0183_detach_run_area_bindings"),
+	("execution", "0184_retire_area_holds"),
 ];
 
 struct SourceLifetimeMigration {
@@ -5620,6 +5668,15 @@ async fn node_purge_registration_recovery_ownership_roundtrips_without_a_catalog
 	let mut executor = DatabaseMigrationExecutor::new(fixture.connection.clone())
 		.with_migration_history(migrations.clone());
 	executor.apply_migrations(&migrations).await.unwrap();
+	if table == "events" {
+		// The historical event migration also restores the Run-to-Area key.
+		// Restore the tables and columns that key names for this round trip.
+		let mut later = Vec::new();
+		for name in ["0183_detach_run_area_bindings", "0184_retire_area_holds"] {
+			later.push(source.get_migration("execution", name).await.unwrap());
+		}
+		executor.rollback_migrations(&later).await.unwrap();
+	}
 	let pool = fixture.connection.clone().into_postgres().unwrap();
 	for (pass, parent) in ["node_names", "nodes", "node_names"]
 		.into_iter()
@@ -5905,6 +5962,11 @@ async fn existing_conversations_receive_distinct_dedicated_scratch_spaces(
 			("execution", "0161_generation_subnode_cleanup"),
 			("execution", "0162_scope_host_debits"),
 			("execution", "0163_scope_host_debit_state"),
+			("execution", "0180_unorder_runs"),
+			("execution", "0181_unordered_run_bindings"),
+			("execution", "0182_unpin_live_previews"),
+			("execution", "0183_detach_run_area_bindings"),
+			("execution", "0184_retire_area_holds"),
 			("identity", "0110_threads"),
 			("identity", "0111_thread_member_policy"),
 			("identity", "0112_budget_lineage"),
@@ -5922,6 +5984,9 @@ async fn existing_conversations_receive_distinct_dedicated_scratch_spaces(
 			("workspaces", "0065_duty_pending_events"),
 			("workspaces", "0066_deleted_duty_flow_ancestry"),
 			("workspaces", "0067_task_duty_start"),
+			("workspaces", "0072_node_scratch_spaces"),
+			("workspaces", "0073_default_scratch_index"),
+			("workspaces", "0074_thread_scratch_wipes"),
 		])
 		.await;
 	fixture.tenant_root("scratch-upgrade").await;
@@ -6012,6 +6077,11 @@ async fn existing_conversations_receive_distinct_dedicated_scratch_spaces(
 			("execution", "0161_generation_subnode_cleanup"),
 			("execution", "0162_scope_host_debits"),
 			("execution", "0163_scope_host_debit_state"),
+			("execution", "0180_unorder_runs"),
+			("execution", "0181_unordered_run_bindings"),
+			("execution", "0182_unpin_live_previews"),
+			("execution", "0183_detach_run_area_bindings"),
+			("execution", "0184_retire_area_holds"),
 			("identity", "0110_threads"),
 			("identity", "0111_thread_member_policy"),
 			("identity", "0112_budget_lineage"),
@@ -6029,6 +6099,9 @@ async fn existing_conversations_receive_distinct_dedicated_scratch_spaces(
 			("workspaces", "0065_duty_pending_events"),
 			("workspaces", "0066_deleted_duty_flow_ancestry"),
 			("workspaces", "0067_task_duty_start"),
+			("workspaces", "0072_node_scratch_spaces"),
+			("workspaces", "0073_default_scratch_index"),
+			("workspaces", "0074_thread_scratch_wipes"),
 		])
 		.await;
 	let pool = fixture.connection.clone().into_postgres().unwrap();
@@ -6127,6 +6200,11 @@ async fn existing_workspace_receives_scratch_space_owned_by_its_creator(
 			("execution", "0161_generation_subnode_cleanup"),
 			("execution", "0162_scope_host_debits"),
 			("execution", "0163_scope_host_debit_state"),
+			("execution", "0180_unorder_runs"),
+			("execution", "0181_unordered_run_bindings"),
+			("execution", "0182_unpin_live_previews"),
+			("execution", "0183_detach_run_area_bindings"),
+			("execution", "0184_retire_area_holds"),
 			("identity", "0110_threads"),
 			("identity", "0111_thread_member_policy"),
 			("identity", "0112_budget_lineage"),
@@ -6144,6 +6222,9 @@ async fn existing_workspace_receives_scratch_space_owned_by_its_creator(
 			("workspaces", "0065_duty_pending_events"),
 			("workspaces", "0066_deleted_duty_flow_ancestry"),
 			("workspaces", "0067_task_duty_start"),
+			("workspaces", "0072_node_scratch_spaces"),
+			("workspaces", "0073_default_scratch_index"),
+			("workspaces", "0074_thread_scratch_wipes"),
 		])
 		.await;
 	fixture.tenant_root("scratch-workspace-upgrade").await;
@@ -6284,7 +6365,14 @@ async fn existing_workspace_receives_scratch_space_owned_by_its_creator(
 		fixture.connection.execute(&sql, vec![]).await.unwrap();
 	}
 
-	fixture.migrate().await;
+	// Observe the historical per-Thread bindings before the Node Scratch cutover.
+	fixture
+		.migrate_excluding(&[
+			("workspaces", "0072_node_scratch_spaces"),
+			("workspaces", "0073_default_scratch_index"),
+			("workspaces", "0074_thread_scratch_wipes"),
+		])
+		.await;
 	let pool = fixture.connection.clone().into_postgres().unwrap();
 	let sql = Query::select()
 		.columns(
@@ -6586,7 +6674,9 @@ async fn content_store_cutover_discards_only_rows_naming_legacy_objects(
 		sqlx::query("INSERT INTO core_records (id,tenant,owner,kind,state,data) VALUES ($1,'acme','alice',$2,'ready','{}')")
             .bind(Uuid::new_v4()).bind(kind).execute(&pool).await.unwrap();
 	}
-	fixture.migrate().await;
+	fixture
+		.migrate_excluding(&[("execution", "0184_retire_area_holds")])
+		.await;
 	let surviving: Vec<Uuid> = sqlx::query_scalar("SELECT id FROM channel_attachments ORDER BY id")
 		.fetch_all(&pool)
 		.await
@@ -6661,6 +6751,11 @@ async fn area_queue_sleep_backfills_executions_on_upgrade(
 			("execution", "0161_generation_subnode_cleanup"),
 			("execution", "0162_scope_host_debits"),
 			("execution", "0163_scope_host_debit_state"),
+			("execution", "0180_unorder_runs"),
+			("execution", "0181_unordered_run_bindings"),
+			("execution", "0182_unpin_live_previews"),
+			("execution", "0183_detach_run_area_bindings"),
+			("execution", "0184_retire_area_holds"),
 		])
 		.await;
 	let tenant = "area-sleep";
@@ -6728,7 +6823,16 @@ async fn area_queue_sleep_backfills_executions_on_upgrade(
 		.unwrap();
 	}
 
-	fixture.migrate().await;
+	// Keep the old queue through this historical assertion and reversal.
+	fixture
+		.migrate_excluding(&[
+			("execution", "0180_unorder_runs"),
+			("execution", "0181_unordered_run_bindings"),
+			("execution", "0182_unpin_live_previews"),
+			("execution", "0183_detach_run_area_bindings"),
+			("execution", "0184_retire_area_holds"),
+		])
+		.await;
 	let asleep: Vec<bool> =
 		sqlx::query_scalar("SELECT asleep FROM core_runs WHERE area_id = $1 ORDER BY sequence")
 			.bind(area)
@@ -6785,6 +6889,11 @@ async fn merged_working_areas_keep_the_active_one_and_leave_no_reference_behind(
 			("execution", "0161_generation_subnode_cleanup"),
 			("execution", "0162_scope_host_debits"),
 			("execution", "0163_scope_host_debit_state"),
+			("execution", "0180_unorder_runs"),
+			("execution", "0181_unordered_run_bindings"),
+			("execution", "0182_unpin_live_previews"),
+			("execution", "0183_detach_run_area_bindings"),
+			("execution", "0184_retire_area_holds"),
 		])
 		.await;
 	fixture.tenant_root("area-merge").await;
@@ -6965,7 +7074,15 @@ async fn merged_working_areas_keep_the_active_one_and_leave_no_reference_behind(
 	}
 
 	// Act
-	fixture.migrate().await;
+	fixture
+		.migrate_excluding(&[
+			("execution", "0180_unorder_runs"),
+			("execution", "0181_unordered_run_bindings"),
+			("execution", "0182_unpin_live_previews"),
+			("execution", "0183_detach_run_area_bindings"),
+			("execution", "0184_retire_area_holds"),
+		])
+		.await;
 
 	// Assert: the active Area is the key's only one.
 	let pool = fixture.connection.clone().into_postgres().unwrap();
@@ -7043,6 +7160,11 @@ async fn thread_member_policy_names_thread_actions_kind_and_attribute(
 			("execution", "0161_generation_subnode_cleanup"),
 			("execution", "0162_scope_host_debits"),
 			("execution", "0163_scope_host_debit_state"),
+			("execution", "0180_unorder_runs"),
+			("execution", "0181_unordered_run_bindings"),
+			("execution", "0182_unpin_live_previews"),
+			("execution", "0183_detach_run_area_bindings"),
+			("execution", "0184_retire_area_holds"),
 		])
 		.await;
 	fixture.tenant_root("thread-policy").await;
@@ -7479,6 +7601,11 @@ async fn model_call_usage_requires_one_owner_after_upgrade(
 			("execution", "0161_generation_subnode_cleanup"),
 			("execution", "0162_scope_host_debits"),
 			("execution", "0163_scope_host_debit_state"),
+			("execution", "0180_unorder_runs"),
+			("execution", "0181_unordered_run_bindings"),
+			("execution", "0182_unpin_live_previews"),
+			("execution", "0183_detach_run_area_bindings"),
+			("execution", "0184_retire_area_holds"),
 		])
 		.await;
 	let tenant = "call-owner";

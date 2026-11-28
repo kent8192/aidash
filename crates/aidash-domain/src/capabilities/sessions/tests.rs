@@ -50,7 +50,6 @@ fn area(constraints: Value) -> Area {
 		state: "active".into(),
 		manifest: json!([]),
 		constraints,
-		next_sequence: 1,
 	}
 }
 

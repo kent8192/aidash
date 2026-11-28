@@ -121,6 +121,7 @@ async fn insert_space(f: &crate::federation::Federation, services: &[&str]) -> U
 		..Default::default()
 	};
 	let space = aidash_domain::scratch::ScratchSpace {
+		is_default: false,
 		id: Uuid::new_v4(),
 		node: tenant_roots::fixture_node_name("acme"),
 		name: "services".to_owned(),
@@ -128,6 +129,7 @@ async fn insert_space(f: &crate::federation::Federation, services: &[&str]) -> U
 		state: aidash_domain::scratch::ScratchState::Active,
 		revision: 0,
 		wipe_generation: 0,
+		wipe_completed_generation: 0,
 		settings,
 		members: Default::default(),
 		created_at: now,

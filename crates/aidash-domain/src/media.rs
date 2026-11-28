@@ -62,7 +62,7 @@ pub struct ModelFileSelection {
 #[serde(untagged)]
 pub enum ModelMedia {
 	File(ModelFileSelection),
-	WorkingImage(WorkingImageSelection),
+	ScratchImage(ScratchImageSelection),
 	DriveFile(DriveFileSelection),
 	ThreadAttachment(ThreadAttachmentSelection),
 }
@@ -87,22 +87,19 @@ pub struct ThreadAttachmentSelection {
 }
 
 impl ModelMedia {
-	/// Working Image opening degrades to metadata when the selected model
+	/// Scratch Space image selection degrades to metadata when the selected model
 	/// cannot accept images. Other selections retain their existing behavior.
 	pub fn supported_by(&self, modalities: &[String]) -> bool {
-		!matches!(self, Self::WorkingImage(_) | Self::DriveFile(_))
+		!matches!(self, Self::ScratchImage(_) | Self::DriveFile(_))
 			|| modalities.iter().any(|item| item == "image")
 	}
 }
 
-/// A current Thread image selected by its Area and immutable File version.
+/// A Scratch Space image verified by digest again when the model call uses it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub struct WorkingImageSelection {
-	pub area_id: Uuid,
-	pub generation: i64,
-	pub file_id: Uuid,
-	pub path: String,
+pub struct ScratchImageSelection {
+	pub scratch_path: String,
 	pub expected_digest: String,
 }
 
@@ -150,12 +147,9 @@ pub fn selected_attachment(
 mod tests {
 	use super::*;
 	#[test]
-	fn working_image_needs_image_modality() {
-		let image = ModelMedia::WorkingImage(WorkingImageSelection {
-			area_id: Uuid::nil(),
-			generation: 1,
-			file_id: Uuid::nil(),
-			path: "chart.png".into(),
+	fn scratch_image_needs_image_modality() {
+		let image = ModelMedia::ScratchImage(ScratchImageSelection {
+			scratch_path: "shared/image.png".into(),
 			expected_digest: "digest".into(),
 		});
 		assert!(!image.supported_by(&["text".into()]));

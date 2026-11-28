@@ -749,8 +749,7 @@ fn pending_saved_before_the_thread_rename_still_decodes() {
 }
 
 /// Other records stored before #1008 named the Thread `workspace`: a memory
-/// Source's scope in the registry, the Thread of a remote search receipt and
-/// its unconfirmed counts, and a `file_read` call kept in a Run's `pending`.
+/// Source's scope in the Registry and the unconfirmed counts of a remote search receipt.
 #[rstest::rstest]
 fn records_saved_before_the_thread_rename_still_decode() {
 	let thread: Uuid = "6f0d7d1e-30a5-4f69-9a8e-1d2b0c3e4f50".parse().unwrap();
@@ -761,10 +760,4 @@ fn records_saved_before_the_thread_rename_still_decode() {
 	)
 	.unwrap();
 	assert_eq!(unconfirmed.thread_id, thread);
-	let read: crate::capabilities::files::FileRead = serde_json::from_value(json!({
-		"file_id":thread,"workspace_id":thread,"area_id":null,"representation":"text",
-		"offset":null,"max_bytes":null,"expected_digest":null
-	}))
-	.unwrap();
-	assert_eq!(read.thread_id, Some(thread));
 }

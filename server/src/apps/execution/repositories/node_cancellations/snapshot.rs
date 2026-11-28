@@ -50,7 +50,7 @@ fn area(table: &str, node: &str, address: &str) -> SimpleExpr {
 	Expr::exists(
 		Query::select()
 			.expr(Expr::value(1_i32))
-			.from_as(Alias::new("core_areas"), Alias::new("a"))
+			.from_as(Alias::new("core_execution_scopes"), Alias::new("a"))
 			.and_where(column("a", "id").eq(column(table, "area_id")))
 			.and_where(column("a", "tenant").eq(column(table, "tenant")))
 			.and_where(column("a", "home_node").eq(Expr::value(address)))
@@ -88,19 +88,23 @@ fn capability(table: &str, node: &str, address: &str) -> SimpleExpr {
 			.to_owned(),
 	))
 }
-/// Live previews of the Node's Areas or Runs. A terminal Run cancels nothing,
-/// so its preview Pod must be stopped by the deletion itself.
+/// Live previews of the Node's Runs. A terminal Run's preview must also stop.
 pub(super) fn live_previews(node: &str, address: &str) -> SimpleExpr {
 	let table = "core_live_previews";
-	area(table, node, address).or(Expr::exists(
+	Expr::exists(
 		Query::select()
 			.expr(Expr::value(1_i32))
 			.from_as(Alias::new("task_executions"), Alias::new("r"))
 			.and_where(column("r", "id").eq(column(table, "run_id")))
 			.and_where(column("r", "tenant").eq(column(table, "tenant")))
-			.and_where(column("r", "node").eq(Expr::value(node)))
+			.and_where(
+				column("r", "node")
+					.eq(Expr::value(node))
+					.or(thread("r", node).and(column("r", "home_node").eq(Expr::value(address)))),
+			)
 			.to_owned(),
-	))
+	)
+	.into()
 }
 pub(super) fn selectors(
 	node: &str,
@@ -114,7 +118,7 @@ pub(super) fn selectors(
 		.or(Expr::exists(
 			Query::select()
 				.expr(Expr::value(1_i32))
-				.from_as(Alias::new("core_runs"), Alias::new("cr"))
+				.from_as(Alias::new("core_run_scopes"), Alias::new("cr"))
 				.and_where(column("cr", "run_id").eq(column("task_executions", "id")))
 				.and_where(column("cr", "tenant").eq(column("task_executions", "tenant")))
 				.and_where(area("cr", node, address))

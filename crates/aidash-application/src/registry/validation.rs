@@ -223,6 +223,11 @@ impl DefinitionValidation {
 	) -> std::collections::BTreeMap<String, aidash_domain::provider::ToolSpec> {
 		self.core_tools.legacy_specifications()
 	}
+	pub fn pre_scratch_node_specifications(
+		&self,
+	) -> std::collections::BTreeMap<String, aidash_domain::provider::ToolSpec> {
+		self.core_tools.pre_scratch_specifications()
+	}
 	pub fn node_specifications(
 		&self,
 	) -> std::collections::BTreeMap<String, aidash_domain::provider::ToolSpec> {

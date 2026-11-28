@@ -275,28 +275,6 @@ async fn dispatch(
 				.await,
 			)
 		}
-		("POST", ["scoped", "previews", "retain"]) => {
-			let input = input!(body, aidash_domain::federation::preview::RetainRequest);
-			respond(
-				boxed(|| {
-					crate::apps::execution::capabilities::services::federation_previews::retain(
-						f, admitted, input,
-					)
-				})
-				.await,
-			)
-		}
-		("POST", ["scoped", "previews", "release"]) => {
-			let input = input!(body, aidash_domain::federation::preview::ReleaseRequest);
-			respond(
-				boxed(|| {
-					crate::apps::execution::capabilities::services::federation_previews::release(
-						f, admitted, input,
-					)
-				})
-				.await,
-			)
-		}
 		("POST", ["scoped", "execution", "commands"]) => {
 			let input = checked!(body, remote_execution::commands::Input);
 			respond(boxed(|| remote_execution::commands::handle(f, admitted, input)).await)
@@ -376,9 +354,6 @@ async fn dispatch(
 			let input = input!(body, crate::semantic::remote::Operation);
 			respond(boxed(|| identity_peer::semantic::verify_operation(f, admitted, input)).await)
 		}
-		("POST", ["scoped", "files", operation]) => {
-			boxed(|| files(f, admitted, operation, body)).await
-		}
 		// An event for a Duty's `node_event` trigger from another Node of this
 		// Deployment (#1013), as the `duty-node-event` view handles it.
 		("POST", ["scoped", "duty-events"]) => {
@@ -451,46 +426,6 @@ async fn dispatch(
 			let id = id!(id);
 			let service = Transactions::for_peers(f);
 			respond(boxed(|| service.authority_ticket(admitted, id)).await)
-		}
-		_ => Error::NotFound("not found".into()).into(),
-	}
-}
-
-async fn files(
-	f: Federation,
-	admitted: Admitted,
-	operation: &str,
-	body: Option<&Value>,
-) -> Outcome {
-	use crate::capabilities::transfer::{self, Chunk, Identity, Requester, receiver};
-	match operation {
-		"describe" => {
-			let input = input!(body, Identity);
-			respond(boxed(|| transfer::describe(f, admitted, input)).await)
-		}
-		"negotiate" => {
-			let input = input!(body, Requester);
-			respond(boxed(|| receiver::negotiate(f, admitted, input)).await)
-		}
-		"recipients" => {
-			let input = input!(body, Requester);
-			respond(boxed(|| receiver::recipients(f, admitted, input)).await)
-		}
-		"chunk" => {
-			let input = input!(body, Chunk);
-			respond(boxed(|| receiver::chunk(f, admitted, input)).await)
-		}
-		"prepare" => {
-			let input = input!(body, Identity);
-			respond(boxed(|| receiver::prepare(f, admitted, input)).await)
-		}
-		"commit" => {
-			let input = input!(body, Identity);
-			respond(boxed(|| receiver::commit(f, admitted, input)).await)
-		}
-		"status" => {
-			let input = input!(body, Identity);
-			respond(boxed(|| receiver::status(f, admitted, input)).await)
 		}
 		_ => Error::NotFound("not found".into()).into(),
 	}

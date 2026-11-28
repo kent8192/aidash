@@ -500,7 +500,7 @@ pub async fn prepare(
 	if !limits.admission {
 		return Err(Error::Conflict("CAPABILITIES_DISABLED".into()));
 	}
-	if scope.active_run().await? != Some(run.id) || run.phase.is_terminal() {
+	if run.phase.is_terminal() || run.control != RunControl::Active {
 		return Err(Error::Conflict("RUN_NOT_ACTIVE".into()));
 	}
 	let target = resource(scope, &origin, run.id);
@@ -627,7 +627,7 @@ pub async fn home_begin(
 	if !limits.admission {
 		return Err(Error::Conflict("CAPABILITIES_DISABLED".into()));
 	}
-	if scope.active_run().await? != Some(run.id) || run.phase.is_terminal() {
+	if run.phase.is_terminal() || run.control != RunControl::Active {
 		return Err(Error::Conflict("RUN_NOT_ACTIVE".into()));
 	}
 	// The receiving Node's own policy on the request stays: the Home's person adds to it and

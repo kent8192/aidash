@@ -2,6 +2,7 @@
 use crate::capabilities::endpoints as api;
 use crate::http::json::Json;
 use api::*;
+use reinhardt::di::params::PathStruct;
 use reinhardt::http::ViewResult;
 use reinhardt::{Depends, Path, Query, Request, Response, get, post};
 use uuid::Uuid;
@@ -23,7 +24,11 @@ pub async fn configure_agent(
 	crate::http::json(api::configure_agent(service.runtime.clone(), actor, id, input).await)
 }
 
-#[get("/api/working-areas", name = "!working_area_list", auth = "protected")]
+#[get(
+	"/api/execution-scopes",
+	name = "!execution_scope_list",
+	auth = "protected"
+)]
 pub async fn areas(
 	#[inject] service: Depends<CapabilitiesManagement>,
 	#[inject] actor: Actor,
@@ -33,8 +38,8 @@ pub async fn areas(
 }
 
 #[get(
-	"/api/executions/{id}/working-area",
-	name = "!execution_working_area",
+	"/api/executions/{id}/execution-scope",
+	name = "!execution_scope",
 	auth = "protected"
 )]
 pub async fn area_for_run(
@@ -54,7 +59,7 @@ pub async fn file_read(
 	#[inject] service: Depends<CapabilitiesManagement>,
 	#[inject] actor: Actor,
 	Path(id): Path<Uuid>,
-	Json(input): Json<FileRead>,
+	Json(input): Json<ToolFileRead>,
 ) -> ViewResult<Response> {
 	if let Err(error) = crate::http::validate(&input) {
 		return Ok(error.http_response());
@@ -71,7 +76,7 @@ pub async fn file_search(
 	#[inject] service: Depends<CapabilitiesManagement>,
 	#[inject] actor: Actor,
 	Path(id): Path<Uuid>,
-	Json(input): Json<FileSearch>,
+	Json(input): Json<ToolFileSearch>,
 ) -> ViewResult<Response> {
 	if let Err(error) = crate::http::validate(&input) {
 		return Ok(error.http_response());
@@ -143,25 +148,8 @@ pub async fn shell_cancel(
 	crate::http::json(api::shell_cancel(service.runtime.clone(), actor, id, input).await)
 }
 
-#[post(
-	"/api/executions/{id}/files/materialize",
-	name = "!core_file_materialize",
-	auth = "protected"
-)]
-pub async fn materialize(
-	#[inject] service: Depends<CapabilitiesManagement>,
-	#[inject] actor: Actor,
-	Path(id): Path<Uuid>,
-	Json(input): Json<Materialize>,
-) -> ViewResult<Response> {
-	if let Err(error) = crate::http::validate(&input) {
-		return Ok(error.http_response());
-	}
-	crate::http::json(api::materialize(service.runtime.clone(), actor, id, input).await)
-}
-
 #[get(
-	"/api/working-areas/{id}/session",
+	"/api/execution-scopes/{id}/session",
 	name = "!core_session_status",
 	auth = "protected"
 )]
@@ -174,24 +162,7 @@ pub async fn session(
 }
 
 #[post(
-	"/api/working-areas/{id}/queue",
-	name = "!core_session_enqueue",
-	auth = "protected"
-)]
-pub async fn enqueue(
-	#[inject] service: Depends<CapabilitiesManagement>,
-	#[inject] actor: Actor,
-	Path(id): Path<Uuid>,
-	Json(input): Json<Enqueue>,
-) -> ViewResult<Response> {
-	if let Err(error) = crate::http::validate(&input) {
-		return Ok(error.http_response());
-	}
-	crate::http::json(api::enqueue(service.runtime.clone(), actor, id, input).await)
-}
-
-#[post(
-	"/api/working-areas/{id}/steer",
+	"/api/execution-scopes/{id}/steer",
 	name = "!core_session_steer",
 	auth = "protected"
 )]
@@ -269,23 +240,6 @@ pub async fn skill_read(
 		return Ok(error.http_response());
 	}
 	crate::http::json(api::skill_read(service.runtime.clone(), actor, id, input).await)
-}
-
-#[post(
-	"/api/executions/{id}/files/share",
-	name = "!core_file_share",
-	auth = "protected"
-)]
-pub async fn file_share(
-	#[inject] service: Depends<CapabilitiesManagement>,
-	#[inject] actor: Actor,
-	Path(id): Path<Uuid>,
-	Json(input): Json<crate::capabilities::sharing::Share>,
-) -> ViewResult<Response> {
-	if let Err(error) = crate::http::validate(&input) {
-		return Ok(error.http_response());
-	}
-	crate::http::json(api::file_share(service.runtime.clone(), actor, id, input).await)
 }
 
 #[post(
@@ -579,163 +533,38 @@ pub async fn reference_download(
 	)
 }
 
+/// The Run, command, and output identifier in the download path.
+#[derive(serde::Deserialize)]
+pub struct CommandOutputPath {
+	pub id: Uuid,
+	pub operation: Uuid,
+	pub file: Uuid,
+}
+
 #[get(
-	"/api/working-areas/{id}/files/{file}/download",
-	name = "!core_file_download",
+	"/api/executions/{id}/core-operations/{operation}/files/{file}/download",
+	name = "!command_output_download",
 	auth = "protected"
 )]
-pub async fn file_download(
+pub async fn command_output_download(
 	#[inject] service: Depends<CapabilitiesManagement>,
 	#[inject] actor: Actor,
-	Path((id, file)): Path<(Uuid, Uuid)>,
+	PathStruct(CommandOutputPath {
+		id,
+		operation,
+		file,
+	}): PathStruct<CommandOutputPath>,
 	Query(input): Query<Offset>,
 ) -> ViewResult<Response> {
 	crate::http::json(
-		api::file_download(service.runtime.clone(), actor, (id, file), Query(input)).await,
+		api::command_output_download(
+			service.runtime.clone(),
+			actor,
+			(id, operation, file),
+			Query(input),
+		)
+		.await,
 	)
-}
-
-#[get(
-	"/api/working-files",
-	name = "!core_file_management",
-	auth = "protected"
-)]
-pub async fn managed_areas(
-	#[inject] service: Depends<CapabilitiesManagement>,
-	#[inject] actor: Actor,
-	Query(input): Query<Page>,
-) -> ViewResult<Response> {
-	crate::http::json(api::managed_areas(service.runtime.clone(), actor, Query(input)).await)
-}
-
-#[post(
-	"/api/working-areas/{id}/cleanup",
-	name = "!core_cleanup",
-	auth = "protected"
-)]
-pub async fn cleanup(
-	#[inject] service: Depends<CapabilitiesManagement>,
-	#[inject] actor: Actor,
-	Path(id): Path<Uuid>,
-	Json(input): Json<crate::capabilities::cleanup::Cleanup>,
-) -> ViewResult<Response> {
-	if let Err(error) = crate::http::validate(&input) {
-		return Ok(error.http_response());
-	}
-	crate::http::json(api::cleanup(service.runtime.clone(), actor, id, input).await)
-}
-
-#[get(
-	"/api/file-cleanups/{id}",
-	name = "!core_cleanup_status",
-	auth = "protected"
-)]
-pub async fn cleanup_status(
-	#[inject] service: Depends<CapabilitiesManagement>,
-	#[inject] actor: Actor,
-	Path(id): Path<Uuid>,
-) -> ViewResult<Response> {
-	crate::http::json(api::cleanup_status(service.runtime.clone(), actor, id).await)
-}
-
-#[post(
-	"/api/file-cleanups/{id}/reconcile",
-	name = "!core_cleanup_reconcile",
-	auth = "protected"
-)]
-pub async fn cleanup_reconcile(
-	#[inject] service: Depends<CapabilitiesManagement>,
-	#[inject] actor: Actor,
-	Path(id): Path<Uuid>,
-) -> ViewResult<Response> {
-	crate::http::json(api::cleanup_reconcile(service.runtime.clone(), actor, id).await)
-}
-
-#[post(
-	"/api/working-areas/{id}/deletion-confirmation",
-	name = "!core_deletion_confirmation",
-	auth = "protected"
-)]
-pub async fn deletion_confirmation(
-	#[inject] service: Depends<CapabilitiesManagement>,
-	#[inject] actor: Actor,
-	Path(id): Path<Uuid>,
-	Json(input): Json<ExpectedRevision>,
-) -> ViewResult<Response> {
-	if let Err(error) = crate::http::validate(&input) {
-		return Ok(error.http_response());
-	}
-	crate::http::json(api::deletion_confirmation(service.runtime.clone(), actor, id, input).await)
-}
-
-#[post(
-	"/api/working-areas/{id}/restore",
-	name = "!core_restore",
-	auth = "protected"
-)]
-pub async fn restore(
-	#[inject] service: Depends<CapabilitiesManagement>,
-	#[inject] actor: Actor,
-	Path(id): Path<Uuid>,
-	Json(input): Json<crate::capabilities::cleanup::Restore>,
-) -> ViewResult<Response> {
-	if let Err(error) = crate::http::validate(&input) {
-		return Ok(error.http_response());
-	}
-	crate::http::json(api::restore(service.runtime.clone(), actor, id, input).await)
-}
-
-#[get(
-	"/api/file-transfers/{id}",
-	name = "!file_transfer_status",
-	auth = "protected"
-)]
-pub async fn transfer_status(
-	#[inject] service: Depends<CapabilitiesManagement>,
-	#[inject] actor: Actor,
-	Path(id): Path<Uuid>,
-) -> ViewResult<Response> {
-	crate::http::json(api::transfer_status(service.runtime.clone(), actor, id).await)
-}
-
-#[get(
-	"/api/working-areas/{id}/transfers",
-	name = "!file_transfer_history",
-	auth = "protected"
-)]
-pub async fn transfer_history(
-	#[inject] service: Depends<CapabilitiesManagement>,
-	#[inject] actor: Actor,
-	Path(id): Path<Uuid>,
-	Query(page): Query<Page>,
-) -> ViewResult<Response> {
-	crate::http::json(api::transfer_history(service.runtime.clone(), actor, id, Query(page)).await)
-}
-
-#[post(
-	"/api/file-transfers/{id}/reconcile",
-	name = "!file_transfer_reconcile",
-	auth = "protected"
-)]
-pub async fn transfer_reconcile(
-	#[inject] service: Depends<CapabilitiesManagement>,
-	#[inject] actor: Actor,
-	Path(id): Path<Uuid>,
-) -> ViewResult<Response> {
-	crate::http::json(api::transfer_reconcile(service.runtime.clone(), actor, id).await)
-}
-
-#[get(
-	"/api/file-recipients",
-	name = "!file_recipient_list",
-	auth = "protected"
-)]
-pub async fn transfer_recipients(
-	#[inject] service: Depends<CapabilitiesManagement>,
-	#[inject] actor: Actor,
-	Query(input): Query<RecipientQuery>,
-) -> ViewResult<Response> {
-	crate::http::json(api::transfer_recipients(service.runtime.clone(), actor, Query(input)).await)
 }
 
 #[get(

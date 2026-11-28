@@ -466,7 +466,7 @@ A package in the open Agent Plugins format, carrying Skills and MCP servers, tha
 _Avoid_: plugin (unqualified)
 
 **Agent Plugin data**:
-The files an Agent Plugin's stdio MCP servers keep between Runs, one set per Scratch Space, Agent and Agent Plugin. Everyone allowed to use that Scratch Space shares it, as they share the space's content, and it survives new Agent versions and the space's wipes. It is never part of a Working Area. It disappears with its Scratch Space or its Agent, and anyone allowed to use the space can clear it for one Agent Plugin.
+The files an Agent Plugin's stdio MCP servers keep between Runs, one set per Scratch Space, Agent and Agent Plugin. Everyone allowed to use that Scratch Space shares it, as they share the space's content, and it survives new Agent versions and the space's wipes. It disappears with its Scratch Space or its Agent, and anyone allowed to use the space can clear it for one Agent Plugin.
 _Avoid_: plugin state (also used for session memory), plugin data (unqualified)
 
 **Marketplace**:
@@ -583,16 +583,8 @@ _Avoid_: crash (unqualified), poison Run, retries exhausted
 
 ### Preview
 
-**File version**:
-One unchangeable content of one path in a Working Area. Changing the path makes a new File version; a File preview and a correction request point at one.
-_Avoid_: revision (counts a Working Area's publications), file (unqualified when the version matters), snapshot
-
-**Retained version**:
-A File version that something refers to, kept after a later publication replaces it until the last reference goes, its Working Area is cleaned up or its Tenant is deleted. When an HTML File version is referred to, the File versions of the rest of its Working Area at that revision are retained with it.
-_Avoid_: snapshot, history, backup, pinned file
-
 **File preview**:
-The dashboard's display of one exact File version as a document rather than as bytes.
+The dashboard's display of a Drive File at one exact Drive Version as a document rather than as bytes.
 _Avoid_: preview (unqualified), artifact preview, rendered file
 
 **Live preview**:
@@ -844,11 +836,11 @@ The moment a running command's Time Limit ends and Aidash stops it. A command th
 _Avoid_: kill time, expiry
 
 **Timed-out Command**:
-A command or Python cell that Aidash stopped, with the stop confirmed, because it was still running at its Time Limit, whatever exit code it then gave. Its Run goes on. What it wrote to its Working Area is kept unless the save is refused; the rest of its sandbox is gone. Unlike an Unconfirmed Command, it is settled.
+A command or Python cell that Aidash stopped, with the stop confirmed, because it was still running at its Time Limit, whatever exit code it then gave. Its Run goes on. Changes already written to its Scratch Space remain. Unlike an Unconfirmed Command, it is settled.
 _Avoid_: killed command, expired command
 
 **Unconfirmed Command**:
-A command whose time limit has passed without Aidash being able to confirm that it stopped. Its Run goes on, its Working Area stays busy and it can no longer reach outside. Aidash keeps watching and settles it on its own once the stop is confirmed; nobody reconciles it, unlike an Uncertain Call.
+A command whose time limit has passed without Aidash being able to confirm that it stopped. Its Run goes on, it can no longer reach outside. Aidash keeps watching and settles it on its own once the stop is confirmed; nobody reconciles it, unlike an Uncertain Call.
 _Avoid_: uncertain operation, lost command
 
 **Authority Pause**:
@@ -917,18 +909,23 @@ _Avoid_: standing approval, allowlist, allow for this Run (the button, not the r
 
 ### Completion
 
-**Working Area**:
-The kept files of one subject's Runs of one Agent in one workspace thread: what an Agent explicitly registered from its Scratch Space as worth keeping, never what can be regenerated, such as build output or installed dependencies. Follow-up Runs share it, one at a time, in the order they join its queue; a Run waiting its turn has not failed. Its revision counts registrations and says nothing about whether its content changed.
-_Avoid_: workspace (a different thing), sandbox, area (unqualified)
+**Working Area** (retired, #1019):
+The former file store and Run queue. Nodes now provide Scratch Space for work in progress and Drive for versioned files.
 
 **Scratch Space**:
-A named, disposable place where Agents actually work: they install tools, download data and keep build output there across commands, Runs and conversations. Every Workspace uses one Scratch Space, chosen when it is created or made just for it, and never changes it; everyone allowed to use the space shares its content. It has its own settings, such as its capacity, how long it may go unused and which hosts it may reach. Nothing in it is kept as a File version. After going unused for its set period its content is wiped the next time it is used, and someone can clear the content at any time; the space itself disappears only when someone deletes it. Only what is registered into a Working Area outlives its content.
-_Avoid_: shared workspace (a Workspace is a different thing), scratch (unqualified), temp folder, sandbox
+A disposable place where Agents actually work: they install tools, download data and keep build output there across commands and Tasks. Every Node has one that its Threads, Duties and Subnodes share, and anyone who may give work to the Node can see it; a separate named one can be made in the Node for work that must be kept apart. Nothing in it is kept as a File version and nothing wipes it on a timer: its content goes only when someone clears it or its Node goes. What should outlive it is published to a Drive.
+_Avoid_: shared workspace, scratch (unqualified), temp folder, sandbox, desk (an analogy only)
+
+**Default Scratch Space**:
+The Scratch Space available to people who can give work to a Node and to its administrators. It holds the Node's shared files and the working folders for its Threads and Duties.
+
+**Named Scratch Space**:
+A Scratch Space on a Node shared by its creator and explicit members. A Thread can select it when it starts.
 
 ### Collaboration
 
 **Thread**:
-The ordered exchange inside one Workspace where a person requests work, answers questions, decides approvals, receives Deliverables and asks for corrections. Tasks, Runs, approvals and File versions are referred to from it, never copied into it. Each message records its sender: a person, or the Agent whose Run wrote it, never the person who started that Run.
+The ordered exchange inside one Workspace where a person requests work, answers questions, decides approvals, receives Deliverables and asks for corrections. Tasks, Runs, approvals and Drive Versions are referred to from it, never copied into it. Each message records its sender: a person, or the Agent whose Run wrote it, never the person who started that Run.
 _Avoid_: conversation (starting one creates a Thread), chat, channel
 
 **Thread target**:
@@ -936,7 +933,7 @@ The Agent or Node a person addresses when starting work in a Thread. Work given 
 _Avoid_: Cluster (a retired Registry kind), Coordinator (a retired Cluster role)
 
 **Thread Attachment**:
-A file a person or an Agent posts together with one message in a Thread. Every reader of the Thread sees that it is there; an Agent's model sees its content only after that Agent selects it, under its own Run's authority. It is neither a Working Area File nor a Reference Document.
+A file a person or an Agent posts together with one message in a Thread. Every reader of the Thread sees that it is there; an Agent's model sees its content only after that Agent selects it, under its own Run's authority. Its content belongs to the message.
 _Avoid_: attachment (unqualified), upload, channel attachment
 
 **Image Description**:
@@ -956,8 +953,8 @@ The Drive versions, Completion Message attachments and Outside Versions that a T
 _Avoid_: artifact, output, result (unqualified)
 
 **Correction Request**:
-A person's request in a Thread to change one Deliverable, naming the exact File versions it concerns. It starts a new Task that records what it corrects; the corrected File versions stay as they were, and nothing the earlier Task did outside Aidash is repeated or approved again without a fresh approval.
-_Avoid_: revision (counts a Working Area's publications), redo, rerun, retry
+A person's request in a Thread to change one Deliverable, naming the exact Drive Versions it concerns. It starts a new Task that records what it corrects; the corrected Drive Versions stay as they were, and nothing the earlier Task did outside Aidash is repeated or approved again without a fresh approval.
+_Avoid_: revision (use Drive Version), redo, rerun, retry
 
 **Schedule**:
 A recurring trigger, a cron expression in a time zone or a fixed interval, that starts a Task for one Agent of its Tenant with a fixed request, each time as a Run whose delegation chain starts at its Registrant. A tick missed while Aidash was down runs once late, unless it is later than the Schedule allows; a tick that comes while the previous Run is unfinished is skipped. A person registers one directly, or an Agent registers one for the person at the root of its Run's chain; a Run started by a Schedule never registers or changes one. There are no Tenant-owned Schedules.
@@ -974,10 +971,6 @@ _Avoid_: Reference Document (an agent's private knowledge, sent with every reque
 **Reference set**:
 All the Reference files one Agent version can read, across every Source it binds. Its limits count all of them together.
 _Avoid_: document set, knowledge
-
-**Reference copy**:
-A Reference file copied into a Working Area. As made, only the file's uploader can download it, and it cannot be shared, not even copied again with the same content. Revoking the file makes the Area holding it unusable; withdrawing the Source's Catalog Approval does not. Once edited, it is the editor's own file.
-_Avoid_: materialized file
 
 **Source**:
 A definition in the Registry that gives the Agent versions binding it something to draw on, such as Workspace retrieval, memory, Skills or Reference files. It is not a Source record, which identifies a candidate Web source.
@@ -1046,10 +1039,6 @@ _Avoid_: priority, override order, trust order
 **Goal**:
 The completion condition of one Task, supplied by its requester, its Duty's procedure or the Agent that created it. When the Agent stops with an answer, the Goal judge returns met, not yet met or impossible. A Task without a Goal completes when its Agent says it is done.
 _Avoid_: Completion Condition, Duty Goal, Completion Policy, acceptance criteria
-
-**Scratch Space** (supersedes the earlier entry, #1019):
-A disposable place where Agents actually work: they install tools, download data and keep build output there across commands and Tasks. Every Node has one that its Threads, Duties and Subnodes share, and anyone who may give work to the Node can see it; a separate named one can be made in the Node for work that must be kept apart. Nothing in it is kept as a File version and nothing wipes it on a timer: its content goes only when someone clears it or its Node goes. What should outlive it is published to a Drive.
-_Avoid_: shared workspace, scratch (unqualified), temp folder, sandbox, desk (an analogy only)
 
 **Completion Message**:
 The Thread message that records a Task's final answer, its verdict when it had a Goal, and its Deliverable. The Task posts it after a met or impossible verdict, or when its Agent finishes a Task that has no Goal.

@@ -254,6 +254,19 @@ impl ExecutionPodRuntime for RunnerHttp {
 	async fn file_write(&self, request: &FileWriteRequest) -> Result<FileWriteResult> {
 		self.pod_call("/v2/files/write", request).await
 	}
+	async fn clear_thread(
+		&self,
+		settings: &ExecutionPodSettings,
+		thread: uuid::Uuid,
+	) -> Result<()> {
+		self.pod_effect(
+			"/v2/files/clear-thread",
+			&json!({"settings":settings,"thread_id":thread}),
+			"cleared",
+		)
+		.await
+	}
+
 	async fn file_manifest(&self, request: &FileManifestRequest) -> Result<FileManifestResult> {
 		self.pod_call("/v2/files/manifest", request).await
 	}

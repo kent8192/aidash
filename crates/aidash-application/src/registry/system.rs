@@ -7,7 +7,10 @@ use aidash_domain::{
 	},
 	registry::{
 		Entry,
-		bindings::{DEFAULT_TOOLS, EXPOSURE_TOOLS, REQUIRED_TOOLS, SKILL_ASSET_READ},
+		bindings::{
+			DEFAULT_TOOLS, EXPOSURE_TOOLS, REQUIRED_TOOLS, SKILL_ASSET_READ,
+			pre_scratch_tool_version,
+		},
 	},
 	tool::providers::core_descriptor,
 };
@@ -170,10 +173,40 @@ pub fn legacy_workspace_entries(
 	Ok(entries)
 }
 
+fn archive_scratch_specs()
+-> Result<std::collections::BTreeMap<String, aidash_domain::provider::ToolSpec>> {
+	Ok(serde_json::from_str(include_str!(
+		"system/legacy/scratch_tool_specs.json"
+	))?)
+}
+
+/// Keep the last immutable tool revisions from before Working Area retirement.
+pub fn pre_scratch_entries(validation: &DefinitionValidation, node: &str) -> Result<Vec<Entry>> {
+	let mut archived = archive_scratch_specs()?;
+	archived.extend(validation.pre_scratch_node_specifications());
+	let mut entries = entries(validation, node)?;
+	entries
+		.retain(|entry| pre_scratch_tool_version(entry.id.trim_start_matches("aidash.")).is_some());
+	for entry in &mut entries {
+		let operation = entry.id.trim_start_matches("aidash.");
+		entry.version = pre_scratch_tool_version(operation)
+			.expect("filtered revision")
+			.into();
+		if let Some(specification) = archived.get(operation) {
+			entry
+				.description
+				.insert("en".into(), specification.description.clone());
+			entry.schema = specification.parameters.clone();
+		}
+	}
+	Ok(entries)
+}
+
 /// The declarations of the file tools before they reached the Scratch Space
 /// (#745). The Drive file tools have their own 1.1.0 declarations.
 pub fn legacy_file_entries(validation: &DefinitionValidation, node: &str) -> Result<Vec<Entry>> {
 	let legacy = validation.legacy_node_specifications();
+	let archived = archive_scratch_specs()?;
 	let mut old: Vec<Entry> = entries(validation, node)?
 		.into_iter()
 		.filter(|entry| {
@@ -190,6 +223,7 @@ pub fn legacy_file_entries(validation: &DefinitionValidation, node: &str) -> Res
 			entry
 				.description
 				.insert("en".into(), ATTACHMENT_COPY_1_0_0.into());
+			entry.schema = archived["attachment_copy"].parameters.clone();
 		} else if let Some(spec) = legacy.get(operation) {
 			entry
 				.description
@@ -254,17 +288,6 @@ pub(crate) fn legacy_goal_entries(
 	let mut old = Vec::new();
 	for mut entry in entries(validation, node)? {
 		match entry.id.as_str() {
-			"aidash.workspace_read" | "aidash.thread_read" => {
-				entry.version = if entry.id == "aidash.workspace_read" {
-					"1.1.0"
-				} else {
-					"1.0.0"
-				}
-				.into();
-				if let Some(kinds) = entry.schema["properties"]["kind"]["enum"].as_array_mut() {
-					kinds.insert(2, json!("artifact"));
-				}
-			}
 			"aidash.workspace_observe" => {
 				entry.version = "1.0.1".into();
 				if let Some(description) = entry.description.get_mut("en") {
@@ -326,7 +349,8 @@ pub fn pinned_declarations(
 		.chain(legacy_workspace_entries(validation, node)?)
 		.chain(legacy_goal_entries(validation, node)?)
 		.chain(legacy_journal_entries(validation, node)?)
-		.chain(legacy_file_entries(validation, node)?))
+		.chain(legacy_file_entries(validation, node)?)
+		.chain(pre_scratch_entries(validation, node)?))
 }
 
 /// Resolve a pinned system definition, including versions no longer listed.
@@ -442,6 +466,7 @@ pub async fn seed(
 		.chain(legacy_goal_entries(validation, node)?)
 		.chain(legacy_journal_entries(validation, node)?)
 		.chain(legacy_file_entries(validation, node)?)
+		.chain(pre_scratch_entries(validation, node)?)
 		.chain(offered)
 		.chain([tenant_default_embedding()?])
 		.chain([aidash_domain::registry::bindings::source_defaults::workspace_observation()?])
@@ -524,26 +549,21 @@ pub fn builtin_reference(reference: &aidash_domain::registry::EntityRef) -> bool
 	{
 		return true;
 	}
-	(reference.version == "1.0.0"
-		|| reference
-			.id
-			.strip_prefix("aidash.")
-			.is_some_and(|operation| {
-				reference.version
-					== aidash_domain::registry::bindings::QualifiedRef::builtin("", operation)
-						.version
-			}) || (matches!(
-		reference.id.as_str(),
-		"aidash.workspace_read"
-			| "aidash.file_read"
-			| "aidash.file_search"
-			| "aidash.workspace_search"
-			| "aidash.workspace_message"
-			| "aidash.memory_mutate"
-			| "aidash.subnode_task"
-			| "aidash.task_assign"
-			| "aidash.workspace_wait"
-	) && reference.version == "1.1.0")
+	let operation = reference.id.strip_prefix("aidash.").unwrap_or_default();
+	let current = aidash_domain::registry::bindings::QualifiedRef::builtin("", operation);
+	(reference.version == current.version
+		|| pre_scratch_tool_version(operation) == Some(reference.version.as_str())
+		|| reference.version == "1.0.0"
+		|| (matches!(
+			reference.id.as_str(),
+			"aidash.workspace_read"
+				| "aidash.workspace_search"
+				| "aidash.workspace_message"
+				| "aidash.memory_mutate"
+				| "aidash.subnode_task"
+				| "aidash.task_assign"
+				| "aidash.workspace_wait"
+		) && reference.version == "1.1.0")
 		|| (reference.version == "1.0.1"
 			&& matches!(
 				reference.id.as_str(),

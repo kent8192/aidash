@@ -3591,7 +3591,7 @@ from sandbox_v2 import chroot_command
 os.environ['AIDASH_PROCESS_LIMIT'] = '128'
 def execute(*args):
     print(*resource.getrlimit(resource.RLIMIT_NPROC))
-with patch('os.chroot'), patch('os.chdir'), patch('sandbox_v2.validate_system_root'), patch('sandbox_v2.image_environment', return_value={}), patch('sandbox_v2.drop_user_capabilities'), patch('os.execvpe', execute):
+with patch('os.chroot'), patch('sandbox_v2.enter_working_directory'), patch('sandbox_v2.validate_system_root'), patch('sandbox_v2.image_environment', return_value={}), patch('sandbox_v2.drop_user_capabilities'), patch('os.execvpe', execute):
     chroot_command('/rootfs', '.', ['/bin/true'], False)
 """
         result = subprocess.run([sys.executable, '-c', code], cwd=os.path.dirname(__file__),

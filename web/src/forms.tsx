@@ -230,15 +230,17 @@ export function RequestForm({ data, submit }: { data: State; submit: Submit }) {
             setScratchChoice({ node: where.node, id: event.target.value })
           }
         >
-          <option value="">{t("scratchNewConversation")}</option>
-          {spaces.data?.map((space) => (
-            <option key={space.id} value={space.id}>
-              {space.name} · {space.id.slice(0, 8)}
-              {space.expired ? ` · ${t("scratchExpired")}` : ""}
-            </option>
-          ))}
+          <option value="">{t("scratchNodeDefault")}</option>
+          {spaces.data
+            ?.filter((space) => !space.is_default)
+            .map((space) => (
+              <option key={space.id} value={space.id}>
+                {space.name} · {space.id.slice(0, 8)}
+              </option>
+            ))}
         </NativeSelect>
       </Field>
+      {!scratchId && <Hint>{t("scratchNodeVisibility")}</Hint>}
       {spaces.isLoading && <Hint>{t("scratchLoading")}</Hint>}
       {spaces.isError && <Notice role="alert">{t("scratchLoadError")}</Notice>}
       <form.Subscribe selector={(s) => s.isSubmitting}>

@@ -27,6 +27,8 @@ pub struct Thread {
 	/// write of a deleted Thread refuses (#1008).
 	#[field(null = true)]
 	pub deleted_at: Option<DateTime<Utc>>,
+	#[field(default = false)]
+	pub scratch_wipe_requested: bool,
 	#[field(auto_now_add = true)]
 	pub created_at: DateTime<Utc>,
 }

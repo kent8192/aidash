@@ -280,7 +280,7 @@ test("Markdown bounds pathological syntax instead of stalling", () => {
   assert.ok(JSON.stringify(formatted).includes('"kind":"em"'));
 });
 
-test("Markdown image paths resolve inside the Working Area revision", () => {
+test("Markdown image paths resolve inside the file root", () => {
   assert.equal(
     resolveRelativeFilePath("docs/readme.md", "./img/a.png"),
     "docs/img/a.png",

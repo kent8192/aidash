@@ -143,6 +143,31 @@ async fn context_for_tool(
 	Ok(Some(context(store, &policy, &space, &tenant, run.id)?))
 }
 
+/// The Run's Task selects the Duty directory when a Duty started it.
+pub(crate) async fn working_directory(
+	access: &mut Access,
+	run: &RunMetadata,
+) -> NativeResult<String> {
+	let duty = if run.is_local(&access.node_id) {
+		let sql = Query::select()
+			.column(Alias::new("started_by_duty"))
+			.from(Alias::new("tasks"))
+			.and_where(Expr::col("tenant").eq(access.identity.tenant.clone()))
+			.and_where(Expr::col("id").eq(Expr::value(run.task_id)))
+			.to_string(PostgresQueryBuilder);
+		crate::database::native::query_scalar::<Option<Uuid>>(&sql)
+			.scalar_optional(&mut **access.tx)
+			.await?
+			.flatten()
+	} else {
+		None
+	};
+	Ok(aidash_domain::scratch::working_directory(
+		run.thread_id,
+		duty,
+	))
+}
+
 /// The Scratch Space whose Execution Pod a Run's tools use.
 pub(crate) async fn run_space(
 	store: &Store,

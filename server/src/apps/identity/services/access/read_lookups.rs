@@ -92,7 +92,7 @@ struct StateRows {
 	binding_runs: BTreeSet<Uuid>,
 	memory_reads: BTreeSet<Uuid>,
 	semantic_reads: BTreeMap<Uuid, Vec<(Uuid, i64)>>,
-	core_areas: BTreeMap<
+	core_execution_scopes: BTreeMap<
 		Uuid,
 		Option<Option<crate::apps::execution::capabilities::serializers::contracts::Area>>,
 	>,
@@ -364,7 +364,7 @@ struct StateReceived {
 #[derive(Deserialize)]
 struct StateCoreRun {
 	run_id: Uuid,
-	area_id: Uuid,
+	area_id: Option<Uuid>,
 }
 #[derive(Deserialize)]
 struct StateSnapshot {
@@ -599,7 +599,7 @@ impl Access {
 			binding_runs: BTreeSet::new(),
 			memory_reads: BTreeSet::new(),
 			semantic_reads: BTreeMap::new(),
-			core_areas: BTreeMap::new(),
+			core_execution_scopes: BTreeMap::new(),
 			humans: BTreeMap::new(),
 		});
 	}
@@ -855,7 +855,10 @@ impl Access {
 		run: Uuid,
 	) -> Option<Option<Option<crate::apps::execution::capabilities::serializers::contracts::Area>>>
 	{
-		self.current_state_rows()?.core_areas.get(&run).cloned()
+		self.current_state_rows()?
+			.core_execution_scopes
+			.get(&run)
+			.cloned()
 	}
 	pub(crate) fn state_snapshot(&mut self, run: Uuid) -> Option<Option<Value>> {
 		self.current_state_rows()?.snapshots.get(&run).cloned()
@@ -1008,7 +1011,7 @@ impl Access {
 			("authorization_run_registry_reads", "registry", "run_id"),
 			("authorization_run_remote_reads", "remote", "run_id"),
 			("task_executions", "snapshot", "id"),
-			("core_runs", "core", "run_id"),
+			("core_run_scopes", "core", "run_id"),
 			("semantic_run_reads", "semantic", "run_id"),
 		] {
 			query.union_all(selection(table, kind, id_column, &run_ids));
@@ -1205,7 +1208,7 @@ impl Access {
 			))
 		});
 		semantic.sort_by_key(|row| (row.entry_id, row.revision));
-		let area_ids: Vec<_> = core_runs.iter().map(|row| row.area_id).collect();
+		let area_ids: Vec<_> = core_runs.iter().filter_map(|row| row.area_id).collect();
 		let mut areas = BTreeMap::new();
 		for area in crate::apps::execution::repositories::sessions::areas(self, &area_ids).await? {
 			areas.insert(area.id, area);
@@ -1280,7 +1283,7 @@ impl Access {
 			memory_reads: memory.into_iter().map(|row| row.run_id).collect(),
 			semantic_reads: runs.iter().map(|run| (run.id, Vec::new())).collect(),
 			received: runs.iter().map(|run| (run.id, None)).collect(),
-			core_areas: runs.iter().map(|run| (run.id, None)).collect(),
+			core_execution_scopes: runs.iter().map(|run| (run.id, None)).collect(),
 			snapshots: runs.iter().map(|run| (run.id, None)).collect(),
 			humans: runs
 				.iter()
@@ -1328,8 +1331,8 @@ impl Access {
 			}
 		}
 		for core in core_runs {
-			if let Some(value) = rows.core_areas.get_mut(&core.run_id) {
-				*value = Some(areas.get(&core.area_id).cloned());
+			if let Some(value) = rows.core_execution_scopes.get_mut(&core.run_id) {
+				*value = Some(core.area_id.and_then(|id| areas.get(&id).cloned()));
 			}
 		}
 		for snapshot in snapshots {

@@ -1,25 +1,12 @@
-//! Preview persistence and the gateway's authority (ADR 0068).
-//!
-//! A Preview's subdomain and a ticket's digest are globally unique random
-//! values, so the gateway resolves them in Deployment Scope before it opens
-//! the viewer's Tenant Scope. Everything after that resolution is the same
-//! authority check the Working Area download runs.
+//! Live preview persistence and gateway authority.
 use crate::{
 	Error as NativeError, Result as NativeResult,
-	apps::execution::capabilities::{
-		models::CoreLivePreviews,
-		serializers::contracts::FileEntry,
-		services::{retention, service, sessions},
-	},
-	apps::identity::services::identity::SubjectIdentity,
-	authorization::access::Access,
+	apps::execution::capabilities::models::CoreLivePreviews,
+	apps::identity::services::identity::SubjectIdentity, authorization::access::Access,
 	store::Store,
 };
-use aidash_application::preview::{
-	self as application, Exchange, FileVersion, Page, Preview, TicketIssue,
-};
+use aidash_application::preview::{self as application, Exchange, Page, Preview, TicketIssue};
 use aidash_application::tenancy::{DeploymentScopeReason, TenancyScope};
-use aidash_domain::capabilities::retention::RetainedFile;
 use aidash_domain::preview::{
 	PreviewKind, PreviewLabel, PreviewSecret, Session, label_of,
 	live::{State as LiveState, StopReason},
@@ -34,15 +21,6 @@ use reinhardt::query::{
 use uuid::Uuid;
 
 const PREVIEW_SCOPE: DeploymentScopeReason = DeploymentScopeReason::PreviewGateway;
-
-type ResolvedRow = (
-	Uuid,
-	String,
-	String,
-	Option<Uuid>,
-	Option<Uuid>,
-	Option<Uuid>,
-);
 
 pub(crate) struct PeerRunAdmission {
 	pub node: String,
@@ -126,7 +104,6 @@ pub(crate) async fn peer_run_admission(
 /// The ticket use case's authority and transaction.
 pub(crate) struct Scope<'a> {
 	pub access: &'a mut Access,
-	pub store: &'a Store,
 	pub domain: Option<&'a str>,
 	pub public_port: Option<u16>,
 	pub origin: &'a str,
@@ -134,100 +111,6 @@ pub(crate) struct Scope<'a> {
 }
 
 impl Scope<'_> {
-	async fn authorize_file_native(
-		&mut self,
-		area_id: Uuid,
-		file_id: Uuid,
-	) -> NativeResult<FileVersion> {
-		let area = sessions::load(self.access, area_id).await?;
-		// The current manifest pins today's File version; a superseded version
-		// opens only while a hold keeps its manifest (ADR 0095).
-		let current = service::files(&area)?
-			.into_iter()
-			.find(|entry| entry.file_id == file_id);
-		let entry = match current {
-			Some(entry) => entry,
-			None => {
-				let retained =
-					retention::retained_manifest(self.store, self.access, area_id, file_id)
-						.await?
-						.ok_or_else(|| NativeError::NotFound("file unavailable".into()))?;
-				let file = retained
-					.into_iter()
-					.find(|file| file.file_id == file_id)
-					.ok_or_else(|| NativeError::NotFound("file unavailable".into()))?;
-				retained_entry(self.access, area_id, &file).await?
-			}
-		};
-		Ok(FileVersion {
-			area_id,
-			file_id,
-			path: entry.path,
-			media_type: entry.media_type,
-		})
-	}
-
-	async fn preview_native(&mut self, kind: &PreviewKind) -> NativeResult<Preview> {
-		let PreviewKind::File { area_id, file_id } = kind else {
-			return Err(NativeError::Invalid(
-				"Live previews are not available yet".into(),
-			));
-		};
-		if let Some(existing) = preview_of_file(self.access, *file_id).await? {
-			return Ok(Preview {
-				id: existing.id,
-				label: existing.label,
-				kind: kind.clone(),
-			});
-		}
-		for _ in 0..4 {
-			let label = PreviewLabel::generate()?;
-			let query = Query::insert()
-				.into_table(Alias::new("core_previews"))
-				.columns(
-					[
-						"id",
-						"tenant",
-						"kind",
-						"area_id",
-						"file_id",
-						"label",
-						"created_by",
-					]
-					.map(Alias::new),
-				)
-				.values(vec![
-					Uuid::new_v4().into(),
-					self.access.identity.tenant.clone().into(),
-					"file".into(),
-					(*area_id).into_value(),
-					(*file_id).into_value(),
-					label.as_str().to_owned().into(),
-					self.access.identity.subject.clone().into(),
-				])
-				.map_err(NativeError::Invalid)?
-				.on_conflict(
-					OnConflict::column(Alias::new("file_id"))
-						.do_nothing()
-						.to_owned(),
-				)
-				.to_string(PostgresQueryBuilder);
-			crate::database::native::query(&query)
-				.execute(&mut **self.access.tx)
-				.await?;
-			if let Some(existing) = preview_of_file(self.access, *file_id).await? {
-				return Ok(Preview {
-					id: existing.id,
-					label: existing.label,
-					kind: kind.clone(),
-				});
-			}
-		}
-		Err(NativeError::External(
-			"preview label could not be allocated".into(),
-		))
-	}
-
 	async fn ticket_native(&mut self, ticket: TicketIssue) -> NativeResult<()> {
 		let peer = ticket.peer.as_ref();
 		let query = Query::insert()
@@ -292,26 +175,8 @@ impl application::Scope for Scope<'_> {
 	fn peer(&self) -> Option<&application::Peer> {
 		self.peer.as_ref()
 	}
-	async fn authorize_file(
-		&mut self,
-		area_id: Uuid,
-		file_id: Uuid,
-	) -> aidash_application::Result<FileVersion> {
-		self.authorize_file_native(area_id, file_id)
-			.await
-			.map_err(Into::into)
-	}
-	async fn preview(&mut self, kind: &PreviewKind) -> aidash_application::Result<Preview> {
-		self.preview_native(kind).await.map_err(Into::into)
-	}
 	async fn ticket(&mut self, ticket: TicketIssue) -> aidash_application::Result<()> {
 		self.ticket_native(ticket).await.map_err(Into::into)
-	}
-	async fn authorize_area(&mut self, area_id: Uuid) -> aidash_application::Result<()> {
-		sessions::load(self.access, area_id)
-			.await
-			.map(drop)
-			.map_err(Into::into)
 	}
 	async fn live_preview(&mut self, id: Uuid) -> aidash_application::Result<Preview> {
 		let row = CoreLivePreviews::objects()
@@ -326,11 +191,11 @@ impl application::Scope for Scope<'_> {
 		if !matches!(live.state, LiveState::Running | LiveState::Stale) {
 			return Err(NativeError::NotFound("live preview unavailable".into()).into());
 		}
-		self.authorize_area(live.area_id)
+		authorize_live(self.access, live.run_id)
 			.await
 			.map_err(|error| match error {
-				aidash_application::Error::Forbidden | aidash_application::Error::NotFound(_) => {
-					aidash_application::Error::NotFound("live preview unavailable".into())
+				NativeError::Forbidden | NativeError::NotFound(_) => {
+					NativeError::NotFound("live preview unavailable".into())
 				}
 				error => error,
 			})?;
@@ -348,31 +213,13 @@ impl application::Scope for Scope<'_> {
 	}
 }
 
+async fn authorize_live(access: &mut Access, run: Uuid) -> NativeResult<()> {
+	access.run_for_reads(run).await.map(drop)
+}
+
 struct StoredPreview {
 	id: Uuid,
 	label: PreviewLabel,
-}
-
-async fn preview_of_file(access: &mut Access, file: Uuid) -> NativeResult<Option<StoredPreview>> {
-	let row: Option<(Uuid, String)> = crate::database::native::query_as(
-		&Query::select()
-			.columns([Alias::new("id"), Alias::new("label")])
-			.from(Alias::new("core_previews"))
-			.and_where(Expr::col(Alias::new("kind")).eq(Expr::value("file")))
-			.and_where(Expr::col(Alias::new("file_id")).eq(Expr::value(file)))
-			.limit(1)
-			.to_string(PostgresQueryBuilder),
-	)
-	.columns(&["id", "label"])
-	.fetch_optional(&mut **access.tx)
-	.await?;
-	match row {
-		Some((id, label)) => Ok(Some(StoredPreview {
-			id,
-			label: PreviewLabel::parse(label)?,
-		})),
-		None => Ok(None),
-	}
 }
 
 /// The Preview row of a Live preview, one random subdomain for its lifetime.
@@ -455,10 +302,7 @@ pub(crate) struct Gateway {
 struct Resolved {
 	tenant: String,
 	preview_id: Uuid,
-	kind: String,
-	area_id: Option<Uuid>,
-	file_id: Option<Uuid>,
-	live_preview_id: Option<Uuid>,
+	live_preview_id: Uuid,
 }
 
 impl Gateway {
@@ -562,43 +406,30 @@ impl Gateway {
 	async fn resolve(&self, host: &str) -> NativeResult<Resolved> {
 		let label = label_of(host, &self.domain).ok_or(NativeError::Forbidden)?;
 		let label = PreviewLabel::parse(label)?;
-		let row: Option<ResolvedRow> = crate::database::native::query_as(
+		let row: Option<(Uuid, String, Uuid)> = crate::database::native::query_as(
 			&Query::select()
 				.columns([
 					Alias::new("id"),
 					Alias::new("tenant"),
-					Alias::new("kind"),
-					Alias::new("area_id"),
-					Alias::new("file_id"),
 					Alias::new("live_preview_id"),
 				])
 				.from(Alias::new("core_previews"))
+				.and_where(Expr::col("kind").eq("live"))
 				.and_where(Expr::col(Alias::new("label")).eq(Expr::value(label.as_str())))
 				.limit(1)
 				.to_string(PostgresQueryBuilder),
 		)
-		.columns(&[
-			"id",
-			"tenant",
-			"kind",
-			"area_id",
-			"file_id",
-			"live_preview_id",
-		])
+		.columns(&["id", "tenant", "live_preview_id"])
 		.fetch_optional(
 			self.store
 				.pool
 				.in_scope(&TenancyScope::Deployment(PREVIEW_SCOPE)),
 		)
 		.await?;
-		let (preview_id, tenant, kind, area_id, file_id, live_preview_id) =
-			row.ok_or(NativeError::Forbidden)?;
+		let (preview_id, tenant, live_preview_id) = row.ok_or(NativeError::Forbidden)?;
 		Ok(Resolved {
 			tenant,
 			preview_id,
-			kind,
-			area_id,
-			file_id,
 			live_preview_id,
 		})
 	}
@@ -710,149 +541,6 @@ impl Gateway {
 		})
 	}
 
-	async fn view_native(&self, host: &str, cookie: &str, path: &str) -> NativeResult<Page> {
-		let preview = self.resolve(host).await?;
-		if preview.kind != "file" {
-			return Err(NativeError::NotFound("preview unavailable".into()));
-		}
-		let (Some(area_id), Some(file_id)) = (preview.area_id, preview.file_id) else {
-			return Err(NativeError::NotFound("preview unavailable".into()));
-		};
-		let secret = PreviewSecret::parse(cookie)?;
-		let session: Option<PreviewSessionRow> = crate::database::native::query_as(
-			&Query::select()
-				.columns([
-					Alias::new("id"),
-					Alias::new("subject"),
-					Alias::new("credential_id"),
-					Alias::new("origin"),
-					Alias::new("expires_at"),
-					Alias::new("peer_sender"),
-					Alias::new("peer_receiver"),
-					Alias::new("peer_subject"),
-					Alias::new("peer_run_id"),
-				])
-				.from(Alias::new("core_preview_sessions"))
-				.and_where(Expr::col(Alias::new("preview_id")).eq(Expr::value(preview.preview_id)))
-				.and_where(Expr::col(Alias::new("digest")).eq(Expr::value(secret.digest())))
-				.and_where(Expr::cust("expires_at > CURRENT_TIMESTAMP"))
-				.limit(1)
-				.to_string(PostgresQueryBuilder),
-		)
-		.columns(&[
-			"id",
-			"subject",
-			"credential_id",
-			"origin",
-			"expires_at",
-			"peer_sender",
-			"peer_receiver",
-			"peer_subject",
-			"peer_run_id",
-		])
-		.fetch_optional(
-			self.store
-				.pool
-				.in_scope(&TenancyScope::tenant(&preview.tenant)?),
-		)
-		.await?;
-		let Some(PreviewSessionRow {
-			id: session_id,
-			subject,
-			credential_id,
-			origin,
-			expires_at,
-			peer_sender: sender,
-			peer_receiver: receiver,
-			peer_subject: source,
-			peer_run_id: run_id,
-		}) = session
-		else {
-			return Err(NativeError::Forbidden);
-		};
-		if (Session { expires_at }).accept(Utc::now()).is_err() {
-			return Err(NativeError::Forbidden);
-		}
-		crate::database::authority_change::enter(&self.store.pool, &preview.tenant).await;
-		// The cookie is not authority: re-run the download decision under the
-		// stored credential, so a revoked subject stops at the next request.
-		let mut access = self
-			.viewer_access(
-				&preview.tenant,
-				subject,
-				credential_id,
-				&origin,
-				(sender, receiver, source, run_id),
-			)
-			.await?;
-		let result = async {
-			let area = sessions::load(&mut access, area_id).await?;
-			let current = super::super::capabilities::services::operations::pod_files(&area)?;
-			let current_root = current
-				.iter()
-				.find(|entry| entry.file_id == file_id)
-				.cloned();
-			let (files, root) = match current_root {
-				Some(root) => (current, root),
-				None => {
-					let retained =
-						retention::retained_manifest(&self.store, &mut access, area_id, file_id)
-							.await?
-							.ok_or_else(|| NativeError::NotFound("file unavailable".into()))?;
-					let mut files = Vec::with_capacity(retained.len());
-					for file in &retained {
-						files.push(retained_entry(&mut access, area_id, file).await?);
-					}
-					let root = files
-						.iter()
-						.find(|entry| entry.file_id == file_id)
-						.cloned()
-						.ok_or_else(|| NativeError::NotFound("file unavailable".into()))?;
-					(files, root)
-				}
-			};
-			let root_kind = application::media_type(&root.media_type);
-			let wanted = relative_path(path)?;
-			let entry = if wanted.is_empty() {
-				root.clone()
-			} else if matches!(root_kind, "text/html" | "application/xhtml+xml") {
-				files
-					.iter()
-					.find(|entry| entry.path == wanted)
-					.cloned()
-					.ok_or_else(|| NativeError::NotFound("file unavailable".into()))?
-			} else {
-				return Err(NativeError::NotFound("file unavailable".into()));
-			};
-			if entry.size > application::MAX_PAGE_BYTES {
-				return Err(NativeError::Conflict("FILE_VERSION_TOO_LARGE".into()));
-			}
-			let bytes = read_all(&self.store, &mut access, &entry).await?;
-			let media_type = if entry.file_id == root.file_id {
-				match root_kind {
-					"text/html" | "application/xhtml+xml" => "text/html; charset=utf-8".to_owned(),
-					"application/pdf" => "application/pdf".to_owned(),
-					_ => root.media_type.clone(),
-				}
-			} else {
-				entry.media_type.clone()
-			};
-			let content_disposition = (entry.file_id == root.file_id
-				&& root_kind == "application/pdf")
-				.then(|| "inline".to_owned());
-			Ok(Page {
-				tenant: preview.tenant.clone(),
-				session: session_id,
-				frame_ancestor: origin,
-				media_type,
-				content_disposition,
-				bytes,
-			})
-		}
-		.await;
-		access.finish(result).await
-	}
-
 	async fn served_native(&self, tenant: &str, session: Uuid, bytes: u64) -> NativeResult<()> {
 		if bytes == 0 {
 			return Ok(());
@@ -885,12 +573,7 @@ impl Gateway {
 			Err(NativeError::Forbidden) => return Ok(None),
 			Err(error) => return Err(error),
 		};
-		if resolved.kind != "live" {
-			return Ok(None);
-		}
-		let live_id = resolved
-			.live_preview_id
-			.ok_or_else(|| NativeError::NotFound("preview unavailable".into()))?;
+		let live_id = resolved.live_preview_id;
 		let secret = PreviewSecret::parse(cookie)?;
 		let session: Option<PreviewSessionRow> = crate::database::native::query_as(
 			&Query::select()
@@ -983,8 +666,8 @@ impl Gateway {
 			if live.unconfirmed_since.is_some() {
 				return Err(NativeError::Conflict("PREVIEW_UNAVAILABLE".into()));
 			}
-			// The cookie is not authority: the same Working Area read decides.
-			if let Err(error) = sessions::load(&mut access, live.area_id).await {
+			// Recheck the Run and its current file authority before proxying.
+			if let Err(error) = authorize_live(&mut access, live.run_id).await {
 				live.stopping(StopReason::RunAuthorityRevoked);
 				CoreLivePreviews::objects()
 					.save_with_executor(&mut **access.tx, &super::live_previews::to_row(&live))
@@ -1022,10 +705,15 @@ impl application::Authority for Gateway {
 	async fn exchange(&self, host: &str, ticket: &str) -> aidash_application::Result<Exchange> {
 		self.exchange_native(host, ticket).await.map_err(Into::into)
 	}
-	async fn view(&self, host: &str, cookie: &str, path: &str) -> aidash_application::Result<Page> {
-		self.view_native(host, cookie, path)
-			.await
-			.map_err(Into::into)
+	async fn view(
+		&self,
+		_host: &str,
+		_cookie: &str,
+		_path: &str,
+	) -> aidash_application::Result<Page> {
+		Err(aidash_application::Error::NotFound(
+			"preview unavailable".into(),
+		))
 	}
 	async fn live(
 		&self,
@@ -1046,94 +734,5 @@ impl application::Authority for Gateway {
 		self.served_native(tenant, session, bytes)
 			.await
 			.map_err(Into::into)
-	}
-}
-
-/// The request path as a manifest-relative path; empty is the Preview's root.
-fn relative_path(path: &str) -> NativeResult<String> {
-	let path = path.split('?').next().unwrap_or(path);
-	let decoded = percent_encoding::percent_decode_str(path)
-		.decode_utf8()
-		.map_err(|_| NativeError::Invalid("invalid preview path".into()))?;
-	let relative = decoded.trim_start_matches('/');
-	if relative.is_empty() {
-		return Ok(String::new());
-	}
-	if relative.contains('\\')
-		|| relative
-			.split('/')
-			.any(|part| part.is_empty() || matches!(part, "." | ".."))
-	{
-		return Err(NativeError::NotFound("file unavailable".into()));
-	}
-	Ok(relative.to_owned())
-}
-
-/// The immutable object behind a held manifest entry.
-async fn retained_entry(
-	access: &mut Access,
-	area_id: Uuid,
-	file: &RetainedFile,
-) -> NativeResult<FileEntry> {
-	let digest: Option<String> = crate::database::native::query_scalar(
-		&Query::select()
-			.column(Alias::new("digest"))
-			.from(Alias::new("core_objects"))
-			.and_where(Expr::col(Alias::new("id")).eq(Expr::value(file.file_id)))
-			.and_where(Expr::col(Alias::new("tenant")).eq(Expr::value(&access.identity.tenant)))
-			.and_where(Expr::col(Alias::new("area_id")).eq(Expr::value(area_id)))
-			.and_where(Expr::col(Alias::new("kind")).is_in(["working", "superseded_working"]))
-			.limit(1)
-			.to_string(PostgresQueryBuilder),
-	)
-	.scalar_optional(&mut **access.tx)
-	.await?;
-	Ok(FileEntry {
-		file_id: file.file_id,
-		path: file.path.clone(),
-		digest: digest.ok_or_else(|| NativeError::NotFound("file unavailable".into()))?,
-		size: file.size,
-		media_type: file.media_type.clone(),
-		scope: crate::apps::execution::capabilities::serializers::contracts::FileScope::Working,
-		provenance: serde_json::json!({"kind": "working", "area_id": area_id}),
-	})
-}
-
-async fn read_all(store: &Store, access: &mut Access, entry: &FileEntry) -> NativeResult<Vec<u8>> {
-	let mut bytes = Vec::with_capacity(entry.size.min(application::MAX_PAGE_BYTES) as usize);
-	while (bytes.len() as u64) < entry.size {
-		let chunk = store
-			.capabilities
-			.read_chunk(access, entry, bytes.len() as u64)
-			.await?;
-		if chunk.is_empty() {
-			return Err(NativeError::Conflict("OBJECT_INTEGRITY".into()));
-		}
-		bytes.extend_from_slice(&chunk);
-	}
-	Ok(bytes)
-}
-
-#[cfg(test)]
-mod tests {
-	use super::*;
-
-	#[test]
-	fn a_preview_path_is_relative_to_the_manifest() {
-		assert_eq!(relative_path("/").unwrap(), "");
-		assert_eq!(relative_path("/index.html").unwrap(), "index.html");
-		assert_eq!(
-			relative_path("/assets/app.js?v=1").unwrap(),
-			"assets/app.js"
-		);
-		assert_eq!(relative_path("/a%20b.svg").unwrap(), "a b.svg");
-	}
-
-	#[test]
-	fn a_preview_path_never_escapes_the_manifest() {
-		for path in ["/../secret", "/a/../b", "/a//b", "/a\\b", "/%2e%2e/secret"] {
-			assert!(relative_path(path).is_err(), "{path}");
-		}
-		assert!(relative_path("/%ff").is_err());
 	}
 }

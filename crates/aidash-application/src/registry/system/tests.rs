@@ -25,6 +25,7 @@ fn compare_develop_builtin_declarations() {
 		.chain(legacy_workspace_entries(&validation, NODE).unwrap())
 		.chain(legacy_goal_entries(&validation, NODE).unwrap())
 		.chain(legacy_file_entries(&validation, NODE).unwrap())
+		.chain(pre_scratch_entries(&validation, NODE).unwrap())
 		.collect::<Vec<_>>();
 	let mut seen = std::collections::BTreeSet::new();
 	let mut changed = vec![];
@@ -133,9 +134,9 @@ fn workspace_attachment_tools_keep_original_declarations_immutable() {
 		assert_eq!(
 			new.version,
 			if legacy.id == "aidash.workspace_read" {
-				"1.2.0"
+				"1.3.0"
 			} else {
-				"1.1.0"
+				"1.2.0"
 			}
 		);
 		assert_ne!(new.description, legacy.description);
@@ -479,11 +480,18 @@ async fn seeding_keeps_the_original_workspace_read_and_adds_a_new_version() {
 	);
 	let current = writer.definition(&old.id, "1.2.0").await.unwrap();
 	assert!(
-		current.schema["properties"]["kind"]["enum"]
+		previous.schema["properties"]["kind"]["enum"]
 			.as_array()
 			.unwrap()
 			.contains(&json!("file"))
 	);
+	let current = writer.definition(&old.id, "1.2.0").await.unwrap();
+	let kinds = current.schema["properties"]["kind"]["enum"]
+		.as_array()
+		.unwrap();
+	assert!(kinds.contains(&json!("attachment")));
+	assert!(!kinds.contains(&json!("file")));
+	assert!(current.schema["properties"].get("area_id").is_none());
 }
 
 struct ResearchContracts;

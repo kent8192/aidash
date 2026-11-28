@@ -48,7 +48,7 @@ pub(crate) struct DeliveryChunk {
 	pub(crate) grant_id: Uuid,
 	pub(crate) admission_id: Uuid,
 	pub(crate) key: String,
-	/// The tool the Run called: `file_share` or `thread_message`.
+	/// The `thread_message` tool the Run called.
 	pub(crate) tool: String,
 	pub(crate) file: usize,
 	pub(crate) offset: u64,

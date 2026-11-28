@@ -594,22 +594,17 @@ async fn the_decision_page_names_the_run(#[future] database: DatabaseFixture) {
 async fn running_targets(fixture: &Fixture) -> (Uuid, Uuid) {
 	let driver = fixture.driver();
 	let area = Uuid::new_v4();
-	sqlx::query("INSERT INTO core_areas (id,tenant,home_node,agent_id,owner,thread_id,state) VALUES ($1,'acme',$2,'fixture','reader',$3,'running')")
+	sqlx::query("INSERT INTO core_execution_scopes (id,tenant,home_node,agent_id,owner,thread_id,state) VALUES ($1,'acme',$2,'fixture','reader',$3,'running')")
 		.bind(area).bind(DEPLOYMENT).bind(fixture.thread)
 		.execute(driver).await.unwrap();
-	sqlx::query("INSERT INTO core_manifest_revisions (tenant,area_id,revision,manifest) VALUES ('acme',$1,1,'[]')")
-		.bind(area)
-		.execute(driver)
-		.await
-		.unwrap();
 	let operation = Uuid::new_v4();
 	sqlx::query("INSERT INTO core_operations (id,area_id,run_id,tenant,principal,credential_id,subjects,request_key,digest,kind,state,epoch,generation,revision,policy_revision,input,result) VALUES ($1,$2,$3,'acme','reader',$4,$5,$1::text,'digest','shell','prepared',1,1,1,1,'{}','{}')")
 		.bind(operation).bind(area).bind(fixture.run).bind(fixture.identity.credential_id).bind(json!(["reader","helper"]))
 		.execute(driver).await.unwrap();
 	let preview = Uuid::new_v4();
 	let now = chrono::Utc::now();
-	sqlx::query("INSERT INTO core_live_previews (id,tenant,run_id,area_id,revision,port,state,idle_seconds,absolute_seconds,started_at,last_request_at,expires_at) VALUES ($1,'acme',$2,$3,1,3000,'running',900,7200,$4,$4,$5)")
-		.bind(preview).bind(fixture.run).bind(area).bind(now).bind(now + chrono::Duration::hours(2))
+	sqlx::query("INSERT INTO core_live_previews (id,tenant,run_id,port,state,idle_seconds,absolute_seconds,started_at,last_request_at,expires_at) VALUES ($1,'acme',$2,3000,'running',900,7200,$3,$3,$4)")
+		.bind(preview).bind(fixture.run).bind(now).bind(now + chrono::Duration::hours(2))
 		.execute(driver).await.unwrap();
 	(operation, preview)
 }
@@ -1759,7 +1754,7 @@ async fn a_sweep_pass_that_only_repeats_adds_no_rows_for_a_running_command(
 	.await
 	.unwrap();
 	let (operation, _) = running_targets(&fixture).await;
-	sqlx::query("INSERT INTO core_runs (run_id,tenant,area_id,sequence,initialized,generation) SELECT $1,'acme',id,1,true,generation FROM core_areas WHERE id=(SELECT area_id FROM core_operations WHERE id=$2)")
+	sqlx::query("INSERT INTO core_runs (run_id,tenant,scope_subject,initialized) SELECT $1,'acme',owner,true FROM core_execution_scopes WHERE id=(SELECT area_id FROM core_operations WHERE id=$2)")
 		.bind(fixture.run)
 		.bind(operation)
 		.execute(fixture.driver())

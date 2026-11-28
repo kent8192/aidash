@@ -107,8 +107,8 @@ export function OriginalReferences({
       <h2>{ja ? "参照資料の原本" : "Original references"}</h2>
       <p>
         {ja
-          ? "原本は非公開で保存されます。テキストはそのまま Agent が読み、PDF と Excel は文字を抽出します。抽出に失敗した資料もダウンロードできます。コピーを編集しても原本は変わりません。"
-          : "Originals are private and remain downloadable when extraction fails. Editing a working copy preserves the original."}
+          ? "原本は非公開で保存されます。テキストはそのまま Agent が読み、PDF と Excel は文字を抽出します。抽出に失敗した資料もダウンロードできます。"
+          : "Originals are private and remain downloadable when extraction fails."}
       </p>
       <Field
         label={

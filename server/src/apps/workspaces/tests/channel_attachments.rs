@@ -535,7 +535,7 @@ async fn deleting_a_thread_reclaims_its_attachment_object(#[future] scoped_chann
 		&token,
 		"POST",
 		&format!("/api/threads/{thread}/delete"),
-		json!({"idempotency_key":Uuid::new_v4(), "files":[]}),
+		json!({"idempotency_key":Uuid::new_v4()}),
 	)
 	.await;
 	assert_eq!(status, 200, "{deleted}");
@@ -944,7 +944,7 @@ async fn an_image_leaves_the_index_with_its_thread(#[future] scoped_channel: Sco
 		&token,
 		"POST",
 		&format!("/api/threads/{thread}/delete"),
-		json!({"idempotency_key":Uuid::new_v4(), "files":[]}),
+		json!({"idempotency_key":Uuid::new_v4()}),
 	)
 	.await;
 

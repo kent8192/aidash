@@ -184,8 +184,6 @@ pub struct Revision {
 pub struct Search {
 	#[serde(default)]
 	pub query: String,
-	#[serde(default)]
-	pub image: Option<aidash_domain::semantic::retrieval::ImageQuery>,
 	/// Set only by a Run's own `workspace_search`; never accepted over HTTP.
 	#[serde(skip)]
 	#[schemars(skip)]

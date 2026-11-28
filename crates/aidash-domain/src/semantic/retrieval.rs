@@ -5,17 +5,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use uuid::Uuid;
 
-#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct ImageQuery {
-	pub run_id: Uuid,
-	pub area_id: Uuid,
-	pub generation: i64,
-	pub file_id: Uuid,
-	pub path: String,
-	pub expected_digest: String,
-}
-
 /// A Thread Attachment image used as a query. Only an attachment the named Run
 /// has already selected for its own inference qualifies (#622 decision 4).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -30,7 +19,6 @@ pub struct AttachmentImageQuery {
 #[derive(Debug, Clone)]
 pub struct Search {
 	pub query: String,
-	pub image: Option<ImageQuery>,
 	pub attachment: Option<AttachmentImageQuery>,
 	pub agent: Option<String>,
 	pub metadata: Value,
@@ -41,7 +29,6 @@ impl Search {
 	pub fn validate(&self, spec: &IndexingSpec) -> Result<()> {
 		if let Some(attachment) = &self.attachment {
 			if !self.query.is_empty()
-				|| self.image.is_some()
 				|| attachment.expected_digest.is_empty()
 				|| !spec
 					.embedding
@@ -50,18 +37,6 @@ impl Search {
 			{
 				return Err(Error::Invalid("invalid semantic image query".into()));
 			}
-		} else if let Some(image) = &self.image {
-			if !self.query.is_empty()
-				|| image.generation <= 0
-				|| image.expected_digest.is_empty()
-				|| !spec
-					.embedding
-					.inputs
-					.contains(&super::EmbeddingInputKind::Image)
-			{
-				return Err(Error::Invalid("invalid semantic image query".into()));
-			}
-			crate::registry::rules::validate_path(&image.path)?;
 		} else {
 			super::indexing::validate_text(&self.query, spec.max_input_bytes)?;
 		}

@@ -26,6 +26,19 @@ pub(crate) struct ScratchSettingsUpdate {
 	pub settings: ScratchSettings,
 }
 #[derive(Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ScratchClear {
+	/// Omit to list the affected Tasks. Confirm by submitting that exact list.
+	pub confirmed_tasks: Option<Vec<uuid::Uuid>>,
+}
+
+#[derive(Serialize, JsonSchema)]
+pub(crate) struct ScratchClearResult {
+	pub sent: bool,
+	pub running_tasks: Vec<uuid::Uuid>,
+}
+
+#[derive(Deserialize, Serialize, JsonSchema)]
 pub(crate) struct ScratchList {
 	pub node: NodeName,
 }
@@ -50,7 +63,6 @@ pub(crate) struct ExternalServiceStatus {
 pub(crate) struct ScratchView {
 	#[serde(flatten)]
 	space: aidash_domain::scratch::ScratchSpace,
-	expired: bool,
 	/// One entry per External service in the settings, in the settings' order.
 	external_service_status: Vec<ExternalServiceStatus>,
 }
@@ -58,10 +70,8 @@ pub(crate) struct ScratchView {
 impl ScratchView {
 	pub(crate) fn new(
 		space: aidash_domain::scratch::ScratchSpace,
-		now: chrono::DateTime<chrono::Utc>,
 		services: Vec<crate::apps::workspaces::repositories::scratch::ServiceState>,
 	) -> Self {
-		let expired = space.is_expired(now);
 		let external_service_status = services
 			.into_iter()
 			.map(|state| ExternalServiceStatus {
@@ -72,7 +82,6 @@ impl ScratchView {
 			.collect();
 		Self {
 			space,
-			expired,
 			external_service_status,
 		}
 	}
@@ -81,36 +90,33 @@ impl ScratchView {
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use chrono::{Duration, Utc};
+	use chrono::Utc;
 
 	#[test]
-	fn scratch_view_reports_idle_expiry() {
+	fn scratch_view_reports_space_scope() {
 		let now = Utc::now();
 		let space = aidash_domain::scratch::ScratchSpace {
+			is_default: true,
 			id: uuid::Uuid::new_v4(),
 			node: aidash_domain::nodes::NodeName::derived("scratch"),
-			name: "Project".into(),
+			name: "Node Scratch Space".into(),
 			creator: "alice".into(),
 			members: Default::default(),
 			state: aidash_domain::scratch::ScratchState::Active,
 			revision: 0,
 			wipe_generation: 0,
+			wipe_completed_generation: 0,
 			settings: ScratchSettings::default(),
 			created_at: now,
 			last_used_at: now,
 		};
-		let value = serde_json::to_value(ScratchView::new(
-			space,
-			now + Duration::days(15),
-			Vec::new(),
-		))
-		.unwrap();
-		assert_eq!(value["expired"], true);
-		assert_eq!(value["name"], "Project");
+		let value = serde_json::to_value(ScratchView::new(space, Vec::new())).unwrap();
+		assert_eq!(value["is_default"], true);
+		assert_eq!(value["name"], "Node Scratch Space");
 		assert_eq!(value["external_service_status"], serde_json::json!([]));
 		let schema = serde_json::to_value(crate::config::openapi::openapi().unwrap()).unwrap();
 		assert_eq!(
-			schema["components"]["schemas"]["ScratchView"]["properties"]["expired"]["type"],
+			schema["components"]["schemas"]["ScratchView"]["properties"]["is_default"]["type"],
 			"boolean"
 		);
 	}

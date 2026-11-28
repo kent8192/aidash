@@ -170,7 +170,7 @@ fn mounted_file_paths_collide_only_within_the_same_scope() {
 	]));
 }
 #[rstest]
-#[case::working_exact(vec![file(FileScope::Working,"w",16)],None)]
+#[case::working_exact(vec![file(FileScope::Working,"w",16)],Some("WORKING_QUOTA_EXCEEDED"))]
 #[case::too_big(vec![file(FileScope::Working,"w",17)],Some("WORKING_QUOTA_EXCEEDED"))]
 #[case::readonly_full(vec![file(FileScope::References,"r",16)],Some("WORKING_QUOTA_EXCEEDED"))]
 #[case::some_writable(vec![file(FileScope::References,"r",15)],None)]
@@ -203,7 +203,7 @@ fn area_availability_keeps_busy_distinct_from_unavailable(
 }
 
 #[test]
-fn reference_files_use_none_of_the_working_area() {
+fn registered_reference_files_are_distinct_from_other_legacy_entries() {
 	let file = |scope, kind: &str| MountedFile {
 		file_id: Uuid::new_v4(),
 		path: "file".into(),
@@ -213,14 +213,9 @@ fn reference_files_use_none_of_the_working_area() {
 		scope,
 		provenance: json!({"kind":kind}),
 	};
-	let files = [
-		file(FileScope::References, "reference"),
-		file(FileScope::References, "reference_text"),
-		file(FileScope::Working, "reference"),
-		file(FileScope::Received, "transfer_in"),
-	];
-	assert!(files[0].is_reference_file());
-	assert_eq!(counted_files(&files).count(), 3);
+	assert!(file(FileScope::References, "reference").is_reference_file());
+	assert!(!file(FileScope::References, "reference_text").is_reference_file());
+	assert!(!file(FileScope::Working, "reference").is_reference_file());
 }
 
 #[test]

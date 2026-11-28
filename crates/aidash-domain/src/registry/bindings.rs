@@ -350,7 +350,7 @@ impl AgentBindings {
 		)
 	}
 	pub fn normalize(&self, node: &str) -> Result<Vec<NormalizedBinding>> {
-		self.normalize_mode(node, 0)
+		self.normalize_mode(node, 0, false)
 	}
 	/// `mode % HISTORICAL_DEFAULT_SETS` picks the default Tool set an Agent
 	/// version was normalized with (0 today, 1–7 historical, where 5 is
@@ -360,7 +360,13 @@ impl AgentBindings {
 	/// #1008 replaced the Workspace tools, which every historical set binds);
 	/// `mode >= HISTORICAL_DEFAULT_SETS` also binds `memory_mutate` and
 	/// `subnode_task` at the 1.0.0 they had before they moved to 1.1.0.
-	fn normalize_mode(&self, node: &str, mode: u8) -> Result<Vec<NormalizedBinding>> {
+	/// `previous_scratch_tools` checks snapshots with the old file declarations.
+	fn normalize_mode(
+		&self,
+		node: &str,
+		mode: u8,
+		previous_scratch_tools: bool,
+	) -> Result<Vec<NormalizedBinding>> {
 		self.validate()?;
 		let previous_builtin_versions = mode >= HISTORICAL_DEFAULT_SETS;
 		let mode = mode % HISTORICAL_DEFAULT_SETS;
@@ -407,6 +413,9 @@ impl AgentBindings {
 				continue;
 			}
 			let mut target = QualifiedRef::builtin(node, operation);
+			if previous_scratch_tools && let Some(version) = pre_scratch_tool_version(operation) {
+				target.version = version.into();
+			}
 			// Mode 2 predates image retrieval and mode 4 predates Thread
 			// Attachment images (#622). `workspace_read` keeps the version each
 			// pinned; `workspace_message` and `workspace_search` move to 1.1.0,
@@ -423,6 +432,8 @@ impl AgentBindings {
 				"workspace_read" if matches!(mode, 0 | 3 | 4 | 5) => &["1.0.0", "1.0.1", "1.1.0"],
 				"workspace_message" if matches!(mode, 0 | 5) => &["1.0.0", "1.0.1", "1.1.0"],
 				"workspace_search" if matches!(mode, 0 | 5) => &["1.0.0", "1.1.0"],
+				"file_read" | "file_search" | "attachment_copy" => &["1.0.0", "1.0.1"],
+				"thread_read" | "thread_search" | "thread_message" => &["1.0.0"],
 				_ => &[],
 			};
 			if let Some(binding) = self.bindings.iter().find(|b| {
@@ -431,16 +442,8 @@ impl AgentBindings {
 					&& pinned.contains(&b.target.version.as_str())
 			}) {
 				target = binding.target.clone();
-			} else if POD_FILE_TOOLS.contains(operation)
-				&& let Some(binding) = self.bindings.iter().find(|b| {
-					b.target.id == target.id
-						&& b.target.registry_deployment == node
-						&& b.target.version == "1.0.0"
-				}) {
-				// An Agent that binds the declaration from before #745 keeps it as
-				// its default rather than gaining a second one under the same alias.
-				target = binding.target.clone();
 			}
+
 			if previous_builtin_versions && matches!(*operation, "memory_mutate" | "subnode_task") {
 				target.version = "1.0.0".into();
 			}
@@ -526,9 +529,11 @@ impl Entry {
 			// versions it would bind today.
 			let saved_bindings = upgraded(node, saved.bindings.clone());
 			let matches = |mode: u8| {
-				config
-					.normalize_mode(node, mode)
-					.is_ok_and(|expected| upgraded(node, expected) == saved_bindings)
+				[false, true].into_iter().any(|previous_scratch_tools| {
+					config
+						.normalize_mode(node, mode, previous_scratch_tools)
+						.is_ok_and(|expected| upgraded(node, expected) == saved_bindings)
+				})
 			};
 			if !(0..2 * HISTORICAL_DEFAULT_SETS).any(matches) {
 				return Err(Error::Invalid(
@@ -583,7 +588,7 @@ fn upgraded(node: &str, mut bindings: Vec<NormalizedBinding>) -> Vec<NormalizedB
 fn attachment_selection_tool(identity: &QualifiedRef, narrow: &Narrowing, node: &str) -> bool {
 	identity.registry_deployment == node
 		&& (identity.id == "aidash.workspace_read"
-			&& matches!(identity.version.as_str(), "1.0.1" | "1.1.0")
+			&& matches!(identity.version.as_str(), "1.0.1" | "1.1.0" | "1.2.0")
 			|| identity.id == "aidash.thread_read")
 		&& [("kind", "attachment"), ("representation", "model_input")]
 			.iter()
@@ -602,6 +607,16 @@ pub struct QualifiedRef {
 	pub id: String,
 	pub version: String,
 }
+/// The immutable revisions published before Working Area file access was retired.
+pub fn pre_scratch_tool_version(operation: &str) -> Option<&'static str> {
+	match operation {
+		"workspace_read" | "workspace_search" | "workspace_message" => Some("1.1.0"),
+		"file_read" | "file_search" | "attachment_copy" => Some("1.0.1"),
+		"thread_read" | "thread_search" | "thread_message" => Some("1.0.0"),
+		_ => None,
+	}
+}
+
 impl QualifiedRef {
 	pub fn validate(&self) -> Result<()> {
 		DeploymentId::parse(&self.registry_deployment)?;
@@ -634,32 +649,14 @@ impl QualifiedRef {
 		Self {
 			registry_deployment: node.into(),
 			id: format!("aidash.{operation}"),
-			version: if matches!(operation, "workspace_read" | "subnode_task") {
-				"1.2.0"
-			} else if matches!(
-				operation,
-				"workspace_observe"
-					| "thread_read" | "thread_observe"
-					| "task_create" | "task_delegate"
-					// Read Node Drives (#1020).
-					| "file_read" | "file_search"
-			) {
-				"1.1.0"
-			} else if matches!(
-				operation,
-				"workspace_search"
-					| "workspace_message"
-					| "memory_mutate"
-					// Gained `draft` for free-form generation (#1012).
-					| "task_assign"
-					// Gained `on_trigger` and a 30-day wait (#1011).
-					| "workspace_wait"
-			) {
-				"1.1.0"
-			} else if matches!(operation, "attachment_copy") {
-				"1.0.1"
-			} else {
-				"1.0.0"
+			version: match operation {
+				"workspace_read" => "1.3.0",
+				"workspace_search" | "workspace_message" | "subnode_task" | "thread_read"
+				| "file_read" | "file_search" => "1.2.0",
+				"workspace_observe" | "thread_observe" | "task_create" | "task_delegate"
+				| "thread_search" | "thread_message" | "attachment_copy" | "memory_mutate"
+				| "task_assign" | "workspace_wait" => "1.1.0",
+				_ => "1.0.0",
 			}
 			.into(),
 		}

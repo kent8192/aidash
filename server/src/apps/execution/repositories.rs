@@ -160,29 +160,18 @@ pub(crate) mod approvals;
 
 pub(crate) mod reclamation;
 
-pub(crate) mod retention;
-
 pub(crate) mod capability_areas;
 pub(crate) mod sessions;
-
-pub(crate) mod cleanup;
 
 pub(crate) mod files;
 
 pub(crate) mod configuration;
-pub(crate) mod patch;
 
 pub(crate) mod skills;
 
 pub(crate) mod thread_lifecycle;
 
-pub(crate) mod home_delivery;
-
-pub(crate) mod sharing;
-
 pub(crate) mod transfer;
-
-pub(crate) mod transfer_receiver;
 
 pub mod capability_objects;
 pub(crate) mod capability_projection;

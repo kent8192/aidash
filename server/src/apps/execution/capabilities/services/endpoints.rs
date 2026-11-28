@@ -92,7 +92,7 @@ pub(crate) async fn areas(
 			let query_bind_3 = page.cursor.unwrap_or(Uuid::nil());
 			let query_bind_5 = page.thread_id;
 			crate::database::native::query_as(
-				&sessions::select("core_areas")
+				&sessions::select("core_execution_scopes")
 					.and_where(
 						Expr::col(Alias::new("tenant")).eq(Expr::value(query_bind_1.to_owned())),
 					)
@@ -141,7 +141,7 @@ pub(crate) async fn file_read(
 	f: Federation,
 	actor: Actor,
 	id: Uuid,
-	input: FileRead,
+	input: ToolFileRead,
 ) -> Result<Envelope> {
 	dispatch(f, actor, id, "file_read", json!(input)).await
 }
@@ -149,7 +149,7 @@ pub(crate) async fn file_search(
 	f: Federation,
 	actor: Actor,
 	id: Uuid,
-	input: FileSearch,
+	input: ToolFileSearch,
 ) -> Result<Envelope> {
 	dispatch(f, actor, id, "file_search", json!(input)).await
 }
@@ -161,7 +161,7 @@ async fn dispatch(
 	input: Value,
 ) -> Result<Envelope> {
 	use super::service::Invocation;
-	use crate::apps::execution::repositories::{files::ScratchStaging, subnodes};
+	use crate::apps::execution::repositories::subnodes;
 
 	let (mut access, run) = run_access(&f, actor.clone(), id).await?;
 	let key = Uuid::new_v4().to_string();
@@ -176,14 +176,12 @@ async fn dispatch(
 		service::invoke(&f.store, &mut access, &run, name, input, &key).await
 	}
 	.await;
-	let tenant = access.identity.tenant.clone();
 	let policy_revision = access.snapshot.revision;
 	let request = match access.finish(result).await? {
 		Invocation::Complete(output) => return Ok(*output),
 		Invocation::Pod(request) => request,
 	};
-	let mut stage = ScratchStaging::new(&f.store, &tenant);
-	let ran = request.execute(&run.metadata(), &mut stage).await;
+	let ran = request.execute(&run.metadata()).await;
 	let (mut access, run) = run_access(&f, actor, id).await?;
 	let result = async {
 		if access.snapshot.revision != policy_revision {
@@ -235,24 +233,6 @@ pub(crate) async fn shell_cancel(
 	let value = dispatch(f, actor, id, "shell_cancel", json!(input)).await?;
 	Ok(serde_json::from_value(json!(value))?)
 }
-pub(crate) async fn materialize(
-	f: Federation,
-	actor: Actor,
-	id: Uuid,
-	input: Materialize,
-) -> Result<MaterializedFile> {
-	let (mut access, run) = run_access(&f, actor, id).await?;
-	let result = async {
-		crate::apps::execution::repositories::subnodes::require_writable(
-			access.tx.native_mut(),
-			run.thread_id,
-		)
-		.await?;
-		service::materialize(&f.store, &mut access, &run, input).await
-	}
-	.await;
-	typed(access.finish(result).await?)
-}
 pub(crate) async fn session(f: Federation, actor: Actor, id: Uuid) -> Result<SessionStatus> {
 	let mut access = access(&f, actor).await?;
 	let result = async {
@@ -262,80 +242,6 @@ pub(crate) async fn session(f: Federation, actor: Actor, id: Uuid) -> Result<Ses
 	.await;
 	access.finish(result).await
 }
-pub(crate) async fn enqueue(
-	f: Federation,
-	actor: Actor,
-	id: Uuid,
-	input: Enqueue,
-) -> Result<SessionStatus> {
-	let mut access = access(&f, actor).await?;
-	let result = async {
-		let area = sessions::load(&mut access, id).await?;
-		if !matches!(area.state.as_str(), "active" | "running") {
-			return Err(Error::Conflict("AREA_UNAVAILABLE".into()));
-		}
-		let digest = crate::registry::digest(&json!(["enqueue", id, input]));
-		if let Some(result) = sessions::cached(&mut access, input.idempotency_key, &digest).await? {
-			return Ok(serde_json::from_value(result)?);
-		}
-		if sessions::status(&mut access, &area).await?.queue.len() >= 100 {
-			return Err(Error::QueueLimit);
-		}
-		check_url_intents(&input.read_pages)?;
-		let thread = access.thread(area.thread_id).await?;
-		access.require(&thread, "task.create").await?;
-		let creator = access.identity.subject.clone();
-		let task = f
-			.store
-			.create_task_in(
-				&mut access.tx,
-				area.thread_id,
-				&NewTask {
-					title: input.title,
-					description: input.description,
-					goal: None,
-					requirements: json!({}),
-					dependencies: vec![],
-					parent_id: None,
-				},
-				&creator,
-				None,
-			)
-			.await?;
-		execution::delegate_in(
-			&f,
-			&mut access,
-			task.id,
-			&EntityRef {
-				id: area.agent_id.clone(),
-				version: input.agent_version,
-			},
-		)
-		.await?;
-		if !input.read_pages.is_empty() {
-			let run = run_of_task(&mut access, task.id).await?;
-			record_url_intents(&mut *access.tx, &run, None, &input.read_pages, &creator).await?;
-		}
-		let result = sessions::status(&mut access, &area).await?;
-		if result.queue.is_empty()
-			|| !result
-				.queue
-				.iter()
-				.any(|item| item.sequence == area.next_sequence)
-		{
-			return Err(Error::Invalid(
-				"follow-up Agent version must enable core capabilities".into(),
-			));
-		}
-		sessions::cache(&mut access, input.idempotency_key, &digest, &json!(result)).await?;
-		Ok(result)
-	}
-	.await;
-	let result = access.finish(result).await?;
-	f.notify.notify_waiters();
-	Ok(result)
-}
-
 /// The Run just admitted for `task` in this transaction.
 async fn run_of_task(access: &mut Access, task: Uuid) -> Result<Run> {
 	aidash_server::database::query_as(
@@ -523,15 +429,6 @@ pub(crate) async fn skill_read(
 	input: super::skills::SkillRead,
 ) -> Result<Envelope> {
 	dispatch(f, actor, id, "skill_read", json!(input)).await
-}
-
-pub(crate) async fn file_share(
-	f: Federation,
-	actor: Actor,
-	id: Uuid,
-	input: super::sharing::Share,
-) -> Result<Envelope> {
-	dispatch(f, actor, id, "file_share", json!(input)).await
 }
 
 /// Checks that `thread` is a live Thread the caller may read, holding
@@ -1069,380 +966,45 @@ pub(crate) async fn reference_download(
 	.await;
 	access.finish(result).await
 }
-/// The Working Area a file is downloaded from. One its owner kept when its
-/// Thread was deleted stays theirs, and only theirs, to download (#1008, ADR
-/// 0140): a file administrator manages such an Area but never reads it. Every
-/// other refusal of the live-Thread check stands.
-async fn downloadable(access: &mut Access, id: Uuid) -> Result<Area> {
-	match sessions::load(access, id).await {
-		Err(refused @ (Error::Forbidden | Error::NotFound(_))) => {
-			let Ok(area) = super::cleanup::load(access, id, "file.read").await else {
-				return Err(refused);
-			};
-			if area.owner != access.identity.subject {
-				return Err(refused);
-			}
-			let deleted: Option<i32> = crate::database::native::query_scalar(
-				&reinhardt::query::Query::select()
-					.expr(Expr::value(1_i32))
-					.from(Alias::new("threads"))
-					.and_where(Expr::col(Alias::new("id")).eq(Expr::value(area.thread_id)))
-					.and_where(
-						Expr::col(Alias::new("tenant")).eq(Expr::value(&access.identity.tenant)),
-					)
-					.and_where(Expr::col(Alias::new("deleted_at")).is_not_null())
-					.to_string(PostgresQueryBuilder),
-			)
-			.scalar_optional(&mut **access.tx)
-			.await?;
-			if deleted.is_some() {
-				Ok(area)
-			} else {
-				Err(refused)
-			}
-		}
-		other => other,
-	}
-}
-
-pub(crate) async fn file_download(
+pub(crate) async fn command_output_download(
 	f: Federation,
 	actor: Actor,
-	(id, file): (Uuid, Uuid),
+	(run_id, operation_id, file_id): (Uuid, Uuid, Uuid),
 	QueryInput(input): QueryInput<Offset>,
 ) -> Result<DownloadChunk> {
-	let mut access = access(&f, actor).await?;
+	let (mut access, run) = run_access(&f, actor, run_id).await?;
 	let result = async {
-		let area = downloadable(&mut access, id).await?;
-		let entry = if let Some(entry) = service::files(&area)?
-			.into_iter()
-			.find(|entry| entry.file_id == file)
+		let operation =
+			crate::apps::execution::repositories::operations::get(&mut access, operation_id)
+				.await?;
+		if operation.run_id != run.id
+			|| operation.principal != access.identity.subject
+			|| !matches!(operation.kind.as_str(), "shell" | "code_interpreter")
 		{
-			service::available(&area)?;
-			// A Run can read a Reference file; downloading it, or a copy of it,
-			// stays with its uploader (ADR 0114).
-			if entry.provenance["kind"] == "reference" {
-				let id = serde_json::from_value(entry.provenance["id"].clone())
-					.map_err(|_| Error::Forbidden)?;
-				super::references::get(&mut access, id, "reference.read").await?;
-			}
-			entry
-		} else {
-			let meta: Option<(String, i64, String)> = {
-				let query_bind_1 = file;
-				let query_bind_2 = id;
-				let query_bind_3 = &access.identity.tenant;
-				crate::database::native::query_as(
-					&reinhardt::query::Query::select()
-						.columns(["digest", "size", "kind"].map(Alias::new))
-						.from(Alias::new("core_objects"))
-						.and_where(
-							Expr::col(Alias::new("id")).eq(Expr::value(query_bind_1.to_owned())),
-						)
-						.and_where(
-							Expr::col(Alias::new("area_id"))
-								.eq(Expr::value(query_bind_2.to_owned())),
-						)
-						.and_where(
-							Expr::col(Alias::new("tenant"))
-								.eq(Expr::value(query_bind_3.to_owned())),
-						)
-						.and_where(Expr::col(Alias::new("kind")).is_in([
-							"display",
-							"output",
-							"network_output",
-						]))
-						.to_string(PostgresQueryBuilder),
-				)
-				.columns(&["digest", "size", "kind"])
-				.fetch_optional(&mut **access.tx)
-				.await?
-			};
-			if let Some((digest, size, kind)) = meta {
-				service::available(&area)?;
-				FileEntry {
-					file_id: file,
-					path: file.to_string(),
-					digest,
-					size: size as u64,
-					media_type: if kind == "display" {
-						"image/png"
-					} else if kind == "network_output" {
-						"application/octet-stream"
-					} else {
-						"text/plain; charset=utf-8"
-					}
-					.into(),
-					scope: FileScope::Working,
-					provenance: json!({"kind":kind,"area_id":id}),
-				}
-			} else {
-				// A Retained version left the manifest but an active hold keeps
-				// it; its recorded path and media type serve it as it was cited.
-				let held: Option<(String, i64, String, String)> = {
-					let tenant = &access.identity.tenant;
-					crate::database::native::query_as(
-						&reinhardt::query::Query::select()
-							.column((Alias::new("o"), Alias::new("digest")))
-							.column((Alias::new("o"), Alias::new("size")))
-							.column((Alias::new("f"), Alias::new("path")))
-							.column((Alias::new("f"), Alias::new("media_type")))
-							.from_as(Alias::new("core_objects"), Alias::new("o"))
-							.join(
-								reinhardt::query::JoinType::InnerJoin,
-								reinhardt::query::TableRef::table_alias(
-									Alias::new("core_retention_files"),
-									Alias::new("f"),
-								),
-								Expr::col((Alias::new("f"), Alias::new("file_id")))
-									.equals((Alias::new("o"), Alias::new("id"))),
-							)
-							.join(
-								reinhardt::query::JoinType::InnerJoin,
-								reinhardt::query::TableRef::table_alias(
-									Alias::new("core_retention_holds"),
-									Alias::new("h"),
-								),
-								Expr::col((Alias::new("h"), Alias::new("id")))
-									.equals((Alias::new("f"), Alias::new("hold_id"))),
-							)
-							.and_where(
-								Expr::col((Alias::new("o"), Alias::new("id")))
-									.eq(Expr::value(file)),
-							)
-							.and_where(
-								Expr::col((Alias::new("o"), Alias::new("area_id")))
-									.eq(Expr::value(id)),
-							)
-							.and_where(
-								Expr::col((Alias::new("o"), Alias::new("tenant")))
-									.eq(Expr::value(tenant.to_owned())),
-							)
-							.and_where(
-								Expr::col((Alias::new("o"), Alias::new("kind")))
-									.eq(Expr::value("superseded_working")),
-							)
-							.and_where(Expr::cust(
-								"(h.expires_at IS NULL OR h.expires_at > CURRENT_TIMESTAMP)",
-							))
-							.limit(1)
-							.to_string(PostgresQueryBuilder),
-					)
-					.columns(&["digest", "size", "path", "media_type"])
-					.fetch_optional(&mut **access.tx)
-					.await?
-				};
-				let Some((digest, size, path, media_type)) = held else {
-					// No current File, output or held version: report the Area's
-					// state first, so a deleted or busy Area answers
-					// AREA_UNAVAILABLE/AREA_BUSY rather than pretending the File
-					// never existed.
-					service::available(&area)?;
-					return Err(Error::NotFound("file unavailable".into()));
-				};
-				FileEntry {
-					file_id: file,
-					path,
-					digest,
-					size: size as u64,
-					media_type,
-					scope: FileScope::Working,
-					provenance: json!({"kind":"superseded_working","area_id":id}),
-				}
-			}
-		};
+			return Err(Error::NotFound("command output unavailable".into()));
+		}
+		let mut files = serde_json::from_value::<Vec<FileEntry>>(
+			operation
+				.result
+				.get("displays")
+				.cloned()
+				.unwrap_or_else(|| json!([])),
+		)?;
+		if let Some(output) = operation
+			.result
+			.get("output_file")
+			.filter(|value| !value.is_null())
+		{
+			files.push(serde_json::from_value(output.clone())?);
+		}
+		let entry = files
+			.into_iter()
+			.find(|entry| entry.file_id == file_id)
+			.ok_or_else(|| Error::NotFound("command output unavailable".into()))?;
 		download(&f.store, &mut access, entry, input.offset.unwrap_or(0)).await
 	}
 	.await;
 	access.finish(result).await
-}
-
-pub(crate) async fn managed_areas(
-	f: Federation,
-	actor: Actor,
-	QueryInput(input): QueryInput<Page>,
-) -> Result<super::cleanup::ManagementPage> {
-	let mut access = access(&f, actor).await?;
-	let result = super::cleanup::inventory(&mut access, input.cursor).await;
-	access.finish(result).await
-}
-pub(crate) async fn cleanup(
-	f: Federation,
-	actor: Actor,
-	id: Uuid,
-	input: super::cleanup::Cleanup,
-) -> Result<super::cleanup::CleanupResult> {
-	let mut access = access(&f, actor).await?;
-	let result = super::cleanup::prepare(&f.store, &mut access, id, input).await;
-	access.finish(result).await
-}
-pub(crate) async fn cleanup_status(
-	f: Federation,
-	actor: Actor,
-	id: Uuid,
-) -> Result<super::cleanup::CleanupResult> {
-	let mut access = access(&f, actor).await?;
-	let result = super::cleanup::status(&mut access, id).await;
-	access.finish(result).await
-}
-pub(crate) async fn cleanup_reconcile(
-	f: Federation,
-	actor: Actor,
-	id: Uuid,
-) -> Result<super::cleanup::CleanupResult> {
-	let mut access = access(&f, actor.clone()).await?;
-	let result = async {
-		super::cleanup::status(&mut access, id).await?;
-		super::records::get(&mut access, id, "cleanup").await
-	}
-	.await;
-	let record = access.finish(result).await?;
-	// Reconcile a previously authorized, committed deletion intent. Release the
-	// read transaction first; the job takes its own generation/ownership locks.
-	super::cleanup::erase_job(&f.store, record).await?;
-	cleanup_status(f, actor, id).await
-}
-pub(crate) async fn deletion_confirmation(
-	f: Federation,
-	actor: Actor,
-	id: Uuid,
-	input: ExpectedRevision,
-) -> Result<DeletionConfirmation> {
-	let mut access = access(&f, actor).await?;
-	let result = super::cleanup::confirmation(&mut access, id, input.expected_revision).await;
-	typed(access.finish(result).await?)
-}
-pub(crate) async fn restore(
-	f: Federation,
-	actor: Actor,
-	id: Uuid,
-	input: super::cleanup::Restore,
-) -> Result<Area> {
-	let mut access = access(&f, actor).await?;
-	let result = super::cleanup::restore(&f.store, &mut access, id, input).await;
-	access.finish(result).await
-}
-
-pub(crate) async fn transfer_status(
-	f: Federation,
-	actor: Actor,
-	id: Uuid,
-) -> Result<TransferStatus> {
-	let mut access = access(&f, actor).await?;
-	let result = super::transfer::view(&mut access, id).await;
-	typed(access.finish(result).await?)
-}
-pub(crate) async fn transfer_history(
-	f: Federation,
-	actor: Actor,
-	id: Uuid,
-	QueryInput(page): QueryInput<Page>,
-) -> Result<TransferPage> {
-	let mut access = access(&f, actor).await?;
-	let result = async {
-		super::cleanup::load(&mut access, id, "file.read").await?;
-		let records: Vec<super::records::Record> = {
-			let query_bind_1 = id;
-			let query_bind_2 = &access.identity.tenant;
-			let query_bind_3 = &access.identity.subject;
-			let query_bind_4 = page.cursor.unwrap_or(Uuid::nil());
-			crate::database::native::query_as(
-				&sessions::select("core_records")
-					.and_where(
-						Expr::col(Alias::new("area_id")).eq(Expr::value(query_bind_1.to_owned())),
-					)
-					.and_where(
-						Expr::col(Alias::new("tenant")).eq(Expr::value(query_bind_2.to_owned())),
-					)
-					.and_where(
-						Expr::col(Alias::new("owner")).eq(Expr::value(query_bind_3.to_owned())),
-					)
-					.and_where(
-						Expr::col(Alias::new("kind")).is_in(["transfer_out", "collaboration"]),
-					)
-					.and_where(Expr::col(Alias::new("id")).gt(Expr::value(query_bind_4.to_owned())))
-					.order_by(Alias::new("id"), Order::Asc)
-					.limit(51)
-					.to_string(PostgresQueryBuilder),
-			)
-			.fetch_all(&mut **access.tx)
-			.await?
-		};
-		let next_cursor = (records.len() == 51).then(|| records[49].id);
-		let mut items = vec![];
-		for record in records.into_iter().take(50) {
-			items.push(if record.kind == "transfer_out" {
-				super::transfer::view(&mut access, record.id).await?
-			} else {
-				record.data
-			});
-		}
-		Ok(json!({"items":items,"next_cursor":next_cursor}))
-	}
-	.await;
-	typed(access.finish(result).await?)
-}
-pub(crate) async fn transfer_reconcile(
-	f: Federation,
-	actor: Actor,
-	id: Uuid,
-) -> Result<TransferStatus> {
-	let mut access = access(&f, actor.clone()).await?;
-	let result = super::transfer::view(&mut access, id).await;
-	access.finish(result).await?;
-	super::transfer::reconcile(&f, id).await?;
-	transfer_status(f, actor, id).await
-}
-
-pub(crate) async fn transfer_recipients(
-	f: Federation,
-	actor: Actor,
-	QueryInput(input): QueryInput<RecipientQuery>,
-) -> Result<RecipientPage> {
-	let (mut access, source) = match input.run_id {
-		Some(id) => {
-			let (access, run) = run_access(&f, actor, id).await?;
-			(access, Some(run.node))
-		}
-		None => (access(&f, actor).await?, None),
-	};
-	let result = async {
-		let source = match source {
-			Some(node) => node,
-			None => access.catalog_node().await?,
-		};
-		access.use_node(source).await?;
-		let target = aidash_domain::nodes::NodeAddress::parse(&input.node_id)?;
-		if target.deployment == f.config.deployment {
-			access.use_node(target.node).await?;
-			return super::transfer::recipient_list(&f, &mut access, input.cursor).await;
-		}
-		access
-			.require(
-				&access.resource("node", &input.node_id, json!({})),
-				"file.transfer",
-			)
-			.await?;
-		let sender = aidash_domain::federation::route::Sender {
-			node: access.node.clone(),
-			subject: Some(access.identity.subject.clone()),
-			..crate::authorization::peer::node_sender(&access.identity.tenant)?
-		};
-		crate::authorization::peer::authority_request(
-			&f,
-			&sender,
-			&input.node_id,
-			"/scoped/files/recipients",
-			&json!(super::transfer::Requester {
-				tenant: access.identity.tenant.clone(),
-				subject: access.identity.subject.clone(),
-				cursor: input.cursor
-			}),
-		)
-		.await
-	}
-	.await;
-	typed(access.finish(result).await?)
 }
 
 pub(crate) async fn operation_history(
@@ -1520,27 +1082,8 @@ pub(crate) async fn thread_delete(
 	input: super::thread_lifecycle::DeleteThread,
 ) -> Result<DeletedThread> {
 	let mut access = access(&f, actor).await?;
-	let releases =
-		match super::federation_previews::releases_for_thread(&f, &mut access, thread).await {
-			Ok(releases) => releases,
-			Err(error) => {
-				tracing::warn!(%error, "remote File version release routes could not be gathered");
-				Vec::new()
-			}
-		};
 	let result = super::thread_lifecycle::delete(&f.store, &mut access, thread, input).await;
 	let result = access.finish(result).await?;
-	if tokio::time::timeout(
-		std::time::Duration::from_secs(10),
-		super::federation_previews::notify_releases(&f, releases),
-	)
-	.await
-	.is_err()
-	{
-		tracing::warn!(
-			"remote File version release notifications timed out; H expiry remains in force"
-		);
-	}
 	f.notify.notify_waiters();
 	typed(result)
 }
@@ -1567,7 +1110,7 @@ use reinhardt::injectable;
 
 pub(crate) use crate::apps::execution::capabilities::serializers::endpoints::{
 	ApprovalQuery, ApprovalRole, ApprovalState, AreaQuery, DownloadChunk, ExpectedRevision, Offset,
-	OutboundPage, Page, RecipientQuery, ReferencePage,
+	OutboundPage, Page, ReferencePage,
 };
 
 use reinhardt::query::SimpleExpr;
@@ -1580,29 +1123,6 @@ pub(crate) fn preview_availability(f: &Federation) -> aidash_application::previe
 			.as_ref()
 			.map(|preview| preview.domain.as_str()),
 	)
-}
-
-/// Authorize the File version as a download, then issue its one-time ticket.
-pub(crate) async fn preview_ticket(
-	f: Federation,
-	actor: Actor,
-	input: crate::apps::execution::capabilities::serializers::previews::PreviewTicketInput,
-	origin: String,
-) -> Result<aidash_application::preview::Issued> {
-	let mut access = access(&f, actor).await?;
-	let preview = f.config.preview.as_ref();
-	let result = {
-		let mut scope = crate::apps::execution::repositories::previews::Scope {
-			access: &mut access,
-			store: &f.store,
-			domain: preview.map(|preview| preview.domain.as_str()),
-			public_port: preview.and_then(|preview| preview.public_port),
-			origin: &origin,
-			peer: None,
-		};
-		aidash_application::preview::issue(&mut scope, input.area_id, input.file_id).await
-	};
-	access.finish(result.map_err(Into::into)).await
 }
 
 /// The Run's Live preview, or `None` when it has never started one.
@@ -1737,7 +1257,6 @@ pub(crate) async fn preview_live_ticket(
 	let result = {
 		let mut scope = crate::apps::execution::repositories::previews::Scope {
 			access: &mut access,
-			store: &f.store,
 			domain: preview.map(|preview| preview.domain.as_str()),
 			public_port: preview.and_then(|preview| preview.public_port),
 			origin: &origin,

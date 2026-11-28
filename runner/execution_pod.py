@@ -58,8 +58,8 @@ def verify_adopted_result(result, key):
 class CommandQueue:
     """Bound active commands and allow a Run's queued foreground work to stop."""
 
-    def __init__(self):
-        self._executor = ThreadPoolExecutor(max_workers=8, thread_name_prefix='execution-pod')
+    def __init__(self, command_slots=8):
+        self._executor = ThreadPoolExecutor(max_workers=command_slots, thread_name_prefix='execution-pod')
         self._background = ThreadPoolExecutor(max_workers=16, thread_name_prefix='execution-background')
         self._sessions = ThreadPoolExecutor(max_workers=8, thread_name_prefix='python-session')
         self._lock = Lock()
@@ -368,6 +368,9 @@ def execution_manifests(settings, config):
                          ('capacity_bytes', min(config.get('max_capacity_bytes', 1 << 40), 1 << 40))):
         if type(ceiling) is not int or ceiling <= 0 or settings[key] > ceiling:
             raise ValueError(key + ' exceeds the Deployment ceiling')
+    command_slots = settings.get('command_slots', 8)
+    if type(command_slots) is not int or not 1 <= command_slots <= config.get('max_command_slots', 32):
+        raise ValueError('command_slots exceeds the Deployment ceiling')
     processes = v2_process_limit(settings, config)
     if type(processes) is not int or processes < 32:
         raise ValueError('processes must be an integer of at least 32')
@@ -939,7 +942,10 @@ print(json.dumps(r))'''
             if item['name'] == 'AIDASH_RESET_SYSTEM':
                 item['value'] = 'false'
         fingerprint = hashlib.sha256(json.dumps(fingerprint_spec, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
-        pod['metadata']['annotations'] = {'aidash.run/spec-digest': fingerprint}
+        pod['metadata']['annotations'] = {
+            'aidash.run/spec-digest': fingerprint,
+            'aidash.run/command-slots': str(settings.get('command_slots', 8)),
+        }
         self._require_space_termination_confirmed(settings['scratch_space_id'])
         existing_claim = self._get('pvc', name)
         if existing_claim is None:
@@ -1408,7 +1414,7 @@ print(json.dumps(r))'''
                     foreground = not record.get('background')
                     with self.lock:
                         if scratch_id not in self.queues:
-                            self.queues[scratch_id] = CommandQueue()
+                            self.queues[scratch_id] = CommandQueue(record.get('command_slots', 8))
                         queue = self.queues[scratch_id]
                         if foreground:
                             self.foreground_jobs[scratch_id] = self.foreground_jobs.get(scratch_id, 0) + 1
@@ -1630,6 +1636,7 @@ print(json.dumps(r))'''
                       'code': code, 'cwd': cwd, 'timeout_seconds': seconds, 'background': background,
                       'pod': name, 'pod_uid': uid, 'docker_enabled': docker, 'status': 'queued',
                       'request_digest': digest, 'accepted_at': time.time(), 'kind': kind}
+            record['command_slots'] = int(pod.get('metadata', {}).get('annotations', {}).get('aidash.run/command-slots', '8'))
             record['proxy_credential_given'] = credential is not None
             if session_replaced:
                 record['session_replaced'] = True
@@ -1646,7 +1653,7 @@ print(json.dumps(r))'''
             if not background:
                 self.foreground_jobs[scratch_id] = self.foreground_jobs.get(scratch_id, 0) + 1
             if scratch_id not in self.queues:
-                self.queues[scratch_id] = CommandQueue()
+                self.queues[scratch_id] = CommandQueue(record.get('command_slots', 8))
             queue = self.queues[scratch_id]
             if kind == 'python_session':
                 future = queue.submit_session(operation_id, self._execute_command)
@@ -1964,7 +1971,7 @@ print(json.dumps(r))'''
                 if path.exists():
                     return
                 adopted = {key: record[key] for key in ('scratch_space_id', 'run_id', 'pod', 'pod_uid',
-                           'docker_enabled', 'cwd', 'result_proof_key') if key in record}
+                           'docker_enabled', 'cwd', 'result_proof_key', 'command_slots') if key in record}
                 adopted.update(operation_id=operation_id, status='running', background=True,
                                kind='left', accepted_at=time.time(), running_at=time.time())
                 save(path, adopted)
@@ -1973,7 +1980,7 @@ print(json.dumps(r))'''
                 if left_auth:
                     self.left_result_keys[operation_id] = left_auth
                 if scratch not in self.queues:
-                    self.queues[scratch] = CommandQueue()
+                    self.queues[scratch] = CommandQueue(adopted.get('command_slots', 8))
                 future = self.queues[scratch].submit(record['run_id'], operation_id, self._resume_command,
                                                      background=True)
                 self.futures[operation_id] = future
@@ -2576,10 +2583,24 @@ print(json.dumps(r))'''
         except Exception:
             return False
 
+    def clear_thread(self, request):
+        from control import scratch_resource_name
+
+        settings = request['settings']
+        scratch = settings['scratch_space_id']
+        name = scratch_resource_name(scratch)
+        with self._space_lock(scratch):
+            if self._get('pvc', name) is None:
+                return {'cleared': True}
+            self.ensure(settings)
+            return self.file_operation('clear_thread', {
+                'scratch_space_id': scratch, 'thread_id': request['thread_id'],
+            })
+
     def file_operation(self, operation, request):
         import json
         from control import scratch_resource_name
-        if operation not in ('read', 'search', 'write', 'manifest', 'patch', 'usage'):
+        if operation not in ('read', 'search', 'write', 'manifest', 'patch', 'clear_thread', 'usage'):
             raise ValueError('invalid file operation')
         scratch = request['scratch_space_id']
         name = scratch_resource_name(scratch)

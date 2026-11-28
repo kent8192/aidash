@@ -1,8 +1,8 @@
 //! Native working rows and business sessions have independent codecs.
 use crate::apps::execution::capabilities::serializers::contracts::{
-	Area as NativeArea, SessionRun as NativeRun, SessionStatus as NativeStatus,
+	Area as NativeArea, SessionStatus as NativeStatus,
 };
-use aidash_domain::capabilities::sessions::{Area, SessionRun, SessionStatus};
+use aidash_domain::capabilities::sessions::{Area, SessionStatus};
 impl From<NativeArea> for Area {
 	fn from(value: NativeArea) -> Self {
 		Self {
@@ -16,9 +16,8 @@ impl From<NativeArea> for Area {
 			revision: value.revision,
 			epoch: value.epoch,
 			state: value.state,
-			manifest: value.manifest,
+			manifest: serde_json::json!([]),
 			constraints: value.constraints,
-			next_sequence: value.next_sequence,
 		}
 	}
 }
@@ -35,9 +34,8 @@ impl From<&NativeArea> for Area {
 			revision: value.revision,
 			epoch: value.epoch,
 			state: value.state.clone(),
-			manifest: value.manifest.clone(),
+			manifest: serde_json::json!([]),
 			constraints: value.constraints.clone(),
-			next_sequence: value.next_sequence,
 		}
 	}
 }
@@ -54,29 +52,7 @@ impl From<Area> for NativeArea {
 			revision: value.revision,
 			epoch: value.epoch,
 			state: value.state,
-			manifest: value.manifest,
 			constraints: value.constraints,
-			next_sequence: value.next_sequence,
-		}
-	}
-}
-impl From<NativeRun> for SessionRun {
-	fn from(value: NativeRun) -> Self {
-		Self {
-			run_id: value.run_id,
-			sequence: value.sequence,
-			phase: value.phase,
-			control: value.control,
-		}
-	}
-}
-impl From<SessionRun> for NativeRun {
-	fn from(value: SessionRun) -> Self {
-		Self {
-			run_id: value.run_id,
-			sequence: value.sequence,
-			phase: value.phase,
-			control: value.control,
 		}
 	}
 }
@@ -87,7 +63,6 @@ impl From<SessionStatus> for NativeStatus {
 			last_run_id: value.last_run_id,
 			last_agent_version: value.last_agent_version,
 			active_run_id: value.active_run_id,
-			queue: value.queue.into_iter().map(Into::into).collect(),
 		}
 	}
 }

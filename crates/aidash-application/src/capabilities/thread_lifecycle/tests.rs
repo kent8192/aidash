@@ -104,24 +104,9 @@ impl DeletionAuthority for Deletion {
 	}
 }
 #[async_trait]
-impl crate::ports::capabilities::cleanup::CleanupScope for Deletion {
+impl ThreadScope for Deletion {
 	fn principal(&self) -> &str {
 		self.principal
-	}
-	fn credential(&self) -> Uuid {
-		unreachable!("credential")
-	}
-	fn bundle(&self) -> &aidash_domain::policy::PolicyBundle {
-		unreachable!("bundle")
-	}
-	fn limits(&self) -> Result<crate::ports::capabilities::cleanup::Limits> {
-		unreachable!("limits")
-	}
-	fn set_context(&mut self, _value: Value) {
-		unreachable!("set_context")
-	}
-	fn resource(&self, _kind: &str, _id: Uuid, _attributes: Value) -> Resource {
-		unreachable!("resource")
 	}
 	async fn serialize(&mut self) -> Result<()> {
 		self.call("serialize");
@@ -131,85 +116,13 @@ impl crate::ports::capabilities::cleanup::CleanupScope for Deletion {
 		self.call("thread");
 		Ok(thread("alice"))
 	}
-	async fn thread_deleted(&mut self, _id: Uuid) -> Result<bool> {
-		unreachable!("thread_deleted")
-	}
 	async fn require(&mut self, resource: &Resource, action: &str) -> Result<()> {
 		self.call(&format!("require:{}:{action}", resource.kind));
 		Ok(())
 	}
-	async fn sources(&mut self, _thread: Uuid, _constraints: &Value) -> Result<()> {
-		unreachable!("sources")
-	}
-	async fn reference_active(&mut self, _id: Uuid) -> Result<bool> {
-		unreachable!("reference_active")
-	}
-	async fn message(&mut self, _thread: Uuid, _id: Uuid) -> Result<()> {
-		unreachable!("message")
-	}
 	async fn visible_thread(&mut self, _thread: Uuid) -> Result<()> {
 		self.call("visible_thread");
 		Ok(())
-	}
-	async fn load_area(&mut self, _id: Uuid) -> Result<Option<Area>> {
-		unreachable!("load_area")
-	}
-	async fn inventory(&mut self, _cursor: Option<Uuid>) -> Result<Vec<Area>> {
-		unreachable!("inventory")
-	}
-	async fn inventory_recovery(
-		&mut self,
-		_area: &Area,
-	) -> Result<Option<aidash_domain::capabilities::records::Record>> {
-		unreachable!("inventory_recovery")
-	}
-	async fn cleanup_operation(&mut self, _area: &Area) -> Result<Option<Uuid>> {
-		unreachable!("cleanup_operation")
-	}
-	async fn recoverable(
-		&mut self,
-		_area: &Area,
-	) -> Result<Option<aidash_domain::capabilities::records::Record>> {
-		unreachable!("recoverable")
-	}
-	async fn record_area(&mut self, _id: Uuid) -> Result<Option<Option<Uuid>>> {
-		unreachable!("record_area")
-	}
-	async fn occupied(&mut self, _area: &Area) -> Result<Option<Uuid>> {
-		unreachable!("occupied")
-	}
-	async fn reattach_working(&mut self, _area: &Area, _file: Uuid) -> Result<()> {
-		unreachable!("reattach_working")
-	}
-	async fn load_record(
-		&mut self,
-		_id: Uuid,
-		_kind: &str,
-	) -> Result<aidash_domain::capabilities::records::Record> {
-		unreachable!("load_record")
-	}
-	async fn create(
-		&mut self,
-		record: Creation,
-	) -> Result<aidash_domain::capabilities::records::Record> {
-		self.call(&format!("create:{}", record.kind));
-		Ok(aidash_domain::capabilities::records::Record {
-			id: record.id,
-			tenant: "acme".into(),
-			owner: self.principal.into(),
-			area_id: record.area,
-			kind: record.kind.into(),
-			state: record.state.into(),
-			revision: 1,
-			data: record.data,
-			expires_at: record.expires,
-		})
-	}
-	async fn update(
-		&mut self,
-		_record: &mut aidash_domain::capabilities::records::Record,
-	) -> Result<()> {
-		unreachable!("update")
 	}
 	async fn cached(&mut self, _key: Uuid, _digest: &str) -> Result<Option<Value>> {
 		self.call("cached");
@@ -219,35 +132,10 @@ impl crate::ports::capabilities::cleanup::CleanupScope for Deletion {
 		self.call("cache");
 		Ok(())
 	}
-	async fn copy_owned(
-		&mut self,
-		_area: Uuid,
-		_kind: &str,
-		_file: &aidash_domain::capabilities::operations::MountedFile,
-	) -> Result<aidash_domain::capabilities::operations::MountedFile> {
-		unreachable!("copy_owned")
+	async fn record_tombstone(&mut self, _thread: Uuid) -> Result<()> {
+		self.call("create:thread_tombstone");
+		Ok(())
 	}
-	async fn verified(
-		&mut self,
-		_file: &aidash_domain::capabilities::operations::MountedFile,
-	) -> Result<()> {
-		unreachable!("verified")
-	}
-	async fn publish(&mut self, _area: &mut Area) -> Result<()> {
-		unreachable!("publish")
-	}
-	async fn persist(&mut self, _area: &Area, _restoration: bool) -> Result<()> {
-		unreachable!("persist")
-	}
-	async fn cancel_runs(&mut self, _area: &Area) -> Result<()> {
-		unreachable!("cancel_runs")
-	}
-	async fn revoke_grants(&mut self, _area: &Area) -> Result<()> {
-		unreachable!("revoke_grants")
-	}
-}
-#[async_trait]
-impl ThreadScope for Deletion {
 	async fn lock_for_deletion(&mut self, _thread: Uuid) -> Result<()> {
 		self.call("lock_for_deletion");
 		Ok(())
@@ -256,16 +144,9 @@ impl ThreadScope for Deletion {
 		self.call("mark_deleted");
 		Ok(())
 	}
-	async fn owned_areas(&mut self, _thread: Uuid, _offset: u64) -> Result<Vec<Area>> {
-		self.call("owned_areas");
-		Ok(vec![])
-	}
 	async fn delete_attachments(&mut self, _thread: Uuid) -> Result<()> {
 		self.call("delete_attachments");
 		Ok(())
-	}
-	async fn cancel_generation(&mut self, _area: &Area) -> Result<()> {
-		unreachable!("cancel_generation")
 	}
 	async fn stop_schedules(&mut self, _thread: Uuid) -> Result<()> {
 		self.call("stop_schedules");
@@ -283,7 +164,6 @@ impl ThreadScope for Deletion {
 fn request() -> DeleteThread {
 	DeleteThread {
 		idempotency_key: Uuid::from_u128(7),
-		files: vec![],
 	}
 }
 
@@ -306,7 +186,6 @@ async fn a_refused_deletion_touches_nothing_of_the_thread(
 	let side_effects = [
 		"lock_for_deletion",
 		"visible_thread",
-		"owned_areas",
 		"delete_attachments",
 		"stop_schedules",
 		"mark_deleted",

@@ -1,9 +1,4 @@
-//! Previews: authorize one File version, issue its one-time ticket, and recheck
-//! the viewer's current authority on every gateway request (ADR 0068).
-//!
-//! The gateway never treats its cookie as authority. The native adapter keeps
-//! only what it needs to re-run the same decision the download endpoint runs,
-//! including the credential the ticket was issued under.
+//! Issue one-time Live preview tickets and recheck authority at the gateway.
 use crate::{Error, Result};
 use aidash_domain::preview::{
 	PreviewKind, PreviewLabel, PreviewSecret, TICKET_PATH, TICKET_SECONDS, origin,
@@ -30,15 +25,6 @@ impl Availability {
 			preview_domain: domain.map(str::to_owned),
 		}
 	}
-}
-
-/// The File version a Preview pins: immutable bytes at one path.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FileVersion {
-	pub area_id: Uuid,
-	pub file_id: Uuid,
-	pub path: String,
-	pub media_type: String,
 }
 
 /// A persisted Preview: one random subdomain per viewable thing.
@@ -90,15 +76,7 @@ pub trait Scope: Send {
 	fn peer(&self) -> Option<&Peer> {
 		None
 	}
-	/// The same decision the Working Area download runs for this File version.
-	async fn authorize_file(&mut self, area_id: Uuid, file_id: Uuid) -> Result<FileVersion>;
-	/// The Preview for this viewable thing, created on first use.
-	async fn preview(&mut self, kind: &PreviewKind) -> Result<Preview>;
 	async fn ticket(&mut self, ticket: TicketIssue) -> Result<()>;
-	/// The same decision the Working Area download runs, over its files.
-	async fn authorize_area(&mut self, area_id: Uuid) -> Result<()>;
-	/// The Run's Live preview, after checking the viewer's authority over the
-	/// Working Area's files.
 	async fn live_preview(&mut self, id: Uuid) -> Result<Preview>;
 }
 
@@ -146,50 +124,7 @@ pub trait Authority: Send + Sync {
 	async fn served(&self, tenant: &str, session: Uuid, bytes: u64) -> Result<()>;
 }
 
-/// Issue a one-time ticket for one File version after the download authority
-/// allows it. Only HTML and PDF versions are served from the preview domain.
-pub async fn issue(scope: &mut dyn Scope, area_id: Uuid, file_id: Uuid) -> Result<Issued> {
-	issue_file(scope, area_id, file_id, false).await
-}
-
-/// A Federation viewer receives every File version through H's Preview
-/// domain, including formats the local dashboard renders from bytes.
-pub async fn issue_federated(
-	scope: &mut dyn Scope,
-	area_id: Uuid,
-	file_id: Uuid,
-) -> Result<Issued> {
-	issue_file(scope, area_id, file_id, true).await
-}
-
-async fn issue_file(
-	scope: &mut dyn Scope,
-	area_id: Uuid,
-	file_id: Uuid,
-	federated: bool,
-) -> Result<Issued> {
-	let domain = scope
-		.preview_domain()
-		.ok_or_else(|| Error::Conflict("PREVIEW_UNAVAILABLE".into()))?
-		.to_owned();
-	let version = scope.authorize_file(area_id, file_id).await?;
-	let base = media_type(&version.media_type);
-	if !federated
-		&& !matches!(
-			base,
-			"text/html" | "application/pdf" | "application/xhtml+xml"
-		) {
-		return Err(Error::Invalid(
-			"only HTML and PDF File versions open on the preview domain".into(),
-		));
-	}
-	let kind = PreviewKind::File { area_id, file_id };
-	let preview = scope.preview(&kind).await?;
-	issue_ticket(scope, preview, &domain).await
-}
-
-/// Issue a one-time ticket for a Run's Live preview, under the same authority
-/// as downloading that Working Area's files (ADR 0068, 0070).
+/// Issue a one-time ticket under the current Run's read authority.
 pub async fn issue_live(scope: &mut dyn Scope, live_preview_id: Uuid) -> Result<Issued> {
 	// Resolve the resource before checking Deployment configuration, so an
 	// unknown or invisible Live preview has the same 404 in every profile.
@@ -230,9 +165,5 @@ async fn issue_ticket(scope: &mut dyn Scope, preview: Preview, domain: &str) -> 
 pub mod live;
 
 /// The media type without its parameters.
-pub fn media_type(value: &str) -> &str {
-	value.split(';').next().unwrap_or(value).trim()
-}
-
 #[cfg(test)]
 mod tests;

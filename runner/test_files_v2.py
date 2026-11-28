@@ -258,3 +258,21 @@ def test_manifest_resume_keeps_nested_files_when_the_cursor_file_is_removed(tmp_
     second = service.manifest({**request, 'max_files': 10, 'after': 'root.txt'})
     assert not second['truncated']
     assert [file['path'] for file in second['files']] == ['a/nested.txt', 'b/nested.txt']
+
+
+def test_clear_thread_removes_only_the_requested_directory(tmp_path):
+    scratch = tmp_path / 'scratch'
+    thread = str(uuid.uuid4())
+    sibling = scratch / 'threads' / str(uuid.uuid4())
+    folder = scratch / 'threads' / thread
+    sibling.mkdir(parents=True)
+    folder.mkdir()
+    (sibling / 'keep.txt').write_text('keep')
+    (folder / 'remove.txt').write_text('discard')
+    (folder / 'sibling-link').symlink_to(sibling, target_is_directory=True)
+
+    service = FileService(scratch, tmp_path / 'state')
+    assert service.clear_thread({'thread_id': thread}) == {'cleared': True}
+    assert not folder.exists()
+    assert (sibling / 'keep.txt').read_text() == 'keep'
+    assert service.clear_thread({'thread_id': thread}) == {'cleared': True}

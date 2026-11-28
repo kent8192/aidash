@@ -22,7 +22,7 @@ impl OperationProcessingRepository for Repository<'_> {
 		receipt: &Receipt,
 	) -> Result<Box<dyn aidash_application::ports::capabilities::processing::ReceiptOutputScope + '_>>
 	{
-		super::receipt_output::begin(self.store, receipt)
+		super::stopped_logs::begin(self.store, receipt)
 			.await
 			.map_err(Into::into)
 	}

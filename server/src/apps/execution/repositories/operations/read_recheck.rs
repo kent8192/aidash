@@ -3,8 +3,7 @@ use super::{pod_sessions, reconciliation::Repository};
 use crate::{
 	Error, Result as NativeResult,
 	apps::{
-		execution::repositories::live_previews,
-		workspaces::repositories::scratch::remote_space_key as remote_space_id,
+		execution::repositories::live_previews, workspaces::repositories::scratch::default_space_id,
 	},
 	authorization::{access::Access, identity::SubjectIdentity},
 	store::Store,
@@ -319,8 +318,6 @@ pub(crate) async fn stop_pending_run_with_runner(
 	runner: &dyn aidash_application::ports::capabilities::execution_pod::ExecutionPodRuntime,
 ) -> Result<()> {
 	use crate::apps::execution::models::Run;
-	use crate::apps::federation::peer::models::AuthorizationRemoteAdmission;
-	use crate::apps::identity::models::AuthorizationCredential;
 	let mut tx = store.pool.begin(&TenancyScope::tenant(tenant)?).await?;
 	let run = Run::objects()
 		.filter(Run::field_tenant().eq(tenant.to_owned()))
@@ -345,34 +342,7 @@ pub(crate) async fn stop_pending_run_with_runner(
 				.await?
 				.ok_or_else(|| Error::NotFound("Run Scratch Space".into()))?
 		} else {
-			let admission = AuthorizationRemoteAdmission::objects()
-				.filter(AuthorizationRemoteAdmission::field_tenant().eq(tenant.to_owned()))
-				.filter(AuthorizationRemoteAdmission::field_id().eq(run_id))
-				.all_with_executor(&mut *tx)
-				.await
-				.map_err(reinhardt::core::exception::Error::from)
-				.map_err(Error::from)?
-				.pop()
-				.ok_or_else(|| Error::NotFound("Run admission".into()))?;
-			let person = if admission.credential_id.is_nil() {
-				admission
-					.subject_chain
-					.first()
-					.cloned()
-					.ok_or_else(|| Error::NotFound("Run subject".into()))?
-			} else {
-				AuthorizationCredential::objects()
-					.filter(AuthorizationCredential::field_tenant().eq(tenant.to_owned()))
-					.filter(AuthorizationCredential::field_id().eq(admission.credential_id))
-					.all_with_executor(&mut *tx)
-					.await
-					.map_err(reinhardt::core::exception::Error::from)
-					.map_err(Error::from)?
-					.pop()
-					.ok_or_else(|| Error::NotFound("Run credential".into()))?
-					.subject
-			};
-			remote_space_id(tenant, &run.node, &run.home_node, run.thread_id, &person)
+			default_space_id(&mut *tx, tenant, &run.node).await?
 		};
 	tx.commit().await?;
 	runner
@@ -544,19 +514,6 @@ mod tests {
 		assert!(
 			sql.contains(r#"NOT EXISTS (SELECT 1 FROM "egress_run_revocations" AS "r" WHERE "r"."run_id" = "core_operations"."run_id")"#),
 			"{sql}"
-		);
-	}
-
-	#[test]
-	fn remote_run_space_identity_survives_revocation() {
-		let thread = Uuid::parse_str("00112233-4455-6677-8899-aabbccddeeff").unwrap();
-		assert_eq!(
-			remote_space_id("acme", "node", "aidash://home/node", thread, "alice"),
-			Uuid::parse_str("9d8ef6c4-1f97-8300-ac32-d5431655fa0c").unwrap()
-		);
-		assert_ne!(
-			remote_space_id("acme", "node", "aidash://home/node", thread, "bob"),
-			remote_space_id("acme", "node", "aidash://home/node", thread, "alice")
 		);
 	}
 }

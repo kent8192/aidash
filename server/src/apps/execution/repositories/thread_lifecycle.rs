@@ -1,21 +1,13 @@
 //! Native tombstones and thread locks retain the original ordered query expressions.
-use super::cleanup::Scope;
-use crate::apps::execution::capabilities::{
-	serializers::{
-		contracts::Area as NativeArea, thread_lifecycle::DeleteThread as NativeDeleteThread,
-	},
-	services::sessions,
-};
+use crate::apps::execution::capabilities::serializers::thread_lifecycle::DeleteThread as NativeDeleteThread;
 use crate::{Error as NativeError, Result as NativeResult};
-use aidash_application::{
-	Error, Result,
-	ports::capabilities::{cleanup::CleanupScope, thread_lifecycle::ThreadScope},
+use crate::{
+	apps::execution::capabilities::services::{records, sessions},
+	authorization::access::Access,
+	store::Store,
 };
-use aidash_domain::capabilities::{
-	cleanup::Choice,
-	sessions::Area,
-	thread_lifecycle::{DeleteThread, FileChoice},
-};
+use aidash_application::{Result, ports::capabilities::thread_lifecycle::ThreadScope};
+use aidash_domain::capabilities::thread_lifecycle::DeleteThread;
 use async_trait::async_trait;
 use reinhardt::query::{
 	Alias, Expr, ExprTrait as _, LockType, Order, PostgresQueryBuilder, Query,
@@ -23,6 +15,11 @@ use reinhardt::query::{
 };
 use serde_json::Value;
 use uuid::Uuid;
+pub(crate) struct Scope<'a> {
+	pub(crate) store: &'a Store,
+	pub(crate) access: &'a mut Access,
+}
+
 pub(crate) async fn visible(
 	tx: &mut crate::database::native::Transaction,
 	thread: Uuid,
@@ -56,8 +53,10 @@ pub(crate) async fn visible(
 	Ok(())
 }
 impl From<NativeDeleteThread> for DeleteThread {
-	fn from(v: NativeDeleteThread) -> Self {
-		Self {idempotency_key:v.idempotency_key,files:v.files.into_iter().map(|f|FileChoice {area_id:f.area_id,expected_revision:f.expected_revision,confirmation_id:f.confirmation_id,choice:match f.choice {crate::apps::execution::capabilities::serializers::cleanup::Choice::Keep=>Choice::Keep,crate::apps::execution::capabilities::serializers::cleanup::Choice::Recoverable=>Choice::Recoverable,crate::apps::execution::capabilities::serializers::cleanup::Choice::Irreversible=>Choice::Irreversible}}).collect()}
+	fn from(value: NativeDeleteThread) -> Self {
+		Self {
+			idempotency_key: value.idempotency_key,
+		}
 	}
 }
 #[async_trait]
@@ -81,6 +80,53 @@ impl aidash_application::ports::capabilities::thread_lifecycle::DeletionAuthorit
 }
 #[async_trait]
 impl ThreadScope for Scope<'_> {
+	fn principal(&self) -> &str {
+		&self.access.identity.subject
+	}
+	async fn serialize(&mut self) -> Result<()> {
+		serialize(self.access).await.map_err(Into::into)
+	}
+	async fn thread(&mut self, id: Uuid) -> Result<aidash_domain::policy::Resource> {
+		self.access.thread(id).await.map_err(Into::into)
+	}
+	async fn require(
+		&mut self,
+		resource: &aidash_domain::policy::Resource,
+		action: &str,
+	) -> Result<()> {
+		self.access
+			.require(resource, action)
+			.await
+			.map_err(Into::into)
+	}
+	async fn visible_thread(&mut self, thread: Uuid) -> Result<()> {
+		visible(&mut self.access.tx, thread)
+			.await
+			.map_err(Into::into)
+	}
+	async fn record_tombstone(&mut self, thread: Uuid) -> Result<()> {
+		records::insert(
+			self.access,
+			thread,
+			None,
+			"thread_tombstone",
+			"deleted",
+			serde_json::json!({"thread_id":thread}),
+			None,
+		)
+		.await?;
+		Ok(())
+	}
+	async fn cached(&mut self, key: Uuid, digest: &str) -> Result<Option<Value>> {
+		sessions::cached(self.access, key, digest)
+			.await
+			.map_err(Into::into)
+	}
+	async fn cache(&mut self, key: Uuid, digest: &str, result: &Value) -> Result<()> {
+		sessions::cache(self.access, key, digest, result)
+			.await
+			.map_err(Into::into)
+	}
 	async fn lock_for_deletion(&mut self, thread: Uuid) -> Result<()> {
 		crate::apps::workspaces::models::Thread::lock_for_deletion(&mut *self.access.tx, thread)
 			.await
@@ -89,6 +135,7 @@ impl ThreadScope for Scope<'_> {
 	async fn mark_deleted(&mut self, thread: Uuid) -> Result<()> {
 		let query = Query::update()
 			.table(Alias::new("threads"))
+			.value(Alias::new("scratch_wipe_requested"), true)
 			.value_expr(Alias::new("deleted_at"), Expr::cust("CURRENT_TIMESTAMP"))
 			.and_where(Expr::col(Alias::new("id")).eq(Expr::value(thread)))
 			.and_where(Expr::col(Alias::new("deleted_at")).is_null())
@@ -97,32 +144,6 @@ impl ThreadScope for Scope<'_> {
 			.execute(&mut **self.access.tx)
 			.await?;
 		Ok(())
-	}
-	async fn owned_areas(&mut self, thread: Uuid, offset: u64) -> Result<Vec<Area>> {
-		let result: NativeResult<Vec<NativeArea>> = async {
-			let access = &mut *self.access;
-			Ok({
-				let query_bind_1 = thread;
-				let query_bind_3 = &access.identity.subject;
-				crate::database::native::query_as(
-					&sessions::select("core_areas")
-				.and_where(Expr::col(Alias::new("thread_id")).eq(Expr::value(query_bind_1.to_owned())))
-				// Deleting a shared Thread never grants management of another
-				// subject's private files. Their areas remain available in settings.
-				.and_where(Expr::col(Alias::new("owner")).eq(Expr::value(query_bind_3.to_owned())))
-				.order_by(Alias::new("id"), Order::Asc)
-				.limit(100)
-				.offset(offset)
-				.to_string(PostgresQueryBuilder),
-				)
-				.fetch_all(&mut **access.tx)
-				.await?
-			})
-		}
-		.await;
-		result
-			.map(|areas| areas.into_iter().map(Into::into).collect())
-			.map_err(Into::into)
 	}
 	async fn delete_attachments(&mut self, thread: Uuid) -> Result<()> {
 		// Indexed images leave the Thread index with their attachments
@@ -165,13 +186,8 @@ impl ThreadScope for Scope<'_> {
 		.await?;
 		Ok(())
 	}
-	async fn cancel_generation(&mut self, area: &Area) -> Result<()> {
-		CleanupScope::cancel_runs(self, area).await
-	}
 	async fn stop_work(&mut self, thread: Uuid) -> Result<()> {
-		let store = self
-			.store
-			.ok_or_else(|| Error::External("thread repository scope invariant".into()))?;
+		let store = self.store;
 		let result: NativeResult<()> = async {
 			let terminal = ["COMPLETED", "FAILED", "CANCELLED"];
 			let runs: Vec<Uuid> = crate::database::native::query_scalar(
@@ -192,8 +208,8 @@ impl ThreadScope for Scope<'_> {
 				super::subnodes::lock_for_end(&mut **self.access.tx, *run).await?;
 			}
 			for run in runs {
-				// A creator's cascade, or the Area cancellation above, may
-				// already have cancelled it.
+				// A creator's cascade may
+				// already have cancelled the Run.
 				let open: bool = crate::database::native::query_scalar(
 					&Query::select()
 						.expr(Expr::exists(
@@ -258,10 +274,26 @@ impl ThreadScope for Scope<'_> {
 	}
 	async fn event(&mut self, thread: Uuid, kind: &str, data: Value) -> Result<()> {
 		self.store
-			.ok_or_else(|| Error::External("thread repository scope invariant".into()))?
 			.event(&mut self.access.tx, Some(thread), kind, data)
 			.await
 			.map(|_| ())
 			.map_err(Into::into)
 	}
+}
+
+async fn serialize(access: &mut Access) -> NativeResult<()> {
+	{
+		let query_bind_1 = format!("core-share:{}", access.identity.tenant);
+		crate::database::native::query(
+			&Query::select()
+				.expr(SimpleExpr::CustomWithExpr(
+					"(pg_advisory_xact_lock(hashtextextended(?, 0)))".to_owned(),
+					vec![Expr::value(query_bind_1.to_owned()).into()],
+				))
+				.to_string(PostgresQueryBuilder),
+		)
+		.execute(&mut **access.tx)
+		.await?
+	};
+	Ok(())
 }

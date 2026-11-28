@@ -300,7 +300,7 @@ async fn a_duty_works_in_its_own_thread_and_stops_when_it_is_deleted(
 	assert_eq!(threads, vec![own, own]);
 	// The Tasks left Working Areas in the Thread; the person keeps them.
 	let areas: Vec<(Uuid, i64)> =
-		sqlx::query_as("SELECT id, revision FROM core_areas WHERE thread_id = $1")
+		sqlx::query_as("SELECT id, revision FROM core_execution_scopes WHERE thread_id = $1")
 			.bind(own)
 			.fetch_all(c.f.store.pool.fixture_driver())
 			.await
@@ -2172,7 +2172,7 @@ async fn a_successor_takes_over_the_dutys_thread_and_its_bookings_go(
 		.await;
 	assert_ne!(status, 200, "alice no longer owns the Duty's Thread");
 	let areas: Vec<(Uuid, i64)> =
-		sqlx::query_as("SELECT id, revision FROM core_areas WHERE thread_id = $1")
+		sqlx::query_as("SELECT id, revision FROM core_execution_scopes WHERE thread_id = $1")
 			.bind(own)
 			.fetch_all(driver)
 			.await

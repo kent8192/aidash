@@ -203,7 +203,7 @@ fn with_current_wait(mut bindings: Vec<NormalizedBinding>) -> Vec<NormalizedBind
 #[test]
 fn existing_agent_normalization_keeps_its_original_system_bindings() {
 	let config = agent();
-	let old = config.normalize_mode("aidash://node-a", 1).unwrap();
+	let old = config.normalize_mode("aidash://node-a", 1, true).unwrap();
 	let mut entry: Entry = serde_json::from_value(json!({"id":"agent","version":"1.0.0","kind":"agent","name":{"en":"Agent"},"description":{"en":"Agent"},"config":config})).unwrap();
 	entry.binding_normalization = Some(AgentNormalization {
 		schema_version: BINDING_SCHEMA,
@@ -232,7 +232,7 @@ fn existing_agent_normalization_keeps_its_original_system_bindings() {
 fn historical_agent_normalization_remains_valid_and_tampering_is_rejected() {
 	let node = "aidash://node-a";
 	let config = agent();
-	let old = config.normalize_mode(node, 1).unwrap();
+	let old = config.normalize_mode(node, 1, true).unwrap();
 	let mut entry: Entry = serde_json::from_value(json!({"id":"agent","version":"1.0.0","kind":"agent","name":{"en":"Agent"},"description":{"en":"Agent"},"schema":{},"config":config})).unwrap();
 	entry.binding_normalization = Some(AgentNormalization {
 		schema_version: BINDING_SCHEMA,
@@ -715,7 +715,7 @@ fn an_agent_normalized_before_the_schedule_tools_loads_without_them() {
 			.any(|tool| binding.binding.target == QualifiedRef::builtin(node, tool))
 	};
 	// Before #745 too, so its file tools are at 1.0.0 (set 6).
-	let mut saved = config.normalize_mode(node, 6).unwrap();
+	let mut saved = config.normalize_mode(node, 6, true).unwrap();
 	assert_eq!(saved.iter().filter(|b| schedule_tool(b)).count(), 4);
 	saved.retain(|binding| !schedule_tool(binding));
 	let mut entry: Entry = serde_json::from_value(json!({"id":"agent","version":"1.0.0","kind":"agent","name":{"en":"Agent"},"description":{"en":"Agent"},"config":config})).unwrap();
@@ -727,7 +727,7 @@ fn an_agent_normalized_before_the_schedule_tools_loads_without_them() {
 
 	// Act
 	let resolved = entry.normalized_bindings(node).unwrap();
-	let historical = config.normalize_mode(node, 2).unwrap();
+	let historical = config.normalize_mode(node, 2, true).unwrap();
 
 	// Assert: what it pinned stands; no historical set has the new tools.
 	assert!(!resolved.iter().any(schedule_tool));
@@ -741,12 +741,12 @@ fn an_agent_normalized_before_the_execution_pod_keeps_its_1_0_0_file_tools() {
 	// 1.0.1.
 	let node = "aidash://node-a";
 	let config = agent();
-	let today = config.normalize_mode(node, 7).unwrap();
+	let today = config.normalize_mode(node, 7, true).unwrap();
 	let mut saved = today.clone();
 	for item in &mut saved {
 		if POD_FILE_TOOLS
 			.iter()
-			.any(|tool| item.binding.target == QualifiedRef::builtin(node, tool))
+			.any(|tool| item.binding.target.id == QualifiedRef::builtin(node, tool).id)
 		{
 			item.binding.target.version = "1.0.0".into();
 		}
@@ -762,7 +762,7 @@ fn an_agent_normalized_before_the_execution_pod_keeps_its_1_0_0_file_tools() {
 	// Act
 	let resolved = entry.normalized_bindings(node).unwrap();
 
-	// Assert: the pinned 1.0.0 file tools stand; a new normalization binds 1.0.1.
+	// Assert: the pinned 1.0.0 file tools and the later 1.0.1 set still resolve.
 	assert_eq!(resolved, saved);
 	let file_read = |bindings: &[NormalizedBinding]| {
 		bindings
@@ -785,7 +785,7 @@ fn an_agent_normalized_before_attachment_image_search_binds_the_1_1_0_tools() {
 	// (the defaults before #1008, set 7).
 	let node = "aidash://node-a";
 	let config = agent();
-	let mut saved = config.normalize_mode(node, 7).unwrap();
+	let mut saved = config.normalize_mode(node, 7, true).unwrap();
 	for item in &mut saved {
 		match item.binding.target.id.as_str() {
 			"aidash.workspace_message" => item.binding.target.version = "1.0.1".into(),
@@ -831,7 +831,7 @@ fn an_agent_from_before_image_retrieval_binds_thread_message_1_1_0() {
 	// Arrange: the #640-era defaults (mode 2) with workspace_message 1.0.1.
 	let node = "aidash://node-a";
 	let config = agent();
-	let mut saved = config.normalize_mode(node, 2).unwrap();
+	let mut saved = config.normalize_mode(node, 2, true).unwrap();
 	for item in &mut saved {
 		if item.binding.target.id == "aidash.workspace_message" {
 			item.binding.target.version = "1.0.1".into();

@@ -144,6 +144,32 @@ class FileService:
         self.root = os.fspath(root)
         self.state = Path(state)
 
+    def clear_thread(self, request):
+        """Remove one Thread directory, confined to the Scratch Space root."""
+        import shutil
+
+        thread = request['thread_id']
+        if not isinstance(thread, str) or str(uuid.UUID(thread)) != thread:
+            raise InvalidPath('a canonical Thread ID is required')
+        if not shutil.rmtree.avoids_symlink_attacks:
+            raise RuntimeError('safe directory removal is unavailable')
+        try:
+            directory = open_dir(self.root, ['threads'])
+        except FileNotFoundError:
+            return {'cleared': True}
+        try:
+            try:
+                entry = os.stat(thread, dir_fd=directory, follow_symlinks=False)
+                if stat.S_ISDIR(entry.st_mode):
+                    shutil.rmtree(thread, dir_fd=directory)
+                else:
+                    os.unlink(thread, dir_fd=directory)
+            except FileNotFoundError:
+                pass
+        finally:
+            os.close(directory)
+        return {'cleared': True}
+
     def read(self, request):
         path = parts(request['path'])
         offset = request.get('offset')

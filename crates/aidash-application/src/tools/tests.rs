@@ -181,16 +181,7 @@ impl ToolOperations for Operations {
 	) -> Result<Value> {
 		panic!("unexpected tool effect: read_record_chunk")
 	}
-	async fn thread_image(
-		&self,
-		selection: &aidash_domain::media::WorkingImageSelection,
-		representation: &str,
-	) -> Result<Value> {
-		self.record("thread.image");
-		Ok(
-			json!({"status":"completed","metadata":{"file_id":selection.file_id,"path":selection.path,"digest":selection.expected_digest,"media_type":"image/png","size":12},"representation":representation}),
-		)
-	}
+
 	async fn thread_search(&self, input: Value) -> Result<Value> {
 		self.record("thread.search");
 		self.inputs.lock().unwrap().push(("search".into(), input));
@@ -602,62 +593,23 @@ fn plugin(config: ToolConfig, schema: Value) -> Plugin {
 
 #[rstest]
 #[tokio::test]
-async fn thread_read_selects_an_image_by_its_exact_file_version(fixture: Fixture) {
-	let tool = builtins().remove("workspace_read").unwrap();
-	let input = json!({"kind":"file","id":Uuid::from_u128(10),"area_id":Uuid::from_u128(9),"generation":3,"path":"chart.png","expected_digest":"file-digest","representation":"model_input"});
-	let result = tool
-		.invoke(
-			&ToolContext {
-				operations: &fixture.operations,
-				run: &fixture.run,
-			},
-			input.clone(),
-			"key",
-		)
-		.await
-		.unwrap();
-	assert_eq!(result["metadata"]["file_id"], input["id"]);
-	assert!(matches!(
-		tool.contract()
-			.behavior
-			.model_media_selection(&input, &result),
-		Some(aidash_domain::media::ModelMedia::WorkingImage(_))
-	));
-	assert_eq!(*fixture.operations.calls.lock().unwrap(), ["thread.image"]);
-}
-
-#[rstest]
-#[tokio::test]
-async fn thread_search_accepts_only_one_current_image_or_text_query(fixture: Fixture) {
+async fn thread_search_refuses_retired_working_area_selectors(fixture: Fixture) {
 	let tool = builtins().remove("workspace_search").unwrap();
 	let image = json!({"area_id":Uuid::from_u128(9),"generation":3,"file_id":Uuid::from_u128(10),"path":"chart.png","expected_digest":"file-digest"});
 	let ctx = ToolContext {
 		operations: &fixture.operations,
 		run: &fixture.run,
 	};
-	tool.invoke(&ctx, json!({"image":image}), "key")
-		.await
-		.unwrap();
-	assert_eq!(*fixture.operations.calls.lock().unwrap(), ["thread.search"]);
-	let denied = tool
-		.invoke(&ctx, json!({"query":"text", "image":image}), "key")
-		.await;
-	assert!(matches!(denied, Err(Error::Invalid(_))));
-	assert_eq!(*fixture.operations.calls.lock().unwrap(), ["thread.search"]);
-	let mut foreign = image;
-	foreign["run_id"] = json!(Uuid::from_u128(999));
-	assert!(
-		tool.invoke(&ctx, json!({"image":foreign}), "key")
-			.await
-			.is_err()
-	);
+	assert!(matches!(
+		tool.invoke(&ctx, json!({"image":image}), "key").await,
+		Err(Error::Invalid(_))
+	));
+	assert!(fixture.operations.calls.lock().unwrap().is_empty());
+
 	tool.invoke(&ctx, json!({"query":"diagram"}), "key")
 		.await
 		.unwrap();
-	assert_eq!(
-		*fixture.operations.calls.lock().unwrap(),
-		["thread.search", "thread.search"]
-	);
+	assert_eq!(*fixture.operations.calls.lock().unwrap(), ["thread.search"]);
 }
 
 #[rstest]
@@ -679,6 +631,11 @@ async fn thread_search_accepts_the_selection_of_a_thread_attachment(fixture: Fix
 	// Assert
 	assert!(accepted.is_ok());
 	assert!(matches!(refused, Err(Error::Invalid(_))));
+	assert!(matches!(
+		tool.invoke(&ctx, json!({"query":"text", "image":selection}), "key")
+			.await,
+		Err(Error::Invalid(_))
+	));
 	assert_eq!(*fixture.operations.calls.lock().unwrap(), ["thread.search"]);
 }
 

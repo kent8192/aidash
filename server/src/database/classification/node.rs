@@ -23,7 +23,6 @@ pub enum Root {
 	RemoteUsage,
 	Observation,
 	Message,
-	RetentionHold,
 	Preview,
 	LivePreview,
 	Subnode,
@@ -95,7 +94,7 @@ pub fn ownership(name: &str) -> Result<Ownership> {
 		"nodes" => Audit,
 		"authorization_remote_terminal_receipts" => Recovery,
 		"node_registrations" => Registrations,
-		"core_areas" => Areas,
+		"core_execution_scopes" => Areas,
 		"core_records" => Records,
 		"core_objects" => Objects,
 		"task_dependencies" => CascadeTasks,
@@ -214,15 +213,11 @@ pub fn ownership(name: &str) -> Result<Ownership> {
 		// Every Egress request names its Run; the operation it once named is
 		// historical (#738).
 		"egress_requests" => Link("run_id", Run),
-		"core_manifest_revisions" => Link("area_id", Area),
-		// Each reference is a revision of an Area or a receipt of a record.
-		"core_blob_references" => Either("area_id", Area, "record_id", Record),
-		"core_retention_holds" => Link("area_id", Area),
-		"core_retention_files" => Link("hold_id", RetentionHold),
+		"core_blob_references" => Link("record_id", Record),
 		"message_file_versions" => Link("message_id", Message),
 		"core_previews" => Either("area_id", Area, "live_preview_id", LivePreview),
 		"core_preview_tickets" | "core_preview_sessions" => Link("preview_id", Preview),
-		"core_live_previews" => Either("run_id", Run, "area_id", Area),
+		"core_live_previews" => Link("run_id", Run),
 		"events" => Event,
 		"atomic_authority_attempts"
 		| "atomic_coordinators"

@@ -99,7 +99,7 @@ pub mod runner;
 pub mod reconciliation;
 
 pub mod processing;
-mod receipt_output;
+mod stopped_logs;
 
 pub mod read_recheck;
 
@@ -112,24 +112,17 @@ pub mod approvals;
 
 pub mod reclamation;
 
-pub mod retention;
-
 pub mod sessions;
-
-pub mod cleanup;
 
 pub mod journal_query;
 
 pub mod files;
 
 pub mod configuration;
-pub mod patch;
 
 pub mod skills;
 
 pub mod thread_lifecycle;
-
-pub mod sharing;
 
 pub mod transfer;
 

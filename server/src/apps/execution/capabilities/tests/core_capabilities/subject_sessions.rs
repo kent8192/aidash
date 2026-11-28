@@ -40,20 +40,12 @@ fn shared_thread(
 				&c.app,
 				token,
 				&format!(
-					"/api/working-areas/{}/session",
+					"/api/execution-scopes/{}/session",
 					area["id"].as_str().unwrap()
 				),
 			)
 			.await;
 			let run: Uuid = serde_json::from_value(session["active_run_id"].clone()).unwrap();
-			let (status, patch) = common::post(&c.app, token, &path_for_patch(run), json!({"idempotency_key":Uuid::new_v4(),"expected_revision":area["revision"],"preconditions":{"private.txt":null},"patch":format!("*** Begin Patch\n*** Add File: private.txt\n+{owner}-only\n*** End Patch")})).await;
-			assert_eq!(status, 200, "{patch}");
-			let (_, area) = common::get(
-				&c.app,
-				token,
-				&format!("/api/executions/{run}/working-area"),
-			)
-			.await;
 			areas.push(area);
 			runs.push(run);
 		}
@@ -69,7 +61,7 @@ fn shared_thread(
 
 #[rstest::rstest]
 #[tokio::test]
-async fn same_thread_agent_keeps_subject_sessions_private_and_deletion_choices_scoped(
+async fn same_thread_agent_keeps_subject_run_history_private(
 	#[future] shared_thread: SharedThread,
 ) {
 	let f = Box::pin(shared_thread).await;
@@ -80,20 +72,19 @@ async fn same_thread_agent_keeps_subject_sessions_private_and_deletion_choices_s
 	let (status, denied) = common::get(&f.c.app, &f.bob, &run_path).await;
 	assert!(
 		matches!(status, 403 | 404),
-		"run history must not disclose the other subject's private files: {denied}"
+		"run history must not disclose the other subject's Run: {denied}"
 	);
-	assert!(!denied.to_string().contains("alice-only"));
 	assert!(denied.get("run").is_none());
 	let hidden = common::get(
 		&f.c.app,
 		&f.bob,
-		&format!("/api/executions/{}/working-area", f.runs[0]),
+		&format!("/api/executions/{}/execution-scope", f.runs[0]),
 	)
 	.await;
 	let absent = common::get(
 		&f.c.app,
 		&f.bob,
-		&format!("/api/executions/{}/working-area", Uuid::new_v4()),
+		&format!("/api/executions/{}/execution-scope", Uuid::new_v4()),
 	)
 	.await;
 	assert_eq!(hidden.0, 403);
@@ -104,134 +95,10 @@ async fn same_thread_agent_keeps_subject_sessions_private_and_deletion_choices_s
 	let (_, visible) = common::get(
 		&f.c.app,
 		&f.c.token,
-		&format!("/api/working-areas?thread_id={}", f.thread),
+		&format!("/api/execution-scopes?thread_id={}", f.thread),
 	)
 	.await;
 	assert_eq!(visible["items"].as_array().unwrap().len(), 1);
-	let (status, deleted) = common::post(&f.c.app, &f.c.token, &format!("/api/threads/{}/delete", f.thread), json!({"idempotency_key":Uuid::new_v4(),"files":[{"area_id":f.areas[0]["id"],"expected_revision":f.areas[0]["revision"],"choice":"keep"}]})).await;
-	assert_eq!(status, 200, "{deleted}");
-	assert_eq!(deleted["file_operations"].as_array().unwrap().len(), 1);
-	assert!(
-		!deleted
-			.to_string()
-			.contains(f.areas[1]["id"].as_str().unwrap())
-	);
-	let (_, bob_files) = common::get(&f.c.app, &f.bob, "/api/working-files").await;
-	assert_eq!(bob_files["items"][0]["area_id"], f.areas[1]["id"]);
-	assert_eq!(bob_files["items"][0]["revision"], f.areas[1]["revision"]);
-	let (status, read) = common::get(
-		&f.c.app,
-		&f.bob,
-		&format!(
-			"/api/working-areas/{}/files/{}/download",
-			f.areas[1]["id"].as_str().unwrap(),
-			f.areas[1]["manifest"][0]["file_id"].as_str().unwrap()
-		),
-	)
-	.await;
-	assert_eq!(status, 200, "{read}");
-	use base64::Engine;
-	assert_eq!(
-		base64::engine::general_purpose::STANDARD
-			.decode(read["data"].as_str().unwrap())
-			.unwrap(),
-		b"bob-only\n"
-	);
-	// The Thread is deleted now. Bob still downloads from his Area; a file
-	// administrator manages another person's Area but never reads it.
-	let download = |area: &Value| {
-		format!(
-			"/api/working-areas/{}/files/{}/download",
-			area["id"].as_str().unwrap(),
-			area["manifest"][0]["file_id"].as_str().unwrap()
-		)
-	};
-	let mut policy = f.c.policy.clone();
-	policy["subjects"]["alice"]["attributes"] = json!({"file_administrator": true});
-	common::replace_policy(&f.c.f.store, "acme", policy).await;
-	let (status, foreign) = common::get(&f.c.app, &f.c.token, &download(&f.areas[1])).await;
-	assert!(matches!(status, 403 | 404), "{foreign}");
-	assert!(!foreign.to_string().contains("bob-only"));
-	let (status, _) = common::get(&f.c.app, &f.bob, &download(&f.areas[1])).await;
-	assert_eq!(status, 200);
-	f.c.close().await;
-}
-
-#[rstest::fixture]
-fn successor_fixture(
-	#[future] shared_thread: SharedThread,
-) -> impl std::future::Future<Output = (SharedThread, Uuid, Value)> {
-	let shared_thread = Box::pin(shared_thread);
-	async move {
-		let f = shared_thread.await;
-		let (_, queued) = common::post(&f.c.app, &f.c.token, &format!("/api/threads/{}/agents/research/executions", f.thread), json!({"idempotency_key":Uuid::new_v4(),"agent_version":"1.1.0","title":"Successor","description":"Own the next turn"})).await;
-		assert_eq!(queued["id"], f.areas[0]["id"]);
-		// Model the predecessor's committed terminal transition, before the
-		// next Worker executes. The endpoint must honor the live queue owner.
-		{
-			let query_bind_1 = f.runs[0];
-			sqlx::query(
-				&Query::update()
-					.table(Alias::new("task_executions"))
-					.value(Alias::new("phase"), "COMPLETED")
-					.and_where(Expr::col(Alias::new("id")).eq(Expr::value(query_bind_1.to_owned())))
-					.to_string(PostgresQueryBuilder),
-			)
-			.execute(f.c.f.store.pool.fixture_driver())
-			.await
-		}
-		.unwrap();
-		let (_, session) = common::get(
-			&f.c.app,
-			&f.c.token,
-			&format!(
-				"/api/working-areas/{}/session",
-				f.areas[0]["id"].as_str().unwrap()
-			),
-		)
-		.await;
-		let successor: Uuid = serde_json::from_value(session["active_run_id"].clone()).unwrap();
-		let file = &f.areas[0]["manifest"][0];
-		let input = json!({"idempotency_key":Uuid::new_v4(),"expected_revision":f.areas[0]["revision"],"path":"copy.txt","source":{"kind":"file","file_id":file["file_id"],"expected_digest":file["digest"]}});
-		(f, successor, input)
-	}
-}
-
-#[rstest::rstest]
-#[tokio::test]
-async fn completed_run_cannot_materialize_into_its_successor_but_current_run_can(
-	#[future] successor_fixture: (SharedThread, Uuid, Value),
-) {
-	let (f, successor, input) = Box::pin(successor_fixture).await;
-	let (status, rejected) = common::post(
-		&f.c.app,
-		&f.c.token,
-		&format!("/api/executions/{}/files/materialize", f.runs[0]),
-		input.clone(),
-	)
-	.await;
-	assert_eq!(status, 409, "{rejected}");
-	assert_eq!(rejected["error"]["code"], "RUN_NOT_ACTIVE");
-	let (_, before) = common::get(
-		&f.c.app,
-		&f.c.token,
-		&format!("/api/executions/{successor}/working-area"),
-	)
-	.await;
-	assert_eq!(before["manifest"], f.areas[0]["manifest"]);
-	assert_eq!(before["revision"], f.areas[0]["revision"]);
-	let (status, copied) = common::post(
-		&f.c.app,
-		&f.c.token,
-		&format!("/api/executions/{successor}/files/materialize"),
-		input,
-	)
-	.await;
-	assert_eq!(status, 200, "{copied}");
-	assert_ne!(
-		copied["file"]["file_id"],
-		f.areas[0]["manifest"][0]["file_id"]
-	);
 	f.c.close().await;
 }
 
@@ -341,7 +208,7 @@ async fn inherited_child_admission_waits_for_deletion_and_rechecks_tombstone(
 			.expr(reinhardt::query::Func::count(
 				Expr::col(Alias::new("id")).into(),
 			))
-			.from(Alias::new("core_areas"))
+			.from(Alias::new("core_execution_scopes"))
 			.and_where(Expr::col(Alias::new("agent_id")).eq("reviewer"))
 			.to_string(PostgresQueryBuilder),
 	)
