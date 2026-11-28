@@ -41,7 +41,6 @@ pub trait UseRecheckScope: Send {
 pub trait RunGuardScope: UseRecheckScope {
 	fn bundle(&self) -> &PolicyBundle;
 	async fn run_visible(&mut self, run: &RunMetadata) -> Result<bool>;
-	async fn cluster_targets(&mut self, thread: Uuid) -> Result<Vec<String>>;
 	async fn task_read(&mut self, task: Uuid) -> Result<Task>;
 	async fn task_resource(&mut self, task: &Task) -> Result<Resource>;
 	async fn require(&mut self, resource: &Resource, action: &str) -> Result<()>;

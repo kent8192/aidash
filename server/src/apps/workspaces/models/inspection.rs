@@ -47,11 +47,15 @@ async fn rows_by_id<T: serde::de::DeserializeOwned>(
 	table: &str,
 	ids: &[Uuid],
 ) -> Result<Vec<T>> {
-	let (sql, values) = Query::select()
+	let mut query = Query::select();
+	query
 		.column(ColumnRef::Asterisk)
 		.from(Alias::new(table))
-		.and_where(Expr::col("id").is_in(ids.iter().copied().map(Expr::value)))
-		.build(PostgresQueryBuilder);
+		.and_where(Expr::col("id").is_in(ids.iter().copied().map(Expr::value)));
+	if table == Conversation::table_name() {
+		query.and_where(Conversation::current_target(Expr::col("target_kind")));
+	}
+	let (sql, values) = query.build(PostgresQueryBuilder);
 	tx.fetch_all(&sql, convert_values(values))
 		.await?
 		.into_iter()
@@ -144,6 +148,7 @@ impl Conversation {
 			.from(Alias::new(Self::table_name()))
 			.and_where(Expr::col("id").eq(Expr::value(id)))
 			.and_where(Expr::col("thread_id").eq(Expr::value(thread)))
+			.and_where(Self::current_target(Expr::col("target_kind")))
 			.build(PostgresQueryBuilder);
 		Ok(tx
 			.fetch_optional(&sql, convert_values(values))

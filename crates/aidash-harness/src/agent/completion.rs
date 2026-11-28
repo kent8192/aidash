@@ -232,7 +232,7 @@ impl Executor<'_> {
 				}
 				// Repair needs another inference step; at the step limit the
 				// candidate goes to a person instead of failing the Run.
-				Decision::Repair(evidence) if run.step.saturating_add(1) < agent.max_steps => {
+				Decision::Repair(evidence) => {
 					progress.repair(&evidence.subject);
 					let through_seq = run.state.tool()?.included_input_seq;
 					let mut context = run.context.clone();
@@ -250,12 +250,6 @@ impl Executor<'_> {
 						.save_run(run, token, "execution.completion_repair_required")
 						.await?;
 					return Ok(Gate::Saved);
-				}
-				Decision::Repair(evidence) => {
-					let reason = ReviewReason::StepsExhausted {
-						check: evidence.subject.check,
-					};
-					return self.review(run, token, home, guard, progress, reason).await;
 				}
 				Decision::Review(reason) => {
 					return self.review(run, token, home, guard, progress, reason).await;

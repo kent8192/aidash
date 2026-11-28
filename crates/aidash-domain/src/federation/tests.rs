@@ -5,7 +5,7 @@ fn agent(config: serde_json::Value) -> Entry {
 	serde_json::from_value(json!({
 		"id":"qa","version":"2.1.0","kind":"agent",
 		"name":{"en":"QA"},"description":{"en":"Checks work"},
-		"capabilities":["review"],"tags":["quality"],"languages":["en","ja"],"skills":["lint"],
+		"capabilities":["review"],"tags":["quality","lint"],"languages":["en","ja"],
 		"config":config
 	}))
 	.unwrap()
@@ -24,7 +24,7 @@ fn a_card_has_only_what_a_model_chooses_an_agent_by() {
 		json!({
 			"id":"qa","version":"2.1.0","kind":"agent",
 			"name":{"en":"QA"},"description":{"en":"Checks work"},
-			"capabilities":["review"],"tags":["quality"],"languages":["en","ja"],"skills":["lint"],
+			"capabilities":["review"],"tags":["quality","lint"],"languages":["en","ja"],
 			"model":"fixture-model"
 		})
 	);

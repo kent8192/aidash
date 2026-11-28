@@ -68,12 +68,12 @@ async fn world(fixture: common::ApplicationFixture) -> World {
 		(
 			"agent",
 			"fixture-agent",
-			json!({"schema_version":1,"model":{"id":"fixture-model","version":"1.0.0"},"instructions":"Fixture","bindings":[],"remove_default":[]}),
+			json!({"model":{"id":"fixture-model","version":"1.0.0"},"instructions":"Fixture","bindings":[],"remove_default":[]}),
 		),
 		(
 			"agent",
 			LISTED,
-			json!({"schema_version":1,"model":{"id":"fixture-model","version":"1.0.0"},"instructions":"Listed","bindings":[],"remove_default":[]}),
+			json!({"model":{"id":"fixture-model","version":"1.0.0"},"instructions":"Listed","bindings":[],"remove_default":[]}),
 		),
 	] {
 		registered.push(
@@ -613,7 +613,7 @@ async fn an_agent_that_bound_a_removed_package_index_starts_after_the_migrations
 		)
 		.await
 		.unwrap();
-	let npm = json!({"id":"core.npm","version":"1.0.0","kind":"external_service","name":{"en":"npm"},"description":{"en":"Package index"},"capabilities":[],"tags":["system"],"languages":[],"skills":[],"schema":{},"config":{"base_url":"https://registry.npmjs.org/","methods":["GET","HEAD"],"authentication":{"type":"bearer"}}});
+	let npm = json!({"id":"core.npm","version":"1.0.0","kind":"external_service","name":{"en":"npm"},"description":{"en":"Package index"},"capabilities":[],"tags":["system"],"languages":[],"schema":{},"config":{"base_url":"https://registry.npmjs.org/","methods":["GET","HEAD"],"authentication":{"type":"bearer"}}});
 	sqlx::query("INSERT INTO registry (tenant,id,version,kind,metadata) VALUES ('acme','core.npm','1.0.0','external_service',$1)")
 		.bind(&npm)
 		.execute(f.store.pool.fixture_driver())
@@ -630,7 +630,7 @@ async fn an_agent_that_bound_a_removed_package_index_starts_after_the_migrations
 		(
 			"agent",
 			"npm-agent",
-			json!({"schema_version":1,"model":{"id":"fixture-model","version":"1.0.0"},"instructions":"Install packages","bindings":[],"remove_default":[]}),
+			json!({"model":{"id":"fixture-model","version":"1.0.0"},"instructions":"Install packages","bindings":[],"remove_default":[]}),
 		),
 	] {
 		registered.push(

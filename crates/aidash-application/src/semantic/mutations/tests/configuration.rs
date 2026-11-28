@@ -60,6 +60,15 @@ impl SemanticConfigurationSession for Configuration {
 		self.touch("tenant")?;
 		Ok("tenant".into())
 	}
+	async fn lock_active_embedding(
+		&mut self,
+		_: &str,
+	) -> Result<aidash_domain::semantic::EmbeddingConfig> {
+		self.touch("embedding")?;
+		let mut embedding = spec().embedding;
+		embedding.model = "tenant-embedding".into();
+		Ok(embedding)
+	}
 	async fn index(&mut self, _: Uuid) -> Result<Option<Index>> {
 		self.touch("index")?;
 		Ok(self.old.clone())
@@ -125,6 +134,36 @@ impl SemanticConfigurationSession for Configuration {
 		self.committed = true;
 		Ok(())
 	}
+}
+
+#[rstest]
+#[case::initial(false, "tenant-embedding")]
+#[case::installed(true, "fixture")]
+#[tokio::test]
+async fn tenant_model_configures_new_indexes_and_preserves_installed_generations(
+	#[case] installed: bool,
+	#[case] expected: &str,
+) {
+	let mut configuration = Configuration::default();
+	if installed {
+		let mut old = index();
+		old.revision = 0;
+		let mut spec = spec();
+		spec.embedding.model = "fixture".into();
+		old.spec = serde_json::to_value(spec).unwrap();
+		configuration = configuration.with_old(old);
+	}
+	let repository = Repository(configuration);
+	let index = configure_for_tenant(
+		&repository,
+		Uuid::from_u128(1),
+		0,
+		spec().with_embedding(()),
+		false,
+	)
+	.await
+	.unwrap();
+	assert_eq!(index.spec["embedding"]["model"], expected);
 }
 
 #[rstest]

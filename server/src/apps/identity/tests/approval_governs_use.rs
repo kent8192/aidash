@@ -55,19 +55,19 @@ async fn world(fixture: common::ApplicationFixture) -> World {
 			"agent",
 			OLD,
 			"1.0.0",
-			json!({"schema_version":1,"model":{"id":"fixture-model","version":"1.0.0"},"instructions":"Old","bindings":[],"remove_default":[]}),
+			json!({"model":{"id":"fixture-model","version":"1.0.0"},"instructions":"Old","bindings":[],"remove_default":[]}),
 		),
 		(
 			"agent",
 			OLD,
 			"2.0.0",
-			json!({"schema_version":1,"model":{"id":"fixture-model","version":"1.0.0"},"instructions":"New","bindings":[],"remove_default":[]}),
+			json!({"model":{"id":"fixture-model","version":"1.0.0"},"instructions":"New","bindings":[],"remove_default":[]}),
 		),
 		(
 			"agent",
 			"listed-agent",
 			"1.0.0",
-			json!({"schema_version":1,"model":{"id":"fixture-model","version":"1.0.0"},"instructions":"Reviews","bindings":[],"remove_default":[]}),
+			json!({"model":{"id":"fixture-model","version":"1.0.0"},"instructions":"Reviews","bindings":[],"remove_default":[]}),
 		),
 	] {
 		registered.push(
@@ -785,7 +785,7 @@ async fn a_run_that_read_from_a_run_of_the_withdrawn_version_is_not_paused_at_it
 		.register(
 			&tenant,
 			serde_json::from_value(json!({"id":"other","version":"1.0.0","kind":"agent","name":{"en":"other"},"description":{"en":"Reads"},"schema":{},
-				"config":{"schema_version":1,"model":{"id":"model","version":"1.0.0"},"instructions":"Read","bindings":[],"remove_default":["file_search","file_read"]}}))
+				"config":{"model":{"id":"model","version":"1.0.0"},"instructions":"Read","bindings":[],"remove_default":["file_search","file_read"]}}))
 			.unwrap(),
 		)
 		.await

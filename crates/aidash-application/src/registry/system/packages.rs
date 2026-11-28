@@ -105,7 +105,6 @@ pub fn declarations(validation: &DefinitionValidation, node: &str) -> Result<Vec
 						capabilities: vec![operation.to_string()],
 						tags: vec!["sandboxed".into()],
 						languages: vec![],
-						skills: vec![],
 						schema: spec.parameters.clone(),
 						config: serde_json::to_value(descriptor)?,
 					})
@@ -139,7 +138,6 @@ pub fn declarations(validation: &DefinitionValidation, node: &str) -> Result<Vec
 						capabilities: vec![format!("research.{operation}")],
 						tags: vec!["research".into()],
 						languages: vec![],
-						skills: vec![],
 						schema: spec.parameters,
 						config: serde_json::to_value(descriptor)?,
 					})
@@ -161,7 +159,7 @@ pub fn declarations(validation: &DefinitionValidation, node: &str) -> Result<Vec
                 id: tool.id.trim_end_matches("@1").into(), version: "1.0.0".into(), kind: "tool".into(),
                 name: BTreeMap::from([("en".into(),tool.tool_type.into())]),
                 description: BTreeMap::from([("en".into(),"Provider tool activity is not Research evidence. Parameters and spending caps are pinned by the Agent Binding.".into())]),
-                capabilities: vec![tool.alias.into()], tags: if tool.warning { vec!["provider".into(), "warning".into()] } else { vec!["provider".into()] }, languages: vec![], skills: vec![],
+                capabilities: vec![tool.alias.into()], tags: if tool.warning { vec!["provider".into(), "warning".into()] } else { vec!["provider".into()] }, languages: vec![],
                 schema: tool.binding_schema(), config: serde_json::to_value(descriptor)?,
             };
             Ok(PackageGroup { name: tool.alias.into(), bundle: bundle_entry(node,tool.alias,"provider",std::slice::from_ref(&entry))?, operations:vec![entry] })
@@ -189,7 +187,6 @@ fn bundle_entry(node: &str, name: &str, tag: &str, operations: &[Entry]) -> Resu
 			.collect(),
 		tags: vec![tag.into()],
 		languages: vec![],
-		skills: vec![],
 		schema: json!({}),
 		config: serde_json::to_value(BundleConfig {
 			members: operations

@@ -45,9 +45,6 @@ pub struct ExecutionAgent {
 	pub reference_files: usize,
 	pub tools: Vec<EntityRef>,
 	pub skills: Vec<EntityRef>,
-	/// No longer a limit (#1009, ADR 0141): always `i32::MAX`.
-	pub max_steps: i32,
-	pub allow_task_creation: Option<bool>,
 	pub conversation_memory: bool,
 	/// Opt-in Context Policy from the immutable Agent version.
 	pub context_policy: Option<aidash_domain::context::policy::ContextPolicy>,

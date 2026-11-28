@@ -77,11 +77,6 @@ pub struct ModelConfig {
 	/// Only `explicit` lets an opted-in Agent send cache breakpoints.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub cache_mode: Option<CacheMode>,
-	/// How Run steps estimate request size (ADR 0017). Omitted means `bytes`
-	/// and is not serialized, so existing model definitions keep their bytes
-	/// and their compaction timing.
-	#[serde(default, skip_serializing_if = "Option::is_none")]
-	pub request_estimator: Option<crate::provider::estimate::RequestEstimator>,
 	/// Separate frozen inputs for request-size diagnostics. These snapshots
 	/// never select the estimator used for execution or compaction.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
@@ -302,16 +297,10 @@ impl ModelConfig {
 		)))
 	}
 
-	/// The estimator this model version opted into; `bytes` when omitted.
-	pub fn request_estimator(&self) -> crate::provider::estimate::RequestEstimator {
-		self.request_estimator.unwrap_or_default()
-	}
-
 	/// Decode a persisted definition without changing the JSON that is pinned
 	/// into its digest. New definitions use the strict deserializer directly.
 	pub fn from_stored(mut value: Value) -> Result<Self> {
 		if let Some(fields) = value.as_object_mut() {
-			fields.remove("projection_versions");
 			if let Some(calibrations) = fields
 				.get_mut("estimate_diagnostics")
 				.and_then(|diagnostics| diagnostics.get_mut("calibrations"))

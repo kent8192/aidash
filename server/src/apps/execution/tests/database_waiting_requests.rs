@@ -20,8 +20,9 @@ async fn cancelling_a_run_preserves_its_old_agent_snapshot(
 	let definition: aidash_domain::registry::Entry = serde_json::from_value(serde_json::json!({
 		"id":"fixture", "version":"1.0.0", "kind":"agent",
 		"name":{"en":"Fixture"}, "description":{"en":"Fixture"},
-		"config":{"schema_version":1,"model":{"id":"model","version":"1.0.0"},"instructions":"Work","cluster":null}
-	})).unwrap();
+		"config":{"model":{"id":"model","version":"1.0.0"},"instructions":"Work","cluster":null}
+	}))
+	.unwrap();
 	let digest =
 		aidash_domain::registry::rules::digest(&serde_json::to_value(&definition).unwrap());
 	let snapshot = serde_json::json!({"schema_version":1,"agent":{"registry_deployment":"aidash://receiver","id":"fixture","version":"1.0.0"},"remote":true,"bindings":[],"definitions":[{"identity":{"registry_deployment":"aidash://receiver","id":"fixture","version":"1.0.0"},"definition":definition,"digest":digest}]});

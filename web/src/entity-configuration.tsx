@@ -16,7 +16,6 @@ import { registryMcpToolHint } from "./generated/aidash";
 import { ReferenceName } from "./record-view";
 import { SkillImport, type SkillPayload } from "./skill-import";
 import { useRef, useState } from "react";
-import { MemoryRegistryFields } from "./memory-registry";
 import { replayAfterHint, replayAfterQueryChange, sameQuery } from "./mcp-hint";
 import type { State } from "./types";
 import { Field, useEntityLabel, useI18n } from "./ui";
@@ -292,7 +291,7 @@ export function EntityConfiguration({
   const { t } = useI18n();
   const entityLabel = useEntityLabel(data.registry);
   const deployment = registryDeployment(data);
-  const [adapter, setAdapter] = useState("native_memory");
+  const [adapter, setAdapter] = useState("workspace_retrieval");
   const [sourceValue, setSourceValue] = useState("{}");
   const [transport, setTransport] = useState("http");
   const [alias, setAlias] = useState("integration_invoke");
@@ -432,21 +431,16 @@ export function EntityConfiguration({
   } catch {
     /* The input reports invalid JSON before submitting. */
   }
-  const sourceAdapter = (kind === "memory"
-    ? ["native_memory", "conversation_memory", "semantic_memory"]
-    : [
-        "native_memory",
-        "workspace_retrieval",
-        "workspace_observation",
-        "reference_attachments",
-        "skill_attachments",
-        "skill_roots",
-      ]
-  ).includes(adapter)
+  const sourceAdapters = [
+    "workspace_retrieval",
+    "workspace_observation",
+    "reference_attachments",
+    "skill_attachments",
+    "skill_roots",
+  ];
+  const sourceAdapter = sourceAdapters.includes(adapter)
     ? adapter
-    : kind === "memory"
-      ? "conversation_memory"
-      : "workspace_retrieval";
+    : "workspace_retrieval";
   const declaredScopes = scopes.trim()
     ? scopes.split(/\s+/).filter(Boolean)
     : undefined;
@@ -476,7 +470,7 @@ export function EntityConfiguration({
             : {}),
         };
   const config =
-    kind === "memory" || kind === "source"
+    kind === "source"
       ? { schema_version: 1, source: { ...settings, adapter: sourceAdapter } }
       : kind === "bundle"
         ? {
@@ -497,22 +491,20 @@ export function EntityConfiguration({
               files: skillFiles,
               ...(skillSource ? { source: skillSource } : {}),
             }
-          : kind === "cluster"
-            ? { coordinator: reference }
-            : kind === "tool"
-              ? {
-                  registry_deployment: deployment,
-                  provider: `integration.${transport}@1`,
-                  operation: "invoke",
-                  default_alias: alias,
-                  tier: "integration",
-                  narrow: {},
-                  transport: transportConfig,
-                }
-              : {};
+          : kind === "tool"
+            ? {
+                registry_deployment: deployment,
+                provider: `integration.${transport}@1`,
+                operation: "invoke",
+                default_alias: alias,
+                tier: "integration",
+                narrow: {},
+                transport: transportConfig,
+              }
+            : {};
   if (kind === "external_service") return <ExternalServiceFields />;
   const agentSelect = (
-    <Field label={t(kind === "cluster" ? "clusterCoordinator" : "toolAgent")}>
+    <Field label={t("toolAgent")}>
       <NativeSelect
         required
         value={agent}
@@ -533,16 +525,14 @@ export function EntityConfiguration({
   return (
     <>
       <input type="hidden" name="config" value={JSON.stringify(config)} />
-      {(kind === "memory" || kind === "source") && (
+      {kind === "source" && (
         <>
-          {(kind === "source" || sourceAdapter === "native_memory") && (
-            <ContextSourceFields
-              key={`${kind}:${sourceAdapter}`}
-              adapter={sourceAdapter}
-              entries={data.registry}
-              node={deployment}
-            />
-          )}
+          <ContextSourceFields
+            key={`${kind}:${sourceAdapter}`}
+            adapter={sourceAdapter}
+            entries={data.registry}
+            node={deployment}
+          />
           <Field label="Context source">
             <NativeSelect
               name="context_adapter"
@@ -552,19 +542,9 @@ export function EntityConfiguration({
                 setSourceValue("{}");
               }}
             >
-              {(kind === "memory"
-                ? ["native_memory", "conversation_memory", "semantic_memory"]
-                : [
-                    "native_memory",
-                    "workspace_retrieval",
-                    "workspace_observation",
-                    "reference_attachments",
-                    "skill_attachments",
-                    "skill_roots",
-                  ]
-              ).map((a) => (
+              {sourceAdapters.map((a) => (
                 <option key={a} value={a}>
-                  {a === "native_memory" ? "Native memory" : a}
+                  {a}
                 </option>
               ))}
             </NativeSelect>
@@ -597,51 +577,39 @@ export function EntityConfiguration({
               <Hint>{t("contextOnUnavailableHint")}</Hint>
             </>
           )}
-          {sourceAdapter === "native_memory" ? (
-            <MemoryRegistryFields
-              key={kind}
-              kind={kind}
-              entries={data.registry}
+          {sourceAdapter === "reference_attachments" && (
+            <ReferenceFolder
+              onAdded={(references) => {
+                const current = Array.isArray(settings.references)
+                  ? (settings.references as ReferenceEntry[])
+                  : [];
+                setSourceValue(
+                  JSON.stringify({
+                    references: mergeReferences(current, references),
+                  }),
+                );
+              }}
             />
-          ) : (
-            <>
-              {sourceAdapter === "reference_attachments" && (
-                <ReferenceFolder
-                  onAdded={(references) => {
-                    const current = Array.isArray(settings.references)
-                      ? (settings.references as ReferenceEntry[])
-                      : [];
-                    setSourceValue(
-                      JSON.stringify({
-                        references: mergeReferences(current, references),
-                      }),
-                    );
-                  }}
-                />
-              )}
-              <Field label="Source settings (JSON)">
-                <Textarea
-                  key={sourceAdapter}
-                  value={sourceValue}
-                  onChange={(e) => {
-                    setSourceValue(e.target.value);
-                    try {
-                      const value = JSON.parse(e.target.value);
-                      e.target.setCustomValidity(
-                        value &&
-                          !Array.isArray(value) &&
-                          typeof value === "object"
-                          ? ""
-                          : "Enter a JSON object",
-                      );
-                    } catch {
-                      e.target.setCustomValidity("Enter valid JSON");
-                    }
-                  }}
-                />
-              </Field>
-            </>
           )}
+          <Field label="Source settings (JSON)">
+            <Textarea
+              key={sourceAdapter}
+              value={sourceValue}
+              onChange={(e) => {
+                setSourceValue(e.target.value);
+                try {
+                  const value = JSON.parse(e.target.value);
+                  e.target.setCustomValidity(
+                    value && !Array.isArray(value) && typeof value === "object"
+                      ? ""
+                      : "Enter a JSON object",
+                  );
+                } catch {
+                  e.target.setCustomValidity("Enter valid JSON");
+                }
+              }}
+            />
+          </Field>
         </>
       )}
       {kind === "skill" && (
@@ -691,8 +659,6 @@ export function EntityConfiguration({
             })}
         </Group>
       )}
-      {kind === "cluster" && agentSelect}
-      {kind === "node" && <Hint>{t("nodeNoConfiguration")}</Hint>}
       {kind === "tool" && (
         <>
           <Field label={t("toolTransport")}>

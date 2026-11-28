@@ -165,10 +165,6 @@ fn diagnostic_snapshots_use_only_the_frozen_projection_calibration(
 		expected
 	);
 	assert!(snapshots.iter().all(|snapshot| snapshot.step == 7));
-	assert_eq!(
-		model.request_estimator(),
-		crate::provider::estimate::RequestEstimator::Calibrated
-	);
 }
 
 #[rstest::rstest]

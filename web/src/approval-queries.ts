@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { approvalDecider, approvalPreferences } from "./generated/aidash";
+import { approvalPreferences } from "./generated/aidash";
 import type { SessionResponse } from "./generated/models";
 import { useNodes } from "./nodes";
 
@@ -22,25 +22,6 @@ export function useApprovalPreferences(tenant: string) {
         { signal },
       ),
     enabled: node !== undefined,
-    retry: false,
-  });
-}
-
-export function approvalDeciderKey(tenant: string, node?: string) {
-  return node === undefined
-    ? (["approval-decider", tenant] as const)
-    : (["approval-decider", tenant, node] as const);
-}
-
-/** The approval Decider that judges the Tenant's Auto mode and whether this
- *  Node can use it. `enabled` withholds the request until it matters. */
-export function useApprovalDecider(tenant: string, enabled = true) {
-  const node = useNodes().selected?.name;
-  return useQuery({
-    queryKey: approvalDeciderKey(tenant, node),
-    queryFn: ({ signal }) =>
-      approvalDecider(encodeURIComponent(tenant), { node: node! }, { signal }),
-    enabled: enabled && node !== undefined,
     retry: false,
   });
 }

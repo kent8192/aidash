@@ -19,7 +19,6 @@ fn scope_with_core() -> Scope {
 
 fn agent_taking_in(plugin: &StoredAgentPlugin, exposure: Value) -> Entry {
 	let mut config = json!({
-		"schema_version": 1,
 		"model": {"id": "model", "version": "1.0.0"},
 		"instructions": "execute",
 		"agent_plugins": [plugin_reference(plugin)],

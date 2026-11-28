@@ -15,13 +15,6 @@ use std::{collections::BTreeMap, sync::Arc};
 
 const NODE: &str = "aidash://local";
 
-fn develop_seed() -> Vec<Entry> {
-	serde_json::from_str(include_str!(
-		"../../../../../tests/fixtures/builtin_seed_develop_7abdf5.json"
-	))
-	.unwrap()
-}
-
 #[test]
 fn compare_develop_builtin_declarations() {
 	let validation = DefinitionValidation::new(Arc::new(Contracts));
@@ -34,7 +27,10 @@ fn compare_develop_builtin_declarations() {
 		.collect::<Vec<_>>();
 	let mut seen = std::collections::BTreeSet::new();
 	let mut changed = vec![];
-	for old in develop_seed().iter().filter(|entry| entry.kind == "tool") {
+	for old in crate::test_support::migrated_develop_seed()
+		.iter()
+		.filter(|entry| entry.kind == "tool")
+	{
 		if !seen.insert(old.id.clone()) {
 			continue;
 		}
@@ -264,7 +260,7 @@ fn seeding_declares_exposure_builtins_beside_the_unchanged_legacy_set() {
 }
 
 #[test]
-fn every_tenant_is_declared_the_builtins_and_the_approval_decider() {
+fn every_tenant_gets_the_builtin_embedding_and_context_defaults() {
 	let validation = DefinitionValidation::new(Arc::new(Contracts));
 	let builtins = entries(&validation, NODE).unwrap();
 
@@ -272,7 +268,10 @@ fn every_tenant_is_declared_the_builtins_and_the_approval_decider() {
 
 	assert_eq!(declared.len(), builtins.len() + 5);
 	assert_eq!(declared[..builtins.len()], builtins);
-	assert_eq!(declared[builtins.len()], approval_decider().unwrap());
+	assert_eq!(
+		declared[builtins.len()],
+		tenant_default_embedding().unwrap()
+	);
 	assert_eq!(
 		declared[builtins.len() + 1],
 		aidash_domain::registry::bindings::source_defaults::workspace_observation().unwrap()
@@ -282,21 +281,23 @@ fn every_tenant_is_declared_the_builtins_and_the_approval_decider() {
 		aidash_domain::registry::bindings::memory_defaults::definitions().unwrap()
 	);
 	assert!(
-		builtins.iter().all(|entry| entry.id != APPROVAL_DECIDER_ID),
-		"the approval Decider is separate from built-in tools"
+		declared.iter().all(|entry| entry.id != APPROVAL_DECIDER_ID),
+		"the built-in approval judge is not a Registry declaration"
 	);
 }
 
 #[test]
-fn the_approval_decider_is_a_valid_immutable_deployment_definition() {
+fn the_builtin_approval_judge_is_refused_as_a_registry_definition() {
 	let entry = approval_decider().unwrap();
 	assert_eq!(
 		(entry.id.as_str(), entry.version.as_str()),
 		("aidash.approval-decider", "1.0.0")
 	);
-	DefinitionValidation::new(Arc::new(Contracts))
-		.validate_in(&entry, false)
-		.unwrap();
+	assert!(
+		DefinitionValidation::new(Arc::new(Contracts))
+			.validate_in(&entry, false)
+			.is_err()
+	);
 	assert!(is_deployment_definition(&entry));
 	assert_eq!(attributes(&entry)["immutable"], true);
 	// No Tenant publishes or replaces an `aidash.` definition.
@@ -335,7 +336,7 @@ struct Writer {
 async fn seeding_a_develop_registry_preserves_every_existing_declaration() {
 	let validation = DefinitionValidation::new(Arc::new(Contracts));
 	let mut writer = Writer::default();
-	let original = develop_seed();
+	let original = crate::test_support::migrated_develop_seed();
 	for entry in &original {
 		writer.insert_definition(entry).await.unwrap();
 	}
@@ -401,16 +402,25 @@ async fn seeding_an_existing_registry_preserves_old_workspace_declarations() {
 }
 
 #[tokio::test]
-async fn seeding_adds_the_approval_decider_to_every_registry_and_repeats_safely() {
+async fn seeding_adds_the_default_embedding_to_every_registry_and_repeats_safely() {
 	let validation = DefinitionValidation::new(Arc::new(Contracts));
 	let mut writer = Writer::default();
 	seed(&mut writer, &validation, NODE).await.unwrap();
 	let seeded = writer.entries.len();
-	let decider = writer
-		.definition(APPROVAL_DECIDER_ID, APPROVAL_DECIDER_VERSION)
-		.await
-		.unwrap();
-	assert_eq!(decider, approval_decider().unwrap());
+	let embedding = tenant_default_embedding().unwrap();
+	assert_eq!(
+		writer
+			.definition(&embedding.id, &embedding.version)
+			.await
+			.unwrap(),
+		embedding
+	);
+	assert!(matches!(
+		writer
+			.definition(APPROVAL_DECIDER_ID, APPROVAL_DECIDER_VERSION)
+			.await,
+		Err(crate::Error::NotFound(_))
+	));
 	let source =
 		aidash_domain::registry::bindings::source_defaults::workspace_observation().unwrap();
 	assert_eq!(
@@ -420,12 +430,11 @@ async fn seeding_adds_the_approval_decider_to_every_registry_and_repeats_safely(
 			.unwrap(),
 		source
 	);
-	// The tools stay as they were: the Decider is one definition beyond them.
 	assert!(seeded > entries(&validation, NODE).unwrap().len());
 	seed(&mut writer, &validation, NODE).await.unwrap();
 	assert_eq!(writer.entries.len(), seeded);
 	// Another document under the same identity is a conflict, not a replacement.
-	let mut changed = decider.clone();
+	let mut changed = embedding;
 	changed.description.insert("en".into(), "Other".into());
 	writer
 		.entries

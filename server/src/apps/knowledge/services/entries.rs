@@ -1,5 +1,6 @@
 use crate::Result;
 use crate::apps::knowledge::models::cleanup;
+use crate::apps::knowledge::serializers::contracts::ConfigureThreadIndex;
 use crate::apps::knowledge::services::core::service::Lease;
 use crate::apps::knowledge::*;
 use crate::{authorization::identity::Actor, federation::Federation};
@@ -21,10 +22,19 @@ impl SemanticEntries {
 		&self,
 		actor: Actor,
 		thread: Uuid,
-		input: ConfigureIndex,
+		input: ConfigureThreadIndex,
 	) -> Result<Index> {
 		let f = self.runtime.clone();
-		service::configure(&f.store, &actor, thread, input).await
+		aidash_application::semantic::mutations::configure_for_tenant(
+			&crate::bootstrap::semantic_configuration_repository(&f.store, &actor, thread),
+			thread,
+			input.expected_revision,
+			input.spec.into(),
+			input.acknowledge_memory_embeddings,
+		)
+		.await
+		.map(Into::into)
+		.map_err(Into::into)
 	}
 	pub async fn index(&self, actor: Actor, thread: Uuid) -> Result<Index> {
 		let f = self.runtime.clone();

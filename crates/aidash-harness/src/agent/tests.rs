@@ -253,8 +253,6 @@ struct State {
 	checks: Option<completion::FakeChecks>,
 	/// The Completion Basis each commit fence persisted.
 	fenced: Mutex<Vec<Option<aidash_domain::completion::CompletionBasis>>>,
-	/// The `request_estimator` the served model version declares.
-	request_estimator: Option<Value>,
 	/// Input tokens the provider reports; 200 when unset.
 	reported_input_tokens: Option<u64>,
 	/// Calibration samples the store returns, newest first.
@@ -393,14 +391,6 @@ impl Backend {
 		if self.0.explicit_cache_model {
 			config["model_id"] = json!("anthropic/fixture");
 			config["cache_mode"] = json!("explicit");
-		}
-		if let Some(estimator) = self
-			.0
-			.request_estimator
-			.as_ref()
-			.filter(|_| id != "summarizer")
-		{
-			config["request_estimator"] = estimator.clone();
 		}
 		serde_json::from_value(json!({"id":id,"version":"1.0.0","kind":kind,"name":{"en":id},"description":{"en":"Fixture"},"config":config})).unwrap()
 	}
@@ -1614,8 +1604,7 @@ impl ExecutionEnvironment for Backend {
 			knowledge_digest: None,
 			tools: vec![],
 			skills: self.0.skills.clone(),
-			max_steps: 64,
-			allow_task_creation: None,
+
 			conversation_memory: self.0.conversation_memory,
 			context_policy: self.0.context_policy.clone(),
 			tool_parallelism: 1,
@@ -1972,7 +1961,6 @@ fn fixture() -> Fixture {
 		completion: None,
 		checks: None,
 		fenced: Mutex::new(vec![]),
-		request_estimator: Some(json!("bytes")),
 		reported_input_tokens: None,
 		calibration: Mutex::new(vec![]),
 		url_intents: vec![],
@@ -5196,7 +5184,6 @@ impl DeferredSnapshot {
 	fn snapshot(mut self) -> BindingSnapshot {
 		let agent = reference("agent");
 		let config = json!({
-			"schema_version": 1,
 			"model": {"id": "model", "version": "1.0.0"},
 			"instructions": "Do the task",
 			"bindings": self.agent,

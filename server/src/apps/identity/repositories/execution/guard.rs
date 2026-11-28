@@ -1,6 +1,5 @@
 //! Native guard reads preserve the worker's Access connection and registry locks.
 use crate::{
-	Result as NativeResult,
 	apps::identity::services::{access::Access, catalog},
 	federation::Federation,
 };
@@ -14,10 +13,6 @@ use aidash_domain::{
 	registry::{EntityRef, Entry},
 };
 use async_trait::async_trait;
-use reinhardt::query::{
-	Alias, Condition, Expr, ExprTrait as _, PostgresQueryBuilder, Query,
-	QueryStatementBuilder as _, SimpleExpr,
-};
 use uuid::Uuid;
 pub(crate) struct RunGuard<'a> {
 	pub(crate) federation: &'a Federation,
@@ -130,36 +125,6 @@ impl RunGuardScope for RunGuard<'_> {
 		)
 		.await?;
 		self.access.run_visible(run).await.map_err(Into::into)
-	}
-	async fn cluster_targets(&mut self, thread: Uuid) -> Result<Vec<String>> {
-		let result: NativeResult<Vec<String>> = async {
-			Ok({
-				let query_bind_1 = thread;
-				crate::database::native::query_scalar(
-					&Query::select()
-						.column(Alias::new("target"))
-						.from(Alias::new("conversations"))
-						.cond_where(
-							Condition::all()
-								.add(
-									reinhardt::query::SimpleExpr::from(Expr::col(Alias::new(
-										"thread_id",
-									)))
-									.eq(SimpleExpr::CustomWithExpr(
-										"(?)".to_owned(),
-										vec![Expr::value(query_bind_1.to_owned()).into()],
-									)),
-								)
-								.add(Expr::cust("target_kind='cluster'")),
-						)
-						.to_string(PostgresQueryBuilder),
-				)
-				.scalar_all(&mut **self.access.tx)
-				.await?
-			})
-		}
-		.await;
-		result.map_err(Into::into)
 	}
 	async fn task_read(&mut self, task: Uuid) -> Result<Task> {
 		self.access.task_read(task).await.map_err(Into::into)

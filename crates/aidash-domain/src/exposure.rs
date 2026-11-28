@@ -34,12 +34,12 @@ const SUMMARY_CHARS: usize = 160;
 const SKILL_STEM_CHARS: usize = 40;
 const INDEX_HEADER: &str = "Discoverable capabilities that are not loaded. Use capability_search to find capabilities and capability_load to load one before use:\n";
 
-/// How an Agent's bound capabilities reach the model. Absent means `legacy@1`.
+/// Versioned policy for deferred capability exposure.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "version", deny_unknown_fields, from = "PolicyFields")]
 pub enum ExposurePolicy {
 	#[default]
-	#[serde(rename = "legacy@1")]
+	#[serde(skip)]
 	Legacy,
 	#[serde(rename = "deferred@1")]
 	Deferred(DeferredBudgets),
@@ -50,15 +50,12 @@ pub enum ExposurePolicy {
 #[schemars(rename = "ExposurePolicy")]
 #[serde(tag = "version", deny_unknown_fields)]
 enum PolicyFields {
-	#[serde(rename = "legacy@1")]
-	Legacy {},
 	#[serde(rename = "deferred@1")]
 	Deferred(DeferredBudgets),
 }
 impl From<PolicyFields> for ExposurePolicy {
 	fn from(fields: PolicyFields) -> Self {
 		match fields {
-			PolicyFields::Legacy {} => Self::Legacy,
 			PolicyFields::Deferred(budgets) => Self::Deferred(budgets),
 		}
 	}

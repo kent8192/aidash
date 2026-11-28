@@ -4,7 +4,7 @@
 use super::super::{
 	oidc::BrowserOrigin,
 	serializers::approval_preferences::{
-		ApprovalDeciderUpdate, NodeQuery, PreferencesUpdate, RuleInput, ThreadModeUpdate,
+		NodeQuery, PreferencesUpdate, RuleInput, ThreadModeUpdate,
 	},
 	services::approval_preferences::ApprovalPreferences,
 };
@@ -161,24 +161,4 @@ pub async fn decider(
 	Query(query): Query<NodeQuery>,
 ) -> ViewResult<Response> {
 	json(service.decider(actor, origin, tenant, query.node).await)
-}
-
-#[put(
-	"/api/tenants/{tenant}/approval-decider",
-	name = "approval-decider-update",
-	auth = "protected"
-)]
-pub async fn set_decider(
-	#[inject] service: Depends<ApprovalPreferences>,
-	#[inject] actor: Actor,
-	#[inject] origin: Option<BrowserOrigin>,
-	Path(tenant): Path<String>,
-	Query(query): Query<NodeQuery>,
-	Json(input): Json<ApprovalDeciderUpdate>,
-) -> ViewResult<Response> {
-	json(
-		service
-			.set_decider(actor, origin, tenant, query.node, input)
-			.await,
-	)
 }

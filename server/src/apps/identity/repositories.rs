@@ -195,3 +195,5 @@ pub(crate) mod subnodes;
 pub mod connection_policy;
 
 pub mod oauth_connections;
+
+pub(crate) mod embedding_settings;

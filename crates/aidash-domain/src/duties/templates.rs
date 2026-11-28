@@ -504,7 +504,6 @@ impl Template {
 				capabilities: vec![],
 				tags: vec![],
 				languages: vec![],
-				skills: vec![],
 				schema: serde_json::json!({}),
 				config: serde_json::to_value(self)?,
 			},

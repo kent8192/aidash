@@ -428,23 +428,6 @@ fn evidence_message(items: &[EvidenceItem]) -> NativeMessage {
 	}
 }
 
-/// The notice a Native step's `agent_state` carries instead of a step
-/// counter (#942), which would change the state, and so the request, every
-/// step. It changes once at 80 % and once at 90 % of `max_steps`.
-pub fn step_limit_notice(step: i32, max_steps: i32) -> Option<&'static str> {
-	let used = i64::from(step) * 10;
-	let max = i64::from(max_steps);
-	if max <= 0 {
-		None
-	} else if used >= max * 9 {
-		Some("90% of this Run's steps are used. Finish the task in the next few steps.")
-	} else if used >= max * 8 {
-		Some("80% of this Run's steps are used. Plan to finish within the remaining steps.")
-	} else {
-		None
-	}
-}
-
 /// Project a Run's context and this step's pinned snapshot into the Native IR.
 ///
 /// Each `Assistant` event opens a Model Turn that lasts until the next one.

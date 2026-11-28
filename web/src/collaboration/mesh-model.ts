@@ -330,10 +330,8 @@ export function buildMeshGraph(
     const target =
       c.target_kind === "agent" && qualified.has(c.target)
         ? qualified.get(c.target)
-        : (c.target_kind === "agent" || c.target_kind === "cluster") &&
-            at > 0 &&
-            at < c.target.length - 1
-          ? entityKey(nodeId, c.target_kind, {
+        : c.target_kind === "agent" && at > 0 && at < c.target.length - 1
+          ? entityKey(nodeId, "agent", {
               id: c.target.slice(0, at),
               version: c.target.slice(at + 1),
             })

@@ -374,6 +374,8 @@ pub struct Conversation {
 	pub id: Uuid,
 	pub thread_id: Uuid,
 	pub target: String,
+	#[serde(deserialize_with = "crate::threads::ThreadTargetKind::deserialize_name")]
+	#[schemars(with = "crate::threads::ThreadTargetKind")]
 	pub target_kind: String,
 	pub created_at: DateTime<Utc>,
 }

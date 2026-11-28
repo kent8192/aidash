@@ -54,27 +54,20 @@ fn entry(id: &str, kind: &str, config: Value) -> Entry {
 }
 
 #[rstest]
-#[case::ordinary(Purpose::Inference, None, true, 63024, true)]
-#[case::ordinary_over_budget(Purpose::Inference, None, true, 66096, false)]
-#[case::summary(Purpose::Summary, None, true, 66096, true)]
-#[case::summary_over_budget(Purpose::Summary, None, true, 66097, false)]
-#[case::summary_provider_cap(Purpose::Summary, Some(2048), true, 64048, true)]
-#[case::summary_above_provider_cap(Purpose::Summary, Some(2048), true, 64049, false)]
-#[case::summary_policy_cap(Purpose::Summary, None, false, 63024, false)]
-fn home_bounds_summary_reservations_with_the_pinned_policy(
+#[case::ordinary(Purpose::Inference, None, 63024, true)]
+#[case::ordinary_over_budget(Purpose::Inference, None, 66096, false)]
+#[case::summary(Purpose::Summary, None, 66096, true)]
+#[case::summary_over_budget(Purpose::Summary, None, 66097, false)]
+#[case::summary_provider_cap(Purpose::Summary, Some(2048), 64048, true)]
+#[case::summary_above_provider_cap(Purpose::Summary, Some(2048), 64049, false)]
+fn home_bounds_summary_reservations_with_the_builtin_policy(
 	world: World,
 	#[case] purpose: Purpose,
 	#[case] provider_limit: Option<u32>,
-	#[case] enabled: bool,
 	#[case] amount: i64,
 	#[case] accepted: bool,
 ) {
 	let mut state = world.0.lock().unwrap();
-	state.description.inspection.agent.config["context_policy"] = if enabled {
-		json!({"version":"context-recovery/1","summary":{}})
-	} else {
-		json!({"version":"context-recovery/1","summary":{"max_tokens":512}})
-	};
 	let definition = &mut state.description.inspection.definitions[0];
 	definition.metadata.config["context_window"] = json!(62000);
 	if let Some(limit) = provider_limit {
@@ -184,7 +177,7 @@ fn world() -> World {
 			agent: entry(
 				"agent",
 				"agent",
-				json!({"schema_version":1,"bindings":[],"remove_default":[],"model":reference("model"),"instructions":"Work"}),
+				json!({"bindings":[],"remove_default":[],"model":reference("model"),"instructions":"Work"}),
 			),
 			definitions: [model.clone()]
 				.into_iter()

@@ -140,7 +140,7 @@ impl PeerInspectionScope for Scope {
 			)));
 		}
 		if self.denied_action.as_deref() == Some(action) {
-			if action == aidash_domain::decision::INVOKE {
+			if action == "decision.invoke" {
 				return Err(Error::Forbidden);
 			}
 			return Err(crate::authorization::catalog::policy_refusal(

@@ -113,7 +113,8 @@ pub(crate) async fn candidates(
 		_ => unreachable!(),
 	};
 	let join_column = if kind == 0 { "id" } else { "thread_id" };
-	let sql = Query::select()
+	let mut query = Query::select();
+	query
 		.column(reinhardt::query::ColumnRef::table_asterisk("r"))
 		.from_as(Alias::new(table), Alias::new("r"))
 		.join(
@@ -134,8 +135,16 @@ pub(crate) async fn candidates(
 		)
 		.order_by((Alias::new("r"), Alias::new("id")), Order::Asc)
 		.limit(CANDIDATE_BATCH)
-		.offset(offset)
-		.to_string(PostgresQueryBuilder);
+		.offset(offset);
+	if kind == 4 {
+		query.and_where(
+			crate::apps::workspaces::models::Conversation::current_target(Expr::col((
+				Alias::new("r"),
+				Alias::new("target_kind"),
+			))),
+		);
+	}
+	let sql = query.to_string(PostgresQueryBuilder);
 	match kind {
 		0 => Ok(aidash_server::database::query_as::<Thread>(&sql)
 			.fetch_all(conn)

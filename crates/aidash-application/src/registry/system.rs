@@ -96,7 +96,6 @@ pub fn entries(validation: &DefinitionValidation, node: &str) -> Result<Vec<Entr
 			capabilities: vec![operation.to_string()],
 			tags: vec!["system".into()],
 			languages: vec![],
-			skills: vec![],
 			schema: spec.parameters.clone(),
 			config: serde_json::to_value(core_descriptor(node, operation)?)?,
 		};
@@ -247,12 +246,11 @@ pub fn legacy_journal_entries(validation: &DefinitionValidation, node: &str) -> 
 	Ok(old)
 }
 
-/// Every definition the Node declares to every Tenant's Registry: the built-in
-/// tools and the approval Decider. Unlike a tool, the Decider needs a Tenant's
-/// Catalog Approval before anything may use it.
+/// The Node's system definitions, including the private roles used to build
+/// Binding snapshots for built-in Memory.
 pub fn declarations(validation: &DefinitionValidation, node: &str) -> Result<Vec<Entry>> {
 	let mut declared = entries(validation, node)?;
-	declared.push(approval_decider()?);
+	declared.push(tenant_default_embedding()?);
 	declared.push(aidash_domain::registry::bindings::source_defaults::workspace_observation()?);
 	declared.extend(aidash_domain::registry::bindings::memory_defaults::definitions()?);
 	Ok(declared)
@@ -282,8 +280,7 @@ pub fn pinned_declaration(
 
 /// The built-in approval Decider. Its Routes follow ADR 0042's addendum: Jev
 /// through System One, then Clef through OpenRouter's Decisions API on the three
-/// hosts the Tenant's Catalog Approval names. Approving the version approves
-/// sending a Run's state to each of them. It enforces, keeps no state and may
+/// fixed hosts. Auto Approval Mode controls its use. It enforces, keeps no state and may
 /// send 200 Decision Attempts per Run, about one per judged call.
 ///
 /// The thresholds are not calibrated for this hook. Both Routes block at 0.3
@@ -339,16 +336,37 @@ pub fn approval_decider() -> Result<Entry> {
 		capabilities: vec![],
 		tags: vec!["system".into()],
 		languages: vec![],
-		skills: vec![],
 		schema: json!({}),
 		config: serde_json::to_value(config)?,
 	})
 }
 
-/// Writes every built-in definition into the scope's Tenant: the ordinary
-/// built-ins, the approval Decider, and the Sandboxed and research groups the
-/// Deployment offers, which the Tenant approves before use. The caller owns one
-/// transaction. Conflicting bytes fail.
+fn tenant_default_embedding() -> Result<Entry> {
+	let reference = crate::embedding::default_embedding();
+	let config = crate::embedding::default_embedding_config();
+	config.validate_parameters()?;
+	Ok(Entry {
+		binding_normalization: None,
+		installation: None,
+		id: reference.id,
+		version: reference.version,
+		kind: "embedding".into(),
+		name: [("en".into(), "Default embedding".into())].into(),
+		description: [(
+			"en".into(),
+			"Default model for Tenant search indexes".into(),
+		)]
+		.into(),
+		capabilities: vec![],
+		tags: vec!["system".into()],
+		languages: vec![],
+		schema: json!({}),
+		config: serde_json::to_value(config)?,
+	})
+}
+
+/// Seeds the Tenant's built-in definitions and the groups the Deployment offers
+/// for Tenant approval. The caller owns one transaction. Conflicting bytes fail.
 pub async fn seed(
 	scope: &mut dyn DefinitionWriter,
 	validation: &DefinitionValidation,
@@ -357,15 +375,13 @@ pub async fn seed(
 	let offered = packages::offered(validation, validation, node)?
 		.into_iter()
 		.flat_map(|group| group.operations.into_iter().chain([group.bundle]));
-	let deciders = [approval_decider()?];
 	let entries: Vec<_> = entries(validation, node)?
 		.into_iter()
 		.chain(legacy_workspace_entries(validation, node)?)
 		.chain(legacy_journal_entries(validation, node)?)
 		.chain(legacy_file_entries(validation, node)?)
 		.chain(offered)
-		.chain(deciders)
-		.chain(aidash_domain::registry::bindings::memory_defaults::definitions()?)
+		.chain([tenant_default_embedding()?])
 		.chain([aidash_domain::registry::bindings::source_defaults::workspace_observation()?])
 		.collect();
 	for entry in dependencies_first(entries, node) {

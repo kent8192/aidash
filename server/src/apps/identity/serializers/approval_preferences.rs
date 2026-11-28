@@ -68,29 +68,6 @@ pub struct ApprovalDecider {
 	pub revision: i64,
 }
 
-#[derive(Debug, Deserialize, schemars::JsonSchema)]
-#[serde(deny_unknown_fields)]
-#[schemars(rename = "ApprovalDeciderUpdate")]
-pub struct ApprovalDeciderUpdate {
-	pub expected_revision: i64,
-	/// A Decider of hook `approval` in the Tenant Registry; `null` resets to the
-	/// built-in.
-	pub decider: Option<DeciderReference>,
-}
-
-impl ApprovalDeciderUpdate {
-	pub fn validate(&self) -> Result<()> {
-		if self.expected_revision < 0 {
-			return Err(Error::Invalid("expected_revision is negative".into()));
-		}
-		if let Some(decider) = &self.decider {
-			aidash_domain::policy::identifier(&decider.id)?;
-			aidash_domain::policy::identifier(&decider.version)?;
-		}
-		Ok(())
-	}
-}
-
 /// One person's default Approval Mode, Answer Deadline and acceptance of Bypass.
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 #[schemars(rename = "ApprovalPreferences")]

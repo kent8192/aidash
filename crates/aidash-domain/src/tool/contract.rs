@@ -66,13 +66,20 @@ pub enum AgentFlag {
 impl AgentFlag {
 	pub fn permitted(self, config: &AgentConfig) -> bool {
 		match self {
-			Self::TaskCreation => config.allow_task_creation != Some(false),
-			Self::Delegation => config.allow_task_delegation != Some(false),
-			Self::MemoryWrite => config.memory.is_some() && config.allow_memory_write == Some(true),
-			Self::MemoryRead => {
-				config.memory.is_some() && config.allow_cross_conversation_memory != Some(false)
+			Self::TaskCreation => config.operations.contains("task_create"),
+			Self::Delegation => ["task_delegate", "task_assign"]
+				.iter()
+				.any(|name| config.operations.contains(*name)),
+			Self::MemoryWrite => {
+				config.memory.is_some() && config.operations.contains("memory_mutate")
 			}
-			Self::WorkspaceRetrieval => config.allow_workspace_retrieval != Some(false),
+			Self::MemoryRead => {
+				config.memory.is_some()
+					&& ["memory_recall", "memory_reflect"]
+						.iter()
+						.any(|name| config.operations.contains(*name))
+			}
+			Self::WorkspaceRetrieval => config.operations.contains("thread_read"),
 		}
 	}
 }
@@ -875,7 +882,7 @@ mod tests {
 	#[test]
 	fn native_memory_contracts_require_explicit_policy_and_stay_at_home() {
 		let mut config: AgentConfig = serde_json::from_value(serde_json::json!({
-			"schema_version":1, "instructions":"Use native memory", "remove_default":["memory_mutate"], "model": {"id":"model", "version":"1.0.0"}
+			"instructions":"Use native memory", "remove_default":["memory_mutate"], "model": {"id":"model", "version":"1.0.0"}
 		}))
 		.unwrap();
 		assert!(!AgentFlag::MemoryWrite.permitted(&config));
@@ -886,9 +893,10 @@ mod tests {
 		});
 		assert!(AgentFlag::MemoryRead.permitted(&config));
 		assert!(!AgentFlag::MemoryWrite.permitted(&config));
-		config.allow_memory_write = Some(true);
+		config.operations.insert("memory_mutate".into());
 		assert!(AgentFlag::MemoryWrite.permitted(&config));
-		config.allow_cross_conversation_memory = Some(false);
+		config.operations.remove("memory_recall");
+		config.operations.remove("memory_reflect");
 		assert!(!AgentFlag::MemoryRead.permitted(&config));
 		for (name, action, effect) in [
 			("memory_mutate", "memory.write", ToolEffect::Idempotent),

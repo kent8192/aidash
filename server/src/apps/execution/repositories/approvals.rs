@@ -241,12 +241,6 @@ impl ApprovalScope for Scope<'_> {
 			creation.expires,
 		)
 		.await?;
-		crate::apps::execution::observation::enqueue_capability(
-			self.access,
-			&record,
-			self.run.as_deref(),
-		)
-		.await?;
 		Ok(domain(record))
 	}
 

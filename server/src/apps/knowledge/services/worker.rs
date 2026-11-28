@@ -18,3 +18,18 @@ pub async fn sweep(store: &Store) -> Result<usize> {
 	.await
 	.map_err(Into::into)
 }
+
+pub async fn run_reembedding(store: Store) -> Result<()> {
+	let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
+	interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+	loop {
+		interval.tick().await;
+		if let Err(error) = Box::pin(crate::apps::knowledge::repositories::reembedding::sweep(
+			&store,
+		))
+		.await
+		{
+			tracing::warn!(%error, "tenant re-embedding sweep unavailable");
+		}
+	}
+}

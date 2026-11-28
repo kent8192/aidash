@@ -12,7 +12,6 @@ import { NativeSelect } from "./components/ui/native-select";
 import { Textarea } from "./components/ui/textarea";
 import { Table, TableBody, TableCell, TableRow } from "./components/ui/table";
 import { RemoteGenerationAssignForm } from "./remote-generation";
-import { ApprovalObservation } from "./approval-observation";
 import { RecordView } from "./record-view";
 import { disambiguateLabels } from "./display-labels";
 import { useState, type FormEvent } from "react";
@@ -102,11 +101,9 @@ function usePolicyPresentation(policies: readonly GenerationPolicy[]) {
 }
 type AgentFields = {
   model?: EntityRef;
-  schema_version?: number;
   bindings?: Binding[];
   remove_default?: string[];
   instructions?: string;
-  max_steps?: number;
 };
 
 export function GenerationPage({ data }: { data: State }) {
@@ -531,13 +528,11 @@ function PolicyEditor({
         capabilities: split(text("capabilities")),
         languages: split(text("languages")),
         tags: initial?.template.tags ?? [],
-        skills: initial?.template.skills ?? [],
         schema: initial?.template.schema ?? {},
         config: {
           ...initial?.template.config,
           model: entityRef(model),
           instructions: text("instructions"),
-          schema_version: 1,
           ...bindings,
         },
       };
@@ -1077,11 +1072,6 @@ function RequestDetail({
             </time>,
           ],
         ]}
-      />
-      <ApprovalObservation
-        tenant={tenant}
-        kind="generation"
-        approval={request.id}
       />
       {usage.isError ? (
         <Alert>{usage.error.message}</Alert>

@@ -29,7 +29,7 @@ fn agent(id: &str, remove_default: &[&str]) -> Entry {
 	entry(
 		json!({"id":id,"version":"1.0.0","kind":"agent","name":{"en":id},
 		"description":{"en":"Fixture"},
-		"config":{"schema_version":1,"model":{"id":"model","version":"1.0.0"},"instructions":"Help","bindings":[],"remove_default":remove_default}}),
+		"config":{"model":{"id":"model","version":"1.0.0"},"instructions":"Help","bindings":[],"remove_default":remove_default}}),
 	)
 }
 fn reference(id: &str) -> EntityRef {

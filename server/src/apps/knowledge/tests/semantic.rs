@@ -12,8 +12,6 @@ use common::request;
 use serde_json::{Value, json};
 use std::sync::{Arc, Mutex};
 use uuid::Uuid;
-#[path = "semantic/source_selection.rs"]
-mod source_selection;
 
 struct ControlledContext {
 	_fixture: common::ApplicationFixture,
@@ -24,7 +22,6 @@ struct ControlledContext {
 	/// The Task owner's token.
 	token: String,
 	captured: std::sync::Arc<std::sync::Mutex<Vec<Value>>>,
-	selector_calls: Arc<Mutex<Vec<Value>>>,
 	/// Tool-call responses before the model stops, for Runs that need several inferences.
 	tool_rounds: std::sync::Arc<std::sync::atomic::AtomicUsize>,
 	model_server: reinhardt::test::fixtures::server::TestServerGuard,
@@ -39,11 +36,8 @@ mod controlled_context_composition {
 	use super::*;
 	#[rstest::fixture]
 	pub(super) async fn controlled_context(
-		#[default(true)] memory: bool,
 		#[default(true)] workspace_retrieval: bool,
 		#[default(false)] degrade: bool,
-		#[default(false)] on_demand_memory: bool,
-		#[default(None)] selection: Option<source_selection::SelectionCase>,
 		#[from(common::runtime)] _runtime: common::RuntimeFuture,
 		#[future(awt)]
 		#[from(common::native_application)]
@@ -63,52 +57,28 @@ mod controlled_context_composition {
 		embeddings: std::sync::Arc<reinhardt::test::fixtures::server::TestServerGuard>,
 	) -> ControlledContext {
 		let captured = fixture.state.captured;
-		let selector_calls = fixture.state.selector_calls;
 		let tool_rounds = fixture.state.tool_rounds;
 		let model_server = fixture.server;
 
 		use aidash_server::domain::{ArtifactInput, qualified_agent};
-		let (mut f, url, schema) = application_fixture.runtime.parts();
+		let (f, url, schema) = application_fixture.runtime.parts();
 		let app = application_fixture.application.clone();
 
 		let endpoint = model_server.url.clone();
 		let (mut policy, token, task) =
 			common::bootstrap_with_context(&f, &app, &endpoint, true).await;
-		if let Some(selection) = selection {
-			source_selection::configure_selector(&mut f, &app, &token, &endpoint, selection).await;
-		}
 		let acme = aidash_domain::tenancy::TenantName::new("acme").unwrap();
 		let mut agent = f.registry.get(&acme, "research", "1.0.0").await.unwrap();
 		agent.version = "1.0.1".into();
 		agent.binding_normalization = None;
 		let mut bindings = vec![];
-		for (enabled, id, kind, adapter) in [
-			(memory, "context-memory", "memory", "semantic_memory"),
-			(
-				workspace_retrieval,
-				"context-thread",
-				"source",
-				"workspace_retrieval",
-			),
-		] {
-			if !enabled {
-				continue;
-			}
-			let mut source = json!({"adapter":adapter});
-			// `degrade` is the default since ADR 0129; `false` asks for the
-			// Outage Wait explicitly.
-			if adapter == "workspace_retrieval" {
-				source["on_unavailable"] = json!(if degrade { "degrade" } else { "pause" });
-			}
-			let mut entry = json!({"id":id,"version":"1.0.0","kind":kind,"name":{"en":id},"description":{"en":"Explicit native context"},"config":{"schema_version":1,"source":source}});
-			if on_demand_memory && adapter == "semantic_memory" {
-				entry["config"]["context_source"] = json!({"provider":"aidash.native-context/1","operation":"semantic_memory","tools":{"read":[],"write":[],"detail":null},"pin":{"policy":"on_demand"},"volatility":"step","query":"task-inputs@1","refresh":"revision-bound@1","disclosure":{"previews":false,"query":false},"required_home":false});
-			}
-			if adapter == "workspace_retrieval"
-				&& let Some(selection) = selection
-			{
-				entry["config"]["context_source"] = source_selection::declaration(&f, selection);
-			}
+		if workspace_retrieval {
+			let id = "context-thread";
+			let kind = "source";
+			// Degrade is the default since ADR 0129. This fixture also drives
+			// the explicit Outage Wait policy.
+			let on_unavailable = if degrade { "degrade" } else { "pause" };
+			let entry = json!({"id":id,"version":"1.0.0","kind":kind,"name":{"en":id},"description":{"en":"Explicit native context"},"config":{"schema_version":1,"source":{"adapter":"workspace_retrieval","on_unavailable":on_unavailable}}});
 			f.registry
 				.register(&acme, serde_json::from_value(entry).unwrap())
 				.await
@@ -120,9 +90,6 @@ mod controlled_context_composition {
 				200
 			);
 			bindings.push(json!({"kind":kind,"target":{"registry_deployment":f.config.deployment,"id":id,"version":"1.0.0"},"narrow":{}}));
-		}
-		if selection.is_some() {
-			bindings.push(json!({"kind":"decider","target":{"registry_deployment":f.config.deployment,"id":"context-selector","version":"1.0.0"},"narrow":{}}));
 		}
 		agent.config["bindings"] = json!(bindings);
 		f.registry.register(&acme, agent).await.unwrap();
@@ -158,7 +125,7 @@ mod controlled_context_composition {
 			.permit_origin_of(&embedding_endpoint)
 			.unwrap();
 		let embedding_server = embeddings;
-		configure(&app, &token, thread, &spec(&embedding_endpoint), 0).await;
+		configure(&f, &token, thread, &spec(&embedding_endpoint), 0).await;
 		assert_eq!(
 			common::post(
 				&app,
@@ -226,7 +193,6 @@ mod controlled_context_composition {
 			schema,
 			token,
 			captured,
-			selector_calls,
 			tool_rounds,
 			model_server,
 			embedding_server,
@@ -237,16 +203,13 @@ mod controlled_context_composition {
 use controlled_context_composition::controlled_context;
 
 #[rstest::rstest]
-#[case(false, false)]
-#[case(false, true)]
-#[case(true, false)]
-#[case(true, true)]
+#[case(false)]
+#[case(true)]
 #[tokio::test]
-async fn automatic_semantic_context_respects_each_agent_behavior_control(
-	#[case] memory: bool,
+async fn automatic_semantic_context_respects_the_thread_retrieval_source(
 	#[case] workspace_retrieval: bool,
 	#[future(awt)]
-	#[with(memory, workspace_retrieval)]
+	#[with(workspace_retrieval)]
 	controlled_context: ControlledContext,
 ) {
 	let fixture = controlled_context;
@@ -259,7 +222,7 @@ async fn automatic_semantic_context_respects_each_agent_behavior_control(
 		fixture.f.store.runs(&TEST_FIXTURE).await.unwrap()[0]
 	);
 	let semantic = &contexts[0]["snapshot"]["semantic_memory"]["thread"];
-	if !memory && !workspace_retrieval {
+	if !workspace_retrieval {
 		assert!(semantic.is_null(), "disabled retrieval: {semantic}");
 	} else {
 		let mut kinds: Vec<_> = semantic["matches"]
@@ -269,15 +232,7 @@ async fn automatic_semantic_context_respects_each_agent_behavior_control(
 			.map(|m| m["source"]["kind"].as_str().unwrap())
 			.collect();
 		kinds.sort();
-		let mut expected = Vec::new();
-		if memory {
-			expected.push("memory");
-		}
-		if workspace_retrieval {
-			expected.extend(["artifact", "message"]);
-		}
-		expected.sort();
-		assert_eq!(kinds, expected, "semantic: {semantic}");
+		assert_eq!(kinds, ["artifact", "message"], "semantic: {semantic}");
 	}
 	fixture.worker.federation.store.pool.close().await;
 	fixture.worker.federation.store.control_pool.close().await;
@@ -290,7 +245,7 @@ async fn automatic_semantic_context_respects_each_agent_behavior_control(
 #[tokio::test]
 async fn on_demand_memory_does_not_leak_through_an_always_thread_source(
 	#[future(awt)]
-	#[with(true, true, false, true)]
+	#[with(true, false)]
 	controlled_context: ControlledContext,
 ) {
 	let fixture = controlled_context;
@@ -340,7 +295,7 @@ enum Unavailable {
 async fn local_auto_context_semantic_outage_is_a_typed_transient_failure_for_every_cause(
 	#[case] unavailable: Unavailable,
 	#[future(awt)]
-	#[with(false, true)]
+	#[with(true, false)]
 	controlled_context: ControlledContext,
 ) {
 	use aidash_server::domain::{RunState, TaskStatus, WaitingState};
@@ -473,7 +428,7 @@ async fn local_auto_context_semantic_outage_is_a_typed_transient_failure_for_eve
 async fn local_semantic_outage_waits_after_bounded_retry_and_goes_on_when_the_provider_recovers(
 	#[case] pending_entry: bool,
 	#[future(awt)]
-	#[with(false, true)]
+	#[with(true, false)]
 	controlled_context: ControlledContext,
 ) {
 	use aidash_server::domain::{RunState, TaskStatus, WaitingState};
@@ -667,7 +622,7 @@ fn request_semantic_memory(fixture: &ControlledContext, request: usize) -> Value
 async fn local_run_keeps_reusing_its_retrieval_through_an_embedding_outage(
 	#[case] pending_entry: bool,
 	#[future(awt)]
-	#[with(false, true)]
+	#[with(true, false)]
 	controlled_context: ControlledContext,
 ) {
 	use aidash_server::domain::TaskStatus;
@@ -816,7 +771,7 @@ async fn local_run_keeps_reusing_its_retrieval_through_an_embedding_outage(
 async fn an_opted_in_local_thread_outage_degrades_after_the_bounded_retry(
 	#[case] embedding_outage: bool,
 	#[future(awt)]
-	#[with(false, true, true)]
+	#[with(true, true)]
 	controlled_context: ControlledContext,
 ) {
 	let fixture = controlled_context;
@@ -915,7 +870,7 @@ async fn an_opted_in_local_thread_outage_degrades_after_the_bounded_retry(
 #[tokio::test]
 async fn a_skipped_thread_read_keeps_the_durable_outage(
 	#[future(awt)]
-	#[with(false, true, true)]
+	#[with(true, true)]
 	controlled_context: ControlledContext,
 ) {
 	let fixture = controlled_context;
@@ -947,14 +902,7 @@ async fn a_skipped_thread_read_keeps_the_durable_outage(
 	limited.max_result_tokens = 128;
 	limited.embedding.model = "m".repeat(256);
 	limited.embedding.model_version = "v".repeat(128);
-	configure(
-		&fixture._fixture.application,
-		&fixture.token,
-		run.thread_id,
-		&limited,
-		1,
-	)
-	.await;
+	configure(&fixture.f, &fixture.token, run.thread_id, &limited, 1).await;
 	let calls = fixture.fault.requests();
 	assert!(fixture.worker.worker_once().await.unwrap());
 	let saved = fixture.f.store.run(&TEST_FIXTURE, run.id).await.unwrap();
@@ -990,7 +938,7 @@ async fn local_semantic_key_rejection_and_contract_violation_pause_without_retry
 	#[case] fault: Fault,
 	#[case] reason: &str,
 	#[future(awt)]
-	#[with(false, true)]
+	#[with(true, false)]
 	controlled_context: ControlledContext,
 ) {
 	use aidash_server::domain::TaskStatus;
@@ -1084,28 +1032,43 @@ fn spec(endpoint: &str) -> IndexSpec {
 		max_images: 256,
 	}
 }
+fn configure_request(spec: &IndexSpec, expected_revision: i64) -> Value {
+	let mut options = serde_json::to_value(spec).unwrap();
+	options.as_object_mut().unwrap().remove("embedding");
+	json!({"expected_revision": expected_revision, "spec": options})
+}
 async fn configure(
-	app: &common::TestApplication,
+	f: &aidash_server::federation::Federation,
 	token: &str,
 	thread: Uuid,
 	spec: &IndexSpec,
 	revision: i64,
 ) -> Value {
-	let (status, index) = common::post(
-		app,
-		token,
-		&format!("/api/threads/{thread}/semantic/index"),
-		serde_json::to_value(ConfigureIndex {
-			expected_revision: revision,
-			acknowledge_memory_embeddings: false,
-			spec: spec.clone(),
-		})
+	// The provider-under-test uses a deliberately isolated configuration.
+	// HTTP index settings always derive their model from the Tenant.
+	let actor = aidash_server::authorization::Authorization {
+		pool: f.store.pool.clone(),
+	}
+	.authenticate(token)
+	.await
+	.unwrap();
+	serde_json::to_value(
+		semantic::service::configure(
+			&f.store,
+			&actor,
+			thread,
+			ConfigureIndex {
+				expected_revision: revision,
+				acknowledge_memory_embeddings: false,
+				spec: spec.clone(),
+			},
+		)
+		.await
 		.unwrap(),
 	)
-	.await;
-	assert_eq!(status, 200, "{index}");
-	index
+	.unwrap()
 }
+
 async fn put(
 	app: &common::TestApplication,
 	token: &str,
@@ -1155,6 +1118,145 @@ async fn dispose(f: aidash_server::federation::Federation, url: &str, schema: &s
 }
 
 #[rstest::rstest]
+#[tokio::test]
+async fn tenant_embedding_switch_preserves_search_until_the_replacement_is_ready(
+	#[future(awt)]
+	#[from(common::native_application)]
+	application_fixture: common::ApplicationFixture,
+	#[future(awt)] embeddings: std::sync::Arc<reinhardt::test::fixtures::server::TestServerGuard>,
+) {
+	let (f, url, schema) = application_fixture.runtime.parts();
+	let app = application_fixture.application.clone();
+	let (mut policy, token, task) = common::bootstrap(&f, &app, &embeddings.url).await;
+	let thread = f.store.task(&TEST_FIXTURE, task).await.unwrap().thread_id;
+	let tenant = aidash_domain::tenancy::TenantName::new("acme").unwrap();
+	let config = spec(&embeddings.url);
+	for (version, model_version) in [("1.0.0", "1"), ("2.0.0", "2")] {
+		let mut embedding = config.embedding.clone();
+		embedding.model_version = model_version.into();
+		let entry = json!({
+			"id":"switch-model", "version":version, "kind":"embedding",
+			"name":{"en":"Switch model"}, "description":{"en":"Local embedding fixture"},
+			"config":embedding,
+		});
+		f.registry
+			.register(&tenant, serde_json::from_value(entry).unwrap())
+			.await
+			.unwrap();
+	}
+	let admin = common::BrowserMapping::new(&f, "acme", "alice").await;
+	let path = "/api/tenants/acme/embedding-settings";
+	let old = json!({"id":"switch-model", "version":"1.0.0"});
+	let replacement = json!({"id":"switch-model", "version":"2.0.0"});
+	let (status, initial) = admin.send("GET", path, Value::Null).await;
+	assert_eq!(status, 200, "{initial}");
+	assert_eq!(
+		initial["settings"]["active"],
+		json!({"id":"aidash.embedding","version":"1.0.0"})
+	);
+	policy["subjects"]["viewer"] = json!({"kind":"user"});
+	policy["policies"].as_array_mut().unwrap().push(json!({
+		"id":"viewer-settings-denial", "effect":"deny", "subjects":{"ids":["viewer"]},
+		"actions":["tenant.update"], "resources":{"kinds":["tenant"]},
+	}));
+	let (status, updated_policy) = common::post(
+		&app,
+		&f.config.api_token,
+		"/api/authorization/acme",
+		json!({"expected_revision":1,"bundle":policy}),
+	)
+	.await;
+	assert_eq!(status, 200, "{updated_policy}");
+	let viewer = common::BrowserMapping::new(&f, "acme", "viewer").await;
+	assert_eq!(viewer.send("GET", path, Value::Null).await.0, 403);
+	assert_eq!(
+		viewer
+			.send(
+				"PUT",
+				path,
+				json!({"embedding":old,"expected_revision":0,"confirm":true})
+			)
+			.await
+			.0,
+		403
+	);
+	let (status, selected) = admin
+		.send(
+			"PUT",
+			path,
+			json!({"embedding":old,"expected_revision":0,"confirm":true}),
+		)
+		.await;
+	assert_eq!(status, 200, "{selected}");
+	assert_eq!(selected["settings"]["active"], old);
+	let (status, index) = request(
+		&app,
+		&token,
+		"POST",
+		&format!("/api/threads/{thread}/semantic/index"),
+		configure_request(&config, 0),
+	)
+	.await;
+	assert_eq!(status, 200, "{index}");
+	let entry = put(&app, &token, thread, "cars", "A car carries passengers.", 0).await;
+	semantic::worker::sweep(&f.store).await.unwrap();
+
+	let revision = selected["settings"]["revision"].clone();
+	let (status, preview) = admin
+		.send(
+			"PUT",
+			path,
+			json!({"embedding":replacement,"expected_revision":revision}),
+		)
+		.await;
+	assert_eq!(status, 200, "{preview}");
+	assert_eq!(
+		preview["estimate"],
+		json!({"thread_indexes":1,"thread_entries":1,"drive_files":0})
+	);
+	assert_eq!(preview["settings"], selected["settings"]);
+	let (status, confirmed) = admin
+		.send(
+			"PUT",
+			path,
+			json!({"embedding":replacement,"expected_revision":revision,"confirm":true}),
+		)
+		.await;
+	assert_eq!(status, 200, "{confirmed}");
+	assert_eq!(confirmed["settings"]["active"], old);
+	assert_eq!(confirmed["settings"]["pending"], replacement);
+	let (status, before) = search(&app, &token, thread).await;
+	assert_eq!(status, 200, "{before}");
+	assert_eq!(before["model_version"], "1");
+	assert_eq!(before["matches"][0]["entry_id"], entry["id"]);
+
+	let worker = tokio::spawn(semantic::worker::run_reembedding(f.store.clone()));
+	let switched = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+		loop {
+			let (status, current) = admin.send("GET", path, Value::Null).await;
+			assert_eq!(status, 200, "{current}");
+			if current["settings"]["pending"].is_null() {
+				break current;
+			}
+			tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+		}
+	})
+	.await;
+	worker.abort();
+	let _ = worker.await;
+	assert_eq!(
+		switched.expect("the replacement finished")["settings"]["active"],
+		replacement
+	);
+	let (status, after) = search(&app, &token, thread).await;
+	assert_eq!(status, 200, "{after}");
+	assert_eq!(after["model_version"], "2");
+	assert_eq!(after["matches"][0]["entry_id"], entry["id"]);
+
+	dispose(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
 #[case::openai("openai")]
 #[case::openrouter("openrouter")]
 #[tokio::test]
@@ -1174,9 +1276,9 @@ async fn semantic_lifecycle_is_durable_revisioned_and_not_keyword_search(
 	let thread = f.store.task(&TEST_FIXTURE, task).await.unwrap().thread_id;
 	let mut config = spec(&endpoint);
 	config.embedding.provider = provider.into();
-	let first = configure(&app, &token, thread, &config, 0).await;
+	let first = configure(&f, &token, thread, &config, 0).await;
 	assert_eq!(
-		configure(&app, &token, thread, &config, 0).await["revision"],
+		configure(&f, &token, thread, &config, 0).await["revision"],
 		1
 	);
 	let cars = put(&app, &token, thread, "cars", "A car carries passengers.", 0).await;
@@ -1221,7 +1323,7 @@ async fn semantic_lifecycle_is_durable_revisioned_and_not_keyword_search(
 		2
 	);
 	config.embedding.model_version = "2".into();
-	let second = configure(&app, &token, thread, &config, 1).await;
+	let second = configure(&f, &token, thread, &config, 1).await;
 	assert_ne!(first["collection"], second["collection"]);
 	assert_eq!(search(&app, &token, thread).await.0, 409);
 	// Fresh pools reconstruct authority and jobs entirely from durable state.
@@ -1341,7 +1443,7 @@ async fn semantic_access_is_checked_before_search_and_jobs_retain_revocation(
 	let server = embeddings;
 	let (mut policy, token, task) = common::bootstrap(&f, &app, &endpoint).await;
 	let thread = f.store.task(&TEST_FIXTURE, task).await.unwrap().thread_id;
-	configure(&app, &token, thread, &spec(&endpoint), 0).await;
+	configure(&f, &token, thread, &spec(&endpoint), 0).await;
 	let cars = put(&app, &token, thread, "cars", "A car carries passengers.", 0).await;
 	semantic::worker::sweep(&f.store).await.unwrap();
 	policy["policies"].as_array_mut().unwrap().push(json!({"id":"revoke-semantic","effect":"deny","subjects":{"ids":["alice"]},"actions":["semantic.read"],"resources":{"kinds":["semantic"]}}));
@@ -1443,7 +1545,7 @@ async fn semantic_outage_and_input_bounds_are_visible_and_retriable(
 	let thread = f.store.task(&TEST_FIXTURE, task).await.unwrap().thread_id;
 	let mut config = spec(&endpoint);
 	config.embedding.dimensions = 4; // Provider's actual width is three.
-	configure(&app, &token, thread, &config, 0).await;
+	configure(&f, &token, thread, &config, 0).await;
 	let cars = put(&app, &token, thread, "cars", "A car carries passengers.", 0).await;
 	semantic::worker::sweep(&f.store).await.unwrap();
 	let entries = request(
@@ -1459,7 +1561,7 @@ async fn semantic_outage_and_input_bounds_are_visible_and_retriable(
 	assert_eq!(entries.1["entries"][0]["attempts"], 1);
 	assert_eq!(search(&app, &token, thread).await.0, 409);
 	config.embedding.dimensions = 3;
-	configure(&app, &token, thread, &config, 1).await;
+	configure(&f, &token, thread, &config, 1).await;
 	semantic::worker::sweep(&f.store).await.unwrap();
 	assert_eq!(search(&app, &token, thread).await.0, 200);
 	let reindex_path = format!(
@@ -1522,8 +1624,21 @@ async fn semantic_context_is_provenanced_and_revocation_hides_run_journals(
 	let endpoint = server.url.clone();
 	let (mut policy, token, task) = common::bootstrap_with_context(&f, &app, &endpoint, true).await;
 	let thread = f.store.task(&TEST_FIXTURE, task).await.unwrap().thread_id;
-	configure(&app, &token, thread, &spec(&embedding_endpoint), 0).await;
-	let cars = put(&app, &token, thread, "cars", "A car carries passengers.", 0).await;
+	configure(&f, &token, thread, &spec(&embedding_endpoint), 0).await;
+	put(&app, &token, thread, "cars", "A car carries passengers.", 0).await;
+	let message = f
+		.store
+		.message_record(&TEST_FIXTURE, thread, "alice", "Vehicle safety", None)
+		.await
+		.unwrap();
+	let (status, indexed_message) = common::post(
+		&app,
+		&token,
+		&format!("/api/threads/{thread}/semantic/entries"),
+		json!({"key":"vehicle-safety","source":{"kind":"message","id":message.id},"expected_revision":0,"metadata":{}}),
+	)
+	.await;
+	assert_eq!(status, 200, "{indexed_message}");
 	semantic::worker::sweep(&f.store).await.unwrap();
 	assert_eq!(
 		common::post(
@@ -1546,7 +1661,7 @@ async fn semantic_context_is_provenanced_and_revocation_hides_run_journals(
 	let context = captured.lock().unwrap()[0].clone();
 	assert_eq!(
 		context["snapshot"]["semantic_memory"]["thread"]["matches"][0]["entry_id"],
-		cars["id"]
+		indexed_message["id"]
 	);
 	assert_eq!(
 		context["snapshot"]["semantic_memory"]["thread"]["model_version"],
@@ -1609,7 +1724,7 @@ async fn semantic_context_is_provenanced_and_revocation_hides_run_journals(
 	);
 	let path = format!(
 		"/api/threads/{thread}/semantic/entries/{}",
-		cars["id"].as_str().unwrap()
+		indexed_message["id"].as_str().unwrap()
 	);
 	assert_eq!(
 		request(
@@ -1669,7 +1784,7 @@ async fn linked_sources_and_agent_metadata_filters_respect_original_authority(
 	let server = embeddings;
 	let (mut policy, token, task) = common::bootstrap(&f, &app, &endpoint).await;
 	let thread = f.store.task(&TEST_FIXTURE, task).await.unwrap().thread_id;
-	configure(&app, &token, thread, &spec(&endpoint), 0).await;
+	configure(&f, &token, thread, &spec(&endpoint), 0).await;
 	assert_eq!(
 		common::post(
 			&app,
@@ -1830,12 +1945,7 @@ async fn linked_sources_and_agent_metadata_filters_respect_original_authority(
 			&app,
 			&token,
 			&format!("/api/threads/{}/semantic/index", other.id),
-			serde_json::to_value(ConfigureIndex {
-				expected_revision: 0,
-				acknowledge_memory_embeddings: false,
-				spec: spec(&endpoint),
-			})
-			.unwrap()
+			configure_request(&spec(&endpoint), 0)
 		)
 		.await
 		.0,
@@ -1867,7 +1977,7 @@ async fn semantic_postgres_restart_and_lost_points_recover(
 	let (_, token, task) = common::bootstrap(&f, &app, &embedding).await;
 	let thread = f.store.task(&TEST_FIXTURE, task).await.unwrap().thread_id;
 	let config = spec(&embedding);
-	let index = configure(&app, &token, thread, &config, 0).await;
+	let index = configure(&f, &token, thread, &config, 0).await;
 	let entry = put(
 		&app,
 		&token,
@@ -1983,14 +2093,12 @@ fn isolated_application(
 #[derive(Clone)]
 struct ControlledContextState {
 	captured: std::sync::Arc<std::sync::Mutex<Vec<Value>>>,
-	selector_calls: Arc<Mutex<Vec<Value>>>,
 	tool_rounds: std::sync::Arc<std::sync::atomic::AtomicUsize>,
 }
 #[fixture]
 fn controlled_context_state() -> ControlledContextState {
 	ControlledContextState {
 		captured: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
-		selector_calls: Default::default(),
 		tool_rounds: Default::default(),
 	}
 }
@@ -2001,12 +2109,7 @@ fn controlled_context_router(
 	let captured = state.captured.clone();
 	let received = captured.clone();
 	let tool_rounds = state.tool_rounds.clone();
-	let selector_calls = state.selector_calls.clone();
 	std::sync::Arc::new(reinhardt::test::stub::StubRouter::new()
-.route("/systemone", http::Method::POST, reply(move |request: reinhardt::Request| {
-	let calls = selector_calls.clone();
-	async move { source_selection::answer(request.json::<Value>().unwrap(), &calls) }
-}))
 .route("/v1/chat/completions", http::Method::POST, reply(move |request: reinhardt::Request| {let body = request.json::<Value>().unwrap();
 			let received = received.clone();
 			let tool_rounds = tool_rounds.clone();
@@ -2113,7 +2216,7 @@ async fn deployment_and_other_tenant_authority_never_reaches_semantic_index_or_k
 	let (_, token, task) = common::bootstrap(&f, &app, &endpoint).await;
 	let thread = f.store.task(&TEST_FIXTURE, task).await.unwrap().thread_id;
 	let config = spec(&endpoint);
-	configure(&app, &token, thread, &config, 0).await;
+	configure(&f, &token, thread, &config, 0).await;
 	let entry = put(&app, &token, thread, "cars", "A car carries passengers.", 0).await;
 	let browser = common::BrowserAdministrator::new(&f).await;
 	common::tenant_root(&f, "other").await;
@@ -2126,12 +2229,7 @@ async fn deployment_and_other_tenant_authority_never_reaches_semantic_index_or_k
 	let entries = format!("/api/threads/{thread}/semantic/entries");
 	let mut reconfigured = config.clone();
 	reconfigured.max_results = 1;
-	let reconfigure = serde_json::to_value(ConfigureIndex {
-		expected_revision: 1,
-		acknowledge_memory_embeddings: false,
-		spec: reconfigured,
-	})
-	.unwrap();
+	let reconfigure = configure_request(&reconfigured, 1);
 	let overwrite = json!({"key":"cars","expected_revision":1,"source":{"kind":"memory","text":"overwritten"},"metadata":{}});
 	let routes = [
 		("GET", index.clone(), Value::Null),

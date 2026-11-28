@@ -919,7 +919,7 @@ function Dashboard({
     setError("");
     try {
       const result = await request();
-      if (selection?.kind === "entity" || selection?.kind === "cluster") {
+      if (selection?.kind === "entity") {
         const registration = result as {
           id?: string;
           version?: string;

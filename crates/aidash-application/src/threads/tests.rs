@@ -175,7 +175,6 @@ fn request<'a>(reference: &'a EntityRef, kind: &'a str) -> ConversationRequest<'
 
 #[rstest::rstest]
 #[case("agent", "target", "1")]
-#[case("cluster", "coordinator", "2")]
 #[tokio::test]
 async fn authorized_admission_binds_the_session_and_returns_the_delegated_revision(
 	#[case] kind: &str,
@@ -191,13 +190,13 @@ async fn authorized_admission_binds_the_session_and_returns_the_delegated_revisi
 	let result = conversation(&mut scope, request(&reference, kind))
 		.await
 		.unwrap();
-	// Assert: the conversation retains its cluster identity while execution pins the coordinator.
+	// Assert: the conversation and its delegation retain the selected Agent identity.
 	assert_eq!(result.conversation.target, "target@1");
 	assert_eq!(result.conversation.created_by, "subject:fixture");
 	assert_eq!(result.task.revision, 7);
 	assert_eq!(result.task.status, TaskStatus::Claimed);
-	assert_eq!(result.delegation.agent_id, executor);
-	assert_eq!(result.delegation.agent_version, version);
+	assert_eq!(result.delegation.as_ref().unwrap().agent_id, executor);
+	assert_eq!(result.delegation.unwrap().agent_version, version);
 	let before = |a: &str, b: &str| {
 		scope.operations.iter().position(|op| op == a).unwrap()
 			< scope.operations.iter().position(|op| op == b).unwrap()
@@ -213,7 +212,7 @@ async fn authorized_admission_binds_the_session_and_returns_the_delegated_revisi
 			.iter()
 			.filter(|op| op.as_str() == "cluster.execute")
 			.count(),
-		usize::from(kind == "cluster")
+		0
 	);
 }
 
@@ -255,7 +254,7 @@ async fn denial_stops_before_the_protected_effect_and_delegation(
 
 #[rstest::rstest]
 #[tokio::test]
-async fn malformed_cluster_coordinator_cannot_publish_a_conversation_or_task() {
+async fn cluster_target_cannot_publish_a_conversation_or_task() {
 	let reference = EntityRef {
 		id: "target".into(),
 		version: "1".into(),
@@ -264,9 +263,9 @@ async fn malformed_cluster_coordinator_cannot_publish_a_conversation_or_task() {
 	scope.target.config = json!({});
 	let result = conversation(&mut scope, request(&reference, "cluster")).await;
 	assert!(
-		matches!(result, Err(Error::Domain(aidash_domain::Error::Invalid(ref message))) if message=="cluster requires an explicit coordinator agent reference")
+		matches!(result, Err(Error::Invalid(ref message)) if message=="Thread target must be an Agent or Node")
 	);
-	assert!(scope.operations.iter().any(|op| op == "cluster.execute"));
+	assert!(scope.operations.is_empty());
 	assert!(
 		!scope
 			.operations
@@ -297,7 +296,6 @@ fn memory() -> MemoryEmbedding {
 
 #[rstest::rstest]
 #[case("agent", "target")]
-#[case("cluster", "coordinator")]
 #[tokio::test]
 async fn a_target_that_binds_memory_gets_its_index_before_delegation(
 	#[case] kind: &str,
@@ -377,4 +375,25 @@ async fn starting_a_memory_target_without_index_authority_is_forbidden() {
 	assert!(matches!(result, Err(Error::Forbidden)));
 	assert!(scope.index.is_none());
 	assert!(!scope.operations.iter().any(|op| op == "delegate"));
+}
+
+#[tokio::test]
+async fn a_node_target_creates_a_root_task_without_delegation() {
+	let target = EntityRef {
+		id: "brave-otter-k3m9q2xa".into(),
+		version: String::new(),
+	};
+	let mut scope = Fixture::new("node");
+	let response = conversation(&mut scope, request(&target, "node"))
+		.await
+		.unwrap();
+	assert_eq!(response.conversation.target_kind, "node");
+	assert_eq!(response.task.status, TaskStatus::Open);
+	assert!(response.delegation.is_none());
+	assert!(
+		scope
+			.operations
+			.iter()
+			.all(|op| op != "registry.read" && op != "delegate")
+	);
 }

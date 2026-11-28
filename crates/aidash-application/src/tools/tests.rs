@@ -316,9 +316,7 @@ async fn builtin_retention_records_a_fact_without_an_unreviewed_marker(mut fixtu
 
 #[rstest]
 #[tokio::test]
-async fn builtin_memory_failures_are_tool_data_but_explicit_provider_errors_propagate(
-	mut fixture: Fixture,
-) {
+async fn builtin_memory_failures_are_tool_data(mut fixture: Fixture) {
 	let node = "aidash://fixture";
 	let root = crate::test_support::agent("agent");
 	let builtin = crate::test_support::resolve(
@@ -336,35 +334,12 @@ async fn builtin_memory_failures_are_tool_data_but_explicit_provider_errors_prop
 				operations: &fixture.operations,
 				run: &fixture.run,
 			},
-			query.clone(),
+			query,
 			"recall",
 		)
 		.await
 		.unwrap();
 	assert_eq!(result["error"]["kind"], "memory_unavailable");
-	let mut explicit_root = root;
-	explicit_root.config["bindings"] =
-		json!([crate::test_support::binding("memory", node, "native")]);
-	let mut entries = crate::test_support::builtin_entries(node);
-	entries.extend(crate::test_support::native_memory_entries());
-	fixture.run.context.binding_snapshot = Some(Box::new(crate::test_support::resolve(
-		node,
-		&explicit_root,
-		false,
-		entries,
-	)));
-	assert!(matches!(
-		tool.invoke(
-			&ToolContext {
-				operations: &fixture.operations,
-				run: &fixture.run
-			},
-			query,
-			"recall"
-		)
-		.await,
-		Err(Error::SemanticUnavailable)
-	));
 }
 
 #[rstest]

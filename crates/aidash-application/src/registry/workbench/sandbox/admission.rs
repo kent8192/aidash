@@ -361,7 +361,6 @@ async fn prepare(
 			limits,
 			context_window,
 			// A Workbench test keeps its own step limit; Agents have none (#1009).
-			agent_max_steps: i32::MAX,
 			model_provider,
 			request,
 			initial_conversation: conversation,

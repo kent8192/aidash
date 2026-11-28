@@ -13,13 +13,7 @@ export type ContextSourceDeclaration = {
     write: QualifiedSourceRef[];
     detail: QualifiedSourceRef | null;
   };
-  pin:
-    | { policy: "always" | "on_demand" }
-    | {
-        policy: "scored";
-        mode: "shadow" | "enforce";
-        decider: QualifiedSourceRef;
-      };
+  pin: { policy: "always" | "on_demand" };
   volatility: "run" | "step";
   query: "task-inputs@1" | "accepted-inputs-first@1";
   refresh: "revision-bound@1";
@@ -50,27 +44,11 @@ export function contextSourceConfiguration(
   if (!form.has("source_declaration")) return undefined;
   const text = (name: string) => String(form.get(name) ?? "");
   const policy = text("source_pin");
-  const mode = text("source_mode");
   const required_home = form.has("source_required_home");
-  if (!["always", "on_demand", "scored"].includes(policy))
+  if (policy !== "always" && policy !== "on_demand")
     throw new Error("Choose a source pin policy");
-  if (
-    required_home &&
-    (policy === "on_demand" || (policy === "scored" && mode === "enforce"))
-  )
-    throw new Error(
-      "Required-Home sources cannot use OnDemand or Scored Enforce selection",
-    );
-  if (policy === "scored" && !["shadow", "enforce"].includes(mode))
-    throw new Error("Choose a Scored selection mode");
-  if (
-    policy === "scored" &&
-    (!form.has("source_disclose_previews") ||
-      !form.has("source_disclose_query"))
-  )
-    throw new Error(
-      "Scored selection requires explicit preview and query disclosure",
-    );
+  if (required_home && policy === "on_demand")
+    throw new Error("Required-Home sources use Always delivery");
   const provider = text("source_provider").trim();
   const operation = text("source_operation").trim();
   if (!provider || !operation)
@@ -83,14 +61,7 @@ export function contextSourceConfiguration(
       write: form.getAll("source_write").map((value) => exact(String(value))),
       detail: text("source_detail") ? exact(text("source_detail")) : null,
     },
-    pin:
-      policy === "scored"
-        ? {
-            policy,
-            mode: mode as "shadow" | "enforce",
-            decider: exact(text("source_decider")),
-          }
-        : { policy: policy as "always" | "on_demand" },
+    pin: { policy },
     volatility: text("source_volatility") === "run" ? "run" : "step",
     query:
       text("source_query") === "accepted-inputs-first@1"

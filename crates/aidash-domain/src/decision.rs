@@ -36,7 +36,6 @@ pub const APPROVAL_EVIDENCE_VERSION: u8 = 1;
 pub const MAX_ROUTES: usize = 4;
 /// OpenRouter hosts one Decisions Route may name.
 pub const MAX_HOSTS: usize = 8;
-pub const INVOKE: &str = "decision.invoke";
 pub const EVIDENCE_READ: &str = "decision.evidence.read";
 pub const STATE_READ: &str = "decision.state.read";
 
@@ -45,11 +44,13 @@ pub const STATE_READ: &str = "decision.state.read";
 )]
 #[serde(rename_all = "snake_case")]
 pub enum Hook {
+	#[schemars(skip)]
 	ContextSelection,
 	/// Whether a pending Tool call may run without a person approving it
 	/// (the Auto Approval Mode, ADR 0077).
 	Approval,
 	/// Independent typed human-approval observer (ADR 0085).
+	#[schemars(skip)]
 	ApprovalObservation,
 }
 impl Hook {

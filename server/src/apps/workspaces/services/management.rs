@@ -37,7 +37,7 @@ impl CollaborationManagement {
 		scope.task_page(page.offset).await
 	}
 	/// Open a Thread (#1008, ADR 0140): a person's request to an Agent or
-	/// cluster opens it with its Root Task; without a target it opens empty.
+	/// Node opens it with its Root Task; without a target it opens empty.
 	pub(crate) async fn thread_create(
 		&self,
 		actor: Actor,
@@ -60,7 +60,7 @@ impl CollaborationManagement {
 						title: &input.title,
 						request,
 						target,
-						target_kind,
+						target_kind: target_kind.as_str(),
 						node: input.node.as_ref(),
 						scratch_space_id: input.scratch_space_id,
 					},
@@ -70,10 +70,10 @@ impl CollaborationManagement {
 			}
 			(None, None) => {
 				// A request is the description of a Root Task for an Agent or
-				// cluster; a Thread opened without one has no request.
+				// Node; a Thread opened without one has no request.
 				if input.request.is_some() {
 					return Err(Error::Invalid(
-						"a request names the Agent or cluster it is for".into(),
+						"a request names the Agent or Node it is for".into(),
 					));
 				}
 				let Some(scope) = scoped(&f, actor) else {

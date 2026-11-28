@@ -2,27 +2,20 @@ import { DataProtectionSettings } from "./data-protection";
 import { StandingInstructionsSettings } from "./standing-instructions";
 import { BudgetSettings } from "./budgets";
 import { OrgChartPanel } from "./org-chart";
+import { TenantEmbeddingSettings } from "./tenant-embedding-settings";
 import { ExecutionSettings } from "./execution-settings";
 import { Connections } from "./connections/settings";
 import { OAuthClients } from "./connections/clients";
 import { ScopeCeilings } from "./connections/ceilings";
 import { TenantSecrets } from "./tenant-secrets";
 import type { ReactNode } from "react";
-import {
-  ApprovalObserverPanel,
-  ApprovalObservationReportPanel,
-} from "./approval-observation";
-import { ApprovalDeciderPanel } from "./approval-decider";
 import { TenantPolicyAdministration } from "./authorization";
 import { TenantIdentityAdministration } from "./dashboard-identity";
 import { OwnCredentials } from "./subject-credentials";
 import { LeaveTenantButton } from "./tenant-deletion";
 import { useTenantAdministration } from "./tenant-administration";
 
-/** What a subject manages of its own Tenant through its Mapping: its own
- *  Subject Credentials, the approval Decider that judges its Tenant's Auto
- *  mode, then the people, policy, credentials and Peer Mappings its Tenant's
- *  policy lets it administer (#363). */
+/** Tenant settings and the Subject Credentials a person manages through their Mapping. */
 export function TenantAccess({
   tenant,
   subject,
@@ -45,23 +38,6 @@ export function TenantAccess({
           canIssue={can("credential.create")}
         />
       )}
-      {subject && overview.data && (
-        <ApprovalDeciderPanel
-          tenant={tenant}
-          subject={subject}
-          canUpdate={can("tenant.update")}
-        />
-      )}
-      {subject && can("approval.read") && (
-        <>
-          <ApprovalObserverPanel
-            tenant={tenant}
-            subject={subject}
-            canUpdate={can("tenant.update")}
-          />
-          <ApprovalObservationReportPanel tenant={tenant} />
-        </>
-      )}
       <StandingInstructionsSettings
         key={`instructions-${tenant}`}
         tenant={tenant}
@@ -81,6 +57,9 @@ export function TenantAccess({
         tenant={tenant}
         canUpdate={can("tenant.update")}
       />
+      {can("tenant.update") && (
+        <TenantEmbeddingSettings key={tenant} tenant={tenant} />
+      )}
       {can("policy.read") && (
         <DataProtectionSettings
           key={tenant}

@@ -1510,7 +1510,7 @@ async fn memory_maintenance_skips_a_completed_run_whose_identity_was_disabled(
 		(
 			"fixture",
 			"agent",
-			json!({"schema_version":1,"model":{"id":"model","version":"1.0.0"},"instructions":"Work","bindings":[],"remove_default":[]}),
+			json!({"model":{"id":"model","version":"1.0.0"},"instructions":"Work","bindings":[],"remove_default":[]}),
 		),
 	] {
 		sqlx::query(
@@ -1730,7 +1730,7 @@ async fn a_sweep_pass_that_only_repeats_adds_no_rows_for_a_running_command(
 	let entry: crate::registry::Entry = serde_json::from_value(json!({
 		"id":"fixture", "version":"1.0.0", "kind":"agent",
 		"name":{"en":"Fixture"}, "description":{"en":"Fixture"},
-		"config":{"schema_version":1,"model":{"id":"model","version":"1.0.0"},"instructions":"Work","bindings":[],"remove_default":[]}
+		"config":{"model":{"id":"model","version":"1.0.0"},"instructions":"Work","bindings":[],"remove_default":[]}
 	})).unwrap();
 	sqlx::query(
 		"INSERT INTO registry (tenant,id,version,kind,metadata) VALUES ('acme',$1,$2,'agent',$3)",

@@ -32,8 +32,6 @@ pub struct Entry {
 	pub tags: Vec<String>,
 	#[serde(default)]
 	pub languages: Vec<String>,
-	#[serde(default)]
-	pub skills: Vec<String>,
 	#[serde(default = "empty_object")]
 	pub schema: Value,
 	#[serde(default = "empty_object")]
@@ -61,7 +59,6 @@ pub struct Search {
 	pub query: Option<String>,
 	pub capability: Option<String>,
 	pub language: Option<String>,
-	pub skill: Option<String>,
 	pub tag: Option<String>,
 	pub model: Option<String>,
 }
@@ -104,7 +101,6 @@ impl Search {
 				.language
 				.as_ref()
 				.is_none_or(|s| e.languages.iter().any(|l| l.eq_ignore_ascii_case(s)))
-			&& self.skill.as_ref().is_none_or(|s| e.skills.contains(s))
 			&& self.tag.as_ref().is_none_or(|s| e.tags.contains(s))
 			&& self
 				.model
@@ -134,21 +130,17 @@ pub struct AgentConfig {
 	/// Every source of optional Thread semantic context opted into
 	/// `on_unavailable: degrade` (ADR 0059).
 	pub thread_degrades: bool,
-	pub schema_version: u8,
 	pub bindings: Vec<bindings::Binding>,
 	pub remove_default: Vec<String>,
 	pub model: EntityRef,
 	pub reference_embedding: Option<EntityRef>,
 	pub instructions: String,
-	pub max_steps: i32,
-	pub context_policy: Option<crate::context::policy::ContextPolicy>,
-	pub tool_parallelism: u8,
-	/// Absent means `legacy@1`; see [`AgentConfig::exposure_policy`].
+	/// Omitted uses immediate exposure; see [`AgentConfig::exposure_policy`].
 	pub exposure: Option<crate::exposure::ExposurePolicy>,
 	/// As written in the definition; `None` renders as Native.
-	pub projection_version: Option<crate::projection::ProjectionPin>,
+	pub projection_version: Option<crate::projection::ProjectionVersion>,
 	/// As written in the definition; `None` means `structured@4`.
-	pub harness_contract: Option<crate::harness_contract::HarnessContractPin>,
+	pub harness_contract: Option<crate::harness_contract::HarnessContract>,
 	/// As written in the definition; `None` means `off` (ADR 0019).
 	pub prompt_cache: Option<crate::projection::PromptCache>,
 	/// As written in the definition; `None` requires no verification.
@@ -161,12 +153,9 @@ pub struct AgentConfig {
 	pub reference_attachments: Vec<crate::capabilities::ReferenceAttachment>,
 	pub knowledge_digest: Option<String>,
 	pub tools: Vec<EntityRef>,
+	/// Builtin operations admitted by the Binding snapshot.
+	pub operations: std::collections::BTreeSet<String>,
 	pub skills: Vec<EntityRef>,
-	pub allow_task_creation: Option<bool>,
-	pub allow_task_delegation: Option<bool>,
-	pub allow_memory_write: Option<bool>,
-	pub allow_workspace_retrieval: Option<bool>,
-	pub allow_cross_conversation_memory: Option<bool>,
 }
 impl<'de> Deserialize<'de> for AgentConfig {
 	fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
@@ -196,10 +185,6 @@ pub struct AgentPage {
 	pub next_offset: Option<u64>,
 }
 
-fn max_steps() -> i32 {
-	64
-}
-
 mod contracts;
 pub mod rules;
 pub use contracts::*;
@@ -211,25 +196,3 @@ pub mod skill_import;
 pub mod workbench;
 
 pub mod bindings;
-
-/// Resolve the effective contract while keeping historical pins readable.
-/// Admission and dispatch reject all retired pins.
-pub fn execution_contract(
-	projection: Option<crate::projection::ProjectionPin>,
-	contract: Option<crate::harness_contract::HarnessContractPin>,
-) -> std::result::Result<crate::harness_contract::HarnessContract, String> {
-	use crate::harness_contract::HarnessContractPin;
-
-	if let Some(crate::projection::ProjectionPin::Retired(version)) = projection {
-		return Err(format!(
-			"Projection Version {version} has been retired. Use native."
-		));
-	}
-	match contract {
-		Some(HarnessContractPin::Active(contract)) => Ok(contract),
-		Some(HarnessContractPin::Retired(contract)) => Err(format!(
-			"Harness Contract {contract} has been retired. Use structured@4."
-		)),
-		None => Ok(Default::default()),
-	}
-}

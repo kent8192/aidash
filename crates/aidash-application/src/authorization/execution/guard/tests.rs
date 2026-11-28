@@ -37,7 +37,6 @@ fn run() -> RunMetadata {
 }
 struct Scope {
 	visible: bool,
-	clusters: Vec<String>,
 	bundle: PolicyBundle,
 	snapshot: BindingSnapshot,
 	calls: Vec<String>,
@@ -52,32 +51,29 @@ fn scope() -> Scope {
 	let subject =
 		aidash_domain::agent_subject("aidash://local/brave-otter-k3m9q2xa", "producer", "1.0.0");
 	let mut agent = crate::test_support::agent("producer");
-	agent.config["remove_default"] = json!(aidash_domain::registry::bindings::DEFAULT_TOOLS);
+	agent.config["remove_default"] = json!(
+		aidash_domain::registry::bindings::DEFAULT_TOOLS
+			.iter()
+			.filter(|name| **name != "memory_recall")
+			.collect::<Vec<_>>()
+	);
 	agent.config["bindings"] = json!([
-		{"kind":"memory","target":{"registry_deployment":node,"id":"memory","version":"1.0.0"}},
-		{"kind":"decider","target":{"registry_deployment":node,"id":"private.approval","version":"1.0.0"}},
+		{"kind":"tool","target":{"registry_deployment":node,"id":"other-tool","version":"1.0.0"},"alias":"other"},
 		{"kind":"tool","target":{"registry_deployment":node,"id":"tool","version":"1.0.0"}}
 	]);
-	let memory = crate::test_support::entry(
-		"memory",
-		"memory",
-		json!({"schema_version":1,"source":{"adapter":"conversation_memory"}}),
-	);
 	let tool = crate::test_support::entry(
 		"tool",
 		"tool",
 		json!({"registry_deployment":node,"provider":"integration.http@1","operation":"invoke","default_alias":"lookup","tier":"integration","transport":{"transport":"http","endpoint":"https://fixture.invalid","replay":"unsafe"}}),
 	);
-	let mut compaction = crate::registry::system::approval_decider().unwrap();
-	compaction.id = "private.approval".into();
+	let other_tool = crate::test_support::http_tool(node, "other-tool", "other");
 	Scope {
 		visible: true,
-		clusters: vec!["conversation-cluster@1.0.0".into()],
 		bundle: serde_json::from_value(
 			json!({"tenant":"tenant","subjects":{subject:{"kind":"agent", "node": aidash_domain::nodes::NodeName::derived("acme"),"delegated_by":null}}}),
 		)
 		.unwrap(),
-		snapshot: crate::test_support::resolve(node, &agent, false, vec![memory, tool, compaction]),
+		snapshot: crate::test_support::resolve(node, &agent, false, vec![tool, other_tool]),
 		calls: vec![],
 		fail: None,
 		deny: None,
@@ -106,7 +102,7 @@ impl Scope {
 				d.identity.registry_deployment == self.node_id() && d.identity.local() == *reference
 			})
 			.map(|d| d.definition.clone())
-			.unwrap_or_else(|| crate::test_support::entry(&reference.id, "cluster", json!({})));
+			.unwrap_or_else(|| crate::test_support::entry(&reference.id, "agent", json!({})));
 		if self.changed.as_deref() == Some(&reference.id) {
 			entry.tags.push("changed".into());
 		}
@@ -157,10 +153,6 @@ impl RunGuardScope for Scope {
 	async fn run_visible(&mut self, _: &RunMetadata) -> Result<bool> {
 		self.record("visible")?;
 		Ok(self.visible)
-	}
-	async fn cluster_targets(&mut self, _: Uuid) -> Result<Vec<String>> {
-		self.record("clusters")?;
-		Ok(self.clusters.clone())
 	}
 	async fn task_read(&mut self, id: Uuid) -> Result<Task> {
 		self.record("task_read")?;
@@ -261,12 +253,15 @@ async fn use_recheck_blocks_a_run_whose_reference_embedding_is_no_longer_availab
 }
 #[rstest]
 #[tokio::test]
-async fn opt_in_memory_keeps_current_source_authority_without_a_native_area(
+async fn builtin_memory_keeps_current_source_authority_without_a_native_area(
 	mut scope: Scope,
 	run: RunMetadata,
 ) {
 	let config = authorize(&mut scope, &run, true).await.unwrap();
-	assert!(config.conversation_memory);
+	assert_eq!(
+		config.memory.as_ref().map(|memory| memory.id.as_str()),
+		Some(aidash_domain::registry::bindings::memory_defaults::MEMORY_ID)
+	);
 	assert!(!config.core_capabilities.enabled());
 	assert!(!scope.calls.contains(&"context".into()));
 	for definition in &scope.snapshot.definitions {
@@ -280,8 +275,8 @@ async fn opt_in_memory_keeps_current_source_authority_without_a_native_area(
 }
 #[rstest]
 #[case("fixture-model")]
-#[case("private.approval")]
-#[case("memory")]
+#[case("other-tool")]
+#[case("aidash.memory")]
 #[case("tool")]
 #[case("aidash.thread_read")]
 #[case("aidash.human_request")]
@@ -301,8 +296,8 @@ async fn revocation_of_any_admitted_dependency_prevents_accepting_output(
 #[rstest]
 #[case("producer")]
 #[case("fixture-model")]
-#[case("private.approval")]
-#[case("memory")]
+#[case("other-tool")]
+#[case("aidash.memory")]
 #[case("tool")]
 #[tokio::test]
 async fn a_changed_immutable_definition_cannot_replace_the_admitted_one(
@@ -318,7 +313,6 @@ async fn a_changed_immutable_definition_cannot_replace_the_admitted_one(
 }
 #[rstest]
 #[case("visible")]
-#[case("clusters")]
 #[case("task_read")]
 #[case("task.execute")]
 #[case("live")]
@@ -349,7 +343,7 @@ async fn adapter_fault_stops_at_the_failing_boundary(
 			.snapshot
 			.definitions
 			.iter()
-			.filter(|d| ["memory", "tool", "private.approval"].contains(&d.identity.id.as_str()))
+			.filter(|d| ["tool", "other-tool"].contains(&d.identity.id.as_str()))
 			.map(|d| d.definition.clone())
 			.collect();
 		scope.snapshot = crate::test_support::resolve("aidash://local", &root, false, extras);
@@ -373,29 +367,7 @@ async fn hidden_run_stops_before_any_registry_disclosure(mut scope: Scope, run: 
 }
 #[rstest]
 #[tokio::test]
-async fn conversation_cluster_remains_required_independently_of_agent_config(
-	mut scope: Scope,
-	run: RunMetadata,
-) {
-	scope.deny = Some("catalog:conversation-cluster:cluster.execute".into());
-	assert!(matches!(
-		authorize(&mut scope, &run, true).await,
-		Err(Error::Forbidden)
-	));
-	assert!(!scope.calls.contains(&"task_read".into()));
-}
-#[rstest]
-#[tokio::test]
-async fn malformed_conversation_target_and_missing_agent_subject_are_rejected(
-	mut scope: Scope,
-	run: RunMetadata,
-) {
-	scope.clusters = vec!["malformed".into()];
-	assert!(matches!(
-		authorize(&mut scope, &run, true).await,
-		Err(Error::Forbidden)
-	));
-	scope.clusters.clear();
+async fn a_missing_agent_subject_is_rejected(mut scope: Scope, run: RunMetadata) {
 	scope.bundle.subjects.clear();
 	assert!(matches!(
 		authorize(&mut scope, &run, true).await,
@@ -504,7 +476,7 @@ async fn a_delegated_agents_model_is_checked_against_that_agent(
 #[rstest]
 #[case("producer", "catalog:producer:agent.execute")]
 #[case("fixture-model", "catalog:fixture-model:registry.read")]
-#[case("memory", "catalog:memory:registry.read")]
+#[case("aidash.memory", "catalog:aidash.memory:registry.read")]
 #[case("tool", "catalog:tool:registry.read")]
 #[tokio::test]
 async fn use_recheck_names_the_first_definition_the_run_may_not_use(
@@ -517,14 +489,7 @@ async fn use_recheck_names_the_first_definition_the_run_may_not_use(
 	let blocked = use_recheck(&mut scope, &run).await.unwrap().unwrap();
 	assert_eq!(blocked.id, withdrawn);
 	// Only what the Run uses is looked at, not who may see it or its Task.
-	for other in [
-		"visible",
-		"clusters",
-		"task_read",
-		"task.execute",
-		"live",
-		"pinned",
-	] {
+	for other in ["visible", "task_read", "task.execute", "live", "pinned"] {
 		assert!(!scope.calls.contains(&other.into()), "{other}");
 	}
 }
@@ -547,7 +512,7 @@ async fn use_recheck_keeps_digest_changes_and_adapter_faults_as_errors(
 	mut scope: Scope,
 	run: RunMetadata,
 ) {
-	scope.changed = Some("memory".into());
+	scope.changed = Some("aidash.memory".into());
 	assert!(matches!(
 		use_recheck(&mut scope, &run).await,
 		Err(Error::Conflict(_))
@@ -562,7 +527,7 @@ async fn use_recheck_keeps_digest_changes_and_adapter_faults_as_errors(
 #[rstest]
 #[tokio::test]
 async fn a_withdrawn_definition_refuses_authorize_as_forbidden(mut scope: Scope, run: RunMetadata) {
-	scope.deny = Some("catalog:memory:registry.read".into());
+	scope.deny = Some("catalog:aidash.memory:registry.read".into());
 	assert!(matches!(
 		authorize(&mut scope, &run, true).await,
 		Err(Error::Forbidden)

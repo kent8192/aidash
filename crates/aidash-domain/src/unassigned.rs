@@ -108,11 +108,7 @@ pub enum ChildrenDecision {
 	AbandonAndWait(Vec<UnassignedTask>),
 }
 
-pub fn decide_children(
-	summary: &ChildTaskSummary,
-	told: &BTreeSet<Uuid>,
-	no_step_left: bool,
-) -> ChildrenDecision {
+pub fn decide_children(summary: &ChildTaskSummary, told: &BTreeSet<Uuid>) -> ChildrenDecision {
 	if !summary.has_pending {
 		return ChildrenDecision::Finish;
 	}
@@ -124,18 +120,14 @@ pub fn decide_children(
 	if summary.open_tasks > all.len() as u64 {
 		return ChildrenDecision::Wait;
 	}
-	// With no step left there is no notice, so the Run does not fail on its
-	// step limit; it goes on to the rules below.
-	if !no_step_left {
-		let untold: Vec<UnassignedTask> = all
-			.iter()
-			.filter(|task| !told.contains(&task.id))
-			.take(LIST_LIMIT)
-			.cloned()
-			.collect();
-		if !untold.is_empty() {
-			return ChildrenDecision::Tell(untold);
-		}
+	let untold: Vec<UnassignedTask> = all
+		.iter()
+		.filter(|task| !told.contains(&task.id))
+		.take(LIST_LIMIT)
+		.cloned()
+		.collect();
+	if !untold.is_empty() {
+		return ChildrenDecision::Tell(untold);
 	}
 	let ask: Vec<UnassignedTask> = all
 		.iter()

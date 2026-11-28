@@ -29,7 +29,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use uuid::Uuid;
 
 mod authority;
-pub(crate) use authority::{CatalogAuthority, ChainAllowance, require_approved};
+pub(crate) use authority::{ApprovalAuthority, ChainAllowance};
 
 const ATTEMPTS: &str = "decision_attempts";
 const EVIDENCE: &str = "decision_evidence";

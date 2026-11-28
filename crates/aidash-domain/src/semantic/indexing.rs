@@ -432,8 +432,8 @@ impl ImageSlots {
 /// Decode the same persisted specification after the locked authority fence.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-pub struct IndexingSpec {
-	pub embedding: EmbeddingConfig,
+pub struct IndexingSpec<E = EmbeddingConfig> {
+	pub embedding: E,
 	pub vector: VectorConfig,
 	pub enabled: bool,
 	pub auto_context: bool,
@@ -445,6 +445,23 @@ pub struct IndexingSpec {
 	pub max_image_bytes: usize,
 	#[serde(default = "default_max_images")]
 	pub max_images: usize,
+}
+
+impl<E> IndexingSpec<E> {
+	pub fn with_embedding<T>(self, embedding: T) -> IndexingSpec<T> {
+		IndexingSpec {
+			embedding,
+			vector: self.vector,
+			enabled: self.enabled,
+			auto_context: self.auto_context,
+			max_sources: self.max_sources,
+			max_results: self.max_results,
+			max_result_tokens: self.max_result_tokens,
+			max_input_bytes: self.max_input_bytes,
+			max_image_bytes: self.max_image_bytes,
+			max_images: self.max_images,
+		}
+	}
 }
 
 impl IndexingSpec {

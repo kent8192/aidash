@@ -30,7 +30,7 @@ async fn finished_test(app: &common::TestApplication, token: &str, path: &str, i
 
 fn agent() -> Value {
 	// Exclude unrelated native-memory schemas from the external-Tool sandbox fixture.
-	json!({"id":"","version":"1.0.0","kind":"agent","name":{"en":"Test agent"},"description":{"en":"Authoring fixture"},"capabilities":["summarize"],"tags":[],"languages":["en"],"skills":[],"schema":{},"config":{"model":{"id":"fixture-model","version":"1.0.0"},"instructions":"Summarize carefully","schema_version":1,"bindings":[],"remove_default":["memory_mutate","memory_recall","memory_reflect"],"max_steps":8}})
+	json!({"id":"","version":"1.0.0","kind":"agent","name":{"en":"Test agent"},"description":{"en":"Authoring fixture"},"capabilities":["summarize"],"tags":[],"languages":["en"],"schema":{},"config":{"model":{"id":"fixture-model","version":"1.0.0"},"instructions":"Summarize carefully","bindings":[],"remove_default":["memory_mutate","memory_recall","memory_reflect"]}})
 }
 
 #[rstest::rstest]
@@ -68,7 +68,7 @@ async fn simulated_test_never_invokes_the_registered_external_tool(
 			json!({"registry_deployment":f.config.deployment,"provider":"integration.http@1","operation":"invoke","default_alias":"plugin_0","tier":"integration","narrow":{},"transport":{"transport":"http","endpoint":format!("{endpoint}/effect"),"replay":"read_only"}}),
 		),
 	] {
-		let entry = json!({"id":id,"version":"1.0.0","kind":kind,"name":{"en":id},"description":{"en":"fixture"},"capabilities":[],"tags":[],"languages":["en"],"skills":[],"schema":{},"config":config});
+		let entry = json!({"id":id,"version":"1.0.0","kind":kind,"name":{"en":id},"description":{"en":"fixture"},"capabilities":[],"tags":[],"languages":["en"],"schema":{},"config":config});
 		f.registry
 			.register(
 				&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
@@ -308,7 +308,7 @@ async fn draft_conflict_register_and_factual_inspection(
 	let app = application_fixture.application.clone();
 	common::tenant_root_in(f.store.pool.fixture_driver(), "acme").await;
 	let deployment_administrator = f.config.api_token.clone();
-	let model = json!({"id":"fixture-model","version":"1.0.0","kind":"model","name":{"en":"Fixture model"},"description":{"en":"Fixture"},"capabilities":[],"tags":[],"languages":["en"],"skills":[],"schema":{},"config":{"provider":"openrouter","model_id":"fixture","endpoint":"http://127.0.0.1:9999/v1","context_window":32768,"max_output_tokens":2048,"modalities":["text"],"cost":{}}});
+	let model = json!({"id":"fixture-model","version":"1.0.0","kind":"model","name":{"en":"Fixture model"},"description":{"en":"Fixture"},"capabilities":[],"tags":[],"languages":["en"],"schema":{},"config":{"provider":"openrouter","model_id":"fixture","endpoint":"http://127.0.0.1:9999/v1","context_window":32768,"max_output_tokens":2048,"modalities":["text"],"cost":{}}});
 	f.registry
 		.register(
 			&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
@@ -343,7 +343,7 @@ async fn draft_conflict_register_and_factual_inspection(
 	assert_eq!(status, 200, "draft: {draft}");
 	let draft_id = draft["id"].as_str().unwrap();
 	let agent_id = draft["entry"]["id"].as_str().unwrap();
-	assert_eq!(draft["entry"]["config"]["schema_version"], 1);
+	assert!(draft["entry"]["config"].get("schema_version").is_none());
 	assert!(
 		draft["entry"]["config"]
 			.get("allow_task_creation")

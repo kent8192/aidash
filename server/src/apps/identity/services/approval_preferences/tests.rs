@@ -92,10 +92,6 @@ fn auto_needs_a_decider_that_can_judge_and_says_why_it_is_unavailable() {
 	let bundle = bundle();
 	for (availability, expected) in [
 		(Availability::Usable, (true, None)),
-		(
-			Availability::Unapproved,
-			(false, Some(ModeReason::DeciderUnapproved)),
-		),
 		(Availability::Missing, (false, Some(ModeReason::NoDecider))),
 	] {
 		let offered = modes(&bundle, "alice", availability, false);

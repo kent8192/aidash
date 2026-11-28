@@ -4,7 +4,6 @@ export const settingsSections = [
   "agents",
   "workingFiles",
   "registry",
-  "clusters",
   "generation",
   "authorization",
   "semantic",
@@ -24,7 +23,6 @@ export const visibleSettingsSections = [
   "nodes",
   "agents",
   "registry",
-  "clusters",
   "deployment",
   "providerCredentials",
   "planConnections",
@@ -45,7 +43,6 @@ export const tenantContentSettingsSections: Partial<
 > = {
   agents: true,
   registry: true,
-  clusters: true,
   providerCredentials: true,
   nodes: true,
 };

@@ -151,38 +151,6 @@ fn request_messages_unrecorded(context: &Context, pinned: &Value) -> Vec<Value> 
 	request.input_body()["messages"].as_array().unwrap().clone()
 }
 
-#[test]
-fn the_step_limit_notice_changes_only_at_80_and_90_percent() {
-	let notices = (0..20)
-		.map(|step| step_limit_notice(step, 20))
-		.collect::<Vec<_>>();
-	assert!(notices[..16].iter().all(Option::is_none));
-	assert!(
-		notices[16..18]
-			.iter()
-			.all(|notice| notice.is_some_and(|text| text.starts_with("80%")))
-	);
-	assert!(
-		notices[18..]
-			.iter()
-			.all(|notice| notice.is_some_and(|text| text.starts_with("90%")))
-	);
-	// The state changes, and so is recorded, exactly three times in 20 steps.
-	let mut run = context(vec![]);
-	let mut recorded = 0;
-	for step in 0..20 {
-		let mut state = json!({"phase": "thinking"});
-		if let Some(notice) = step_limit_notice(step, 20) {
-			state["step_limit"] = json!(notice);
-		}
-		recorded += usize::from(record_step_state(&mut run, &json!({"agent_state": state})));
-		run.push(assistant(i64::from(step), "", &["a"]));
-		run.push(tool("a"));
-	}
-	assert_eq!(recorded, 3);
-	assert_eq!(step_limit_notice(0, 0), None);
-}
-
 fn thread(tasks: &[&str]) -> Value {
 	json!({
 		"view": "workspace_observation_v1",

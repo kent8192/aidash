@@ -5,10 +5,8 @@ use crate::apps::identity::services::boundary::AccessBoundary;
 use reinhardt::{ServerRouter, UnifiedRouter};
 
 pub fn url_patterns() -> UnifiedRouter {
-	UnifiedRouter::new()
-		.mount_unified("/", super::observation::routes())
-		.server(|server| {
-			server
+	UnifiedRouter::new().server(|server| {
+		server
 				.endpoint(super::views::lifecycle::live)
 				.endpoint(super::views::lifecycle::ready)
 				.endpoint(super::views::schema::document)
@@ -59,7 +57,7 @@ pub fn url_patterns() -> UnifiedRouter {
 				.endpoint(super::views::frontend::index_head)
 				.endpoint(super::views::frontend::asset)
 				.endpoint(super::views::frontend::asset_head)
-		})
+	})
 }
 
 pub fn probe_url_patterns() -> ServerRouter {

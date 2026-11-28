@@ -3016,26 +3016,6 @@ impl Guard {
 	pub(crate) fn tenancy(&self) -> &aidash_application::tenancy::TenancyScope {
 		&self.tenancy
 	}
-	/// The Decider's exact definition, once the Run's subject may invoke it here:
-	/// its Catalog Approval on this Node (ADR 0042).
-	pub(crate) async fn decider_entry(
-		&self,
-		reference: &EntityRef,
-	) -> Result<crate::registry::Entry> {
-		let mut access = self.access.write().await;
-		catalog::entry(&mut access, reference, aidash_domain::decision::INVOKE).await
-	}
-	/// The approval Decider the Run's Tenant chose for Auto, or the built-in one
-	/// (ADR 0077).
-	pub(crate) async fn approval_decider_reference(&self) -> Result<EntityRef> {
-		let mut access = self.access.write().await;
-		let tenant = access.identity.tenant.clone();
-		Ok(
-			crate::apps::identity::repositories::approval_decider::chosen(&mut *access.tx, &tenant)
-				.await?
-				.reference,
-		)
-	}
 	/// The executing node's local Tenant of this worker: for a remote Run, the
 	/// receiver's mapped Tenant, never the Home node's.
 	pub(crate) async fn tenant(&self) -> String {
@@ -3217,31 +3197,6 @@ impl Guard {
 		)
 		.await
 	}
-	/// Reading a source for the main model does not permit disclosing it to a
-	/// separate selector. Policy sees the exact selector and destination set.
-	pub(crate) async fn context_source_disclosure(
-		&self,
-		decider: &aidash_domain::decision::DeciderPin,
-		config: &aidash_domain::decision::DeciderConfig,
-		pins: &[aidash_domain::decision::SourcePin],
-		source: &aidash_domain::registry::bindings::QualifiedRef,
-		query_policy: aidash_domain::context::source::QueryPolicy,
-	) -> Result<()> {
-		let mut access = self.access.write().await;
-		let mut thread = access.thread(self.run.thread_id).await?;
-		thread.attributes["context_selection"] = json!(decider);
-		thread.attributes["hook"] = json!("context_selection");
-		thread.attributes["source"] = json!(source);
-		thread.attributes["query_policy"] = json!(query_policy);
-		thread.attributes["inference_model"] = json!(self.agent.model);
-		thread.attributes["decider"] = json!(decider.identity);
-		thread.attributes["selector_routes"] = json!(config.routes);
-		thread.attributes["source_pins"] = json!(pins);
-		thread.attributes["preview_disclosure"] = json!(true);
-		thread.attributes["query_disclosure"] = json!(true);
-		access.require(&thread, "semantic.disclose").await
-	}
-
 	pub(crate) async fn recheck_source_observation(
 		&self,
 		store: &Store,

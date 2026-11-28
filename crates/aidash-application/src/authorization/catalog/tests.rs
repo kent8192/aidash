@@ -144,6 +144,42 @@ impl CatalogScope for Fixture {
 		}
 	}
 }
+
+#[tokio::test]
+async fn built_in_memory_roles_are_available_to_execution_but_hidden_from_registry_reads() {
+	use aidash_domain::registry::bindings::memory_defaults;
+
+	let mut scope = Fixture::new();
+	let roles = memory_defaults::definitions().unwrap();
+	for role in &roles {
+		scope.documents.push(serde_json::to_value(role).unwrap());
+	}
+	let visible = list(&mut scope, &Search::default()).await.unwrap();
+	assert_eq!(
+		visible
+			.iter()
+			.map(|entry| entry.id.as_str())
+			.collect::<Vec<_>>(),
+		["first", "second"],
+	);
+	for role in roles {
+		let reference = EntityRef {
+			id: role.id.clone(),
+			version: role.version.clone(),
+		};
+		assert!(matches!(
+			get(&mut scope, &reference).await,
+			Err(Error::Forbidden)
+		));
+		assert_eq!(
+			entry(&mut scope, &reference, "registry.read")
+				.await
+				.unwrap(),
+			role
+		);
+	}
+}
+
 #[rstest]
 #[tokio::test]
 async fn inherited_lease_cannot_expand_its_approved_definition_frontier() {

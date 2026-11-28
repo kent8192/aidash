@@ -4,7 +4,7 @@ use crate::{
 	ports::registry::{DefinitionLookup, DefinitionWriter, RegistrationScope, RegistryRead},
 };
 use aidash_domain::{
-	registry::{ClusterConfig, Entry, Search},
+	registry::{Entry, Search},
 	tool::ToolConfig,
 };
 use serde_json::{Value, json};
@@ -228,40 +228,6 @@ pub async fn validate_references(
 		return Err(Error::Invalid(
 			"agent tool executor must reference a local agent".into(),
 		));
-	}
-	if entry.kind == "cluster" {
-		let config: ClusterConfig = serde_json::from_value(entry.config.clone())?;
-		if scope
-			.executor_kind(&config.coordinator.id, &config.coordinator.version)
-			.await?
-			.as_deref()
-			!= Some("agent")
-		{
-			return Err(Error::Invalid(
-				"cluster coordinator must reference an agent".into(),
-			));
-		}
-		let coordinator = scope
-			.definition(&config.coordinator.id, &config.coordinator.version)
-			.await?;
-		let snapshot = bindings::resolve(
-			&mut bindings::catalog::LookupCatalog {
-				definitions: scope,
-				node,
-			},
-			validation,
-			aidash_domain::registry::bindings::QualifiedRef {
-				registry_deployment: node.into(),
-				id: coordinator.id.clone(),
-				version: coordinator.version.clone(),
-			},
-			&coordinator,
-			false,
-		)
-		.await?;
-		for name in ["task_create", "task_delegate", "agent_discover"] {
-			snapshot.operation(name)?;
-		}
 	}
 	Ok(())
 }

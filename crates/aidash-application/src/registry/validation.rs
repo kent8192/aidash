@@ -14,7 +14,7 @@ use aidash_domain::{
 	keyless::Destination,
 	model::ModelConfig,
 	nodes::DeploymentId,
-	registry::{AgentConfig, ClusterConfig, Entry},
+	registry::{AgentConfig, Entry},
 	tool::ToolConfig,
 };
 use serde_json::Value;
@@ -392,27 +392,7 @@ impl DefinitionValidation {
 				let input: aidash_domain::registry::bindings::AgentBindings =
 					serde_json::from_value(e.config.clone())?;
 				input.validate()?;
-				if !stored {
-					aidash_domain::registry::execution_contract(
-						input.projection_version,
-						input.harness_contract,
-					)
-					.map_err(Error::Invalid)?;
-				}
 				self.validate_plugin_servers(&input)?;
-			}
-			"cluster" => {
-				let cluster: ClusterConfig =
-					serde_json::from_value(e.config.clone()).map_err(|error| {
-						Error::Invalid(format!("cluster requires a coordinator reference: {error}"))
-					})?;
-				if cluster.coordinator.id.trim().is_empty()
-					|| semver::Version::parse(&cluster.coordinator.version).is_err()
-				{
-					return Err(Error::Invalid(
-						"cluster coordinator requires an id and semantic version".into(),
-					));
-				}
 			}
 			"tool" if aidash_domain::tool::legacy_config(&e.config)?.is_some() => {
 				return Err(Error::Invalid(
@@ -584,11 +564,7 @@ impl DefinitionValidation {
 			})
 			.ok_or_else(|| Error::NotFound(config.model.id.clone()))?;
 		let model = ModelConfig::from_stored(model.definition.config.clone())?;
-		let contract = aidash_domain::registry::execution_contract(
-			config.projection_version,
-			config.harness_contract,
-		)
-		.map_err(Error::ProjectionRetired)?;
+		let contract = config.harness_contract.unwrap_or_default();
 		model.require_prompt_cache(config.prompt_cache.unwrap_or_default())?;
 		if let Some(budgets) = config.exposure_policy().budgets() {
 			return self.deferred_headroom(

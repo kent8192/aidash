@@ -95,7 +95,7 @@ fn model(id: &str) -> Value {
 }
 fn agent(id: &str, version: &str, model: &str) -> Value {
 	json!({"id":id,"version":version,"kind":"agent","name":{"en":id},"description":{"en":"Acceptance"},"schema":{},
-		"config":{"schema_version":1,"model":{"id":model,"version":"1.0.0"},"instructions":"Help","bindings":[],"remove_default":[]}})
+		"config":{"model":{"id":model,"version":"1.0.0"},"instructions":"Help","bindings":[],"remove_default":[]}})
 }
 /// The same agent keeping the Node's default compaction Binding, which needs
 /// its Decider approved first (#540).

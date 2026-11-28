@@ -708,7 +708,7 @@ async fn a_conversation_with_a_memory_target_creates_the_thread_index(
 		"bounds":{"max_unit_bytes":8192,"max_input_bytes":16384,"max_units":16,"max_candidates":8,"max_entities":8,"max_evidence":8,"max_links":8,"max_graph_hops":3,"max_graph_visits":32,"max_results":4,"max_context_tokens":8192,"max_model_calls":4,"max_model_tokens":8192,"max_cost_micros":10000,"max_retries":2,"max_call_seconds":30},
 		"learn_from_runs":false,"maintain_observations":false,"refresh_mental_models":false,
 	}});
-	let agent = json!({"schema_version":1,"model":reference("model"),"instructions":"Remember approved work","bindings":[
+	let agent = json!({"model":reference("model"),"instructions":"Remember approved work","bindings":[
 		{"kind":"memory","target":{"registry_deployment":deployment,"id":"p","version":"1.0.0"},"narrow":{}},
 	],"remove_default":["file_search","file_read"]});
 	for (kind, id, config) in [

@@ -34,6 +34,11 @@ impl Definition {
 		id: &str,
 		version: &str,
 	) -> Result<Entry> {
+		if let Some(definition) =
+			aidash_domain::registry::bindings::memory_defaults::definition(id, version)?
+		{
+			return Ok(definition);
+		}
 		Ok(serde_json::from_value(
 			definition_of(tx, tenant, id, version)
 				.await?
@@ -46,6 +51,11 @@ impl Definition {
 		id: &str,
 		version: &str,
 	) -> Result<Entry> {
+		if let Some(definition) =
+			aidash_domain::registry::bindings::memory_defaults::definition(id, version)?
+		{
+			return Ok(definition);
+		}
 		Ok(serde_json::from_value(
 			definition(tx, id, version).await?.metadata.into_inner(),
 		)?)
@@ -81,6 +91,13 @@ async fn definition_where(
 		.column(ColumnRef::Asterisk)
 		.from(Alias::new(Definition::table_name()))
 		.and_where(Expr::col("tenant").eq(tenant))
+		.and_where(
+			Expr::col("kind").is_in(
+				aidash_domain::registry::rules::REGISTRY_KINDS
+					.iter()
+					.copied(),
+			),
+		)
 		.and_where(Expr::col("id").eq(Expr::value(id)))
 		.and_where(Expr::col("version").eq(Expr::value(version)))
 		.lock(LockType::Share)

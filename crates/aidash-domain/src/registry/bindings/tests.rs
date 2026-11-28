@@ -3,7 +3,7 @@ use serde_json::{Value, json};
 
 #[test]
 fn reference_embedding_is_an_immutable_agent_definition_dependency() {
-	let entry: Entry = serde_json::from_value(json!({"id":"agent","version":"1.0.0","kind":"agent","name":{"en":"Agent"},"description":{"en":"Agent"},"config":{"schema_version":1,"model":{"id":"model","version":"1.0.0"},"instructions":"Work","reference_embedding":{"id":"image-embedding","version":"2.0.0"}}})).unwrap();
+	let entry: Entry = serde_json::from_value(json!({"id":"agent","version":"1.0.0","kind":"agent","name":{"en":"Agent"},"description":{"en":"Agent"},"config":{"model":{"id":"model","version":"1.0.0"},"instructions":"Work","reference_embedding":{"id":"image-embedding","version":"2.0.0"}}})).unwrap();
 	let root = QualifiedRef {
 		registry_deployment: "aidash://node-a".into(),
 		id: "agent".into(),
@@ -27,11 +27,14 @@ fn reference_embedding_is_an_immutable_agent_definition_dependency() {
 mod agent_plugins;
 
 fn agent() -> AgentBindings {
-	serde_json::from_value(json!({"schema_version":1,"model":{"id":"model","version":"1.0.0"},"instructions":"Work on the Task."})).unwrap()
+	serde_json::from_value(
+		json!({"model":{"id":"model","version":"1.0.0"},"instructions":"Work on the Task."}),
+	)
+	.unwrap()
 }
 
 #[test]
-fn built_in_memory_is_default_and_an_explicit_provider_takes_precedence() {
+fn built_in_memory_is_default_and_a_custom_provider_is_refused() {
 	let node = "aidash://node-a";
 	let mut config = agent();
 	let defaults = config.normalize(node).unwrap();
@@ -55,14 +58,10 @@ fn built_in_memory_is_default_and_an_explicit_provider_takes_precedence() {
 		members: vec![],
 		exposure: None,
 	});
-	let bound = config.normalize(node).unwrap();
-	let memories: Vec<_> = bound
-		.iter()
-		.filter(|binding| binding.binding.kind == BindingKind::Memory)
-		.collect();
-	assert_eq!(memories.len(), 1);
-	assert_eq!(memories[0].binding.target.id, "custom-memory");
-	assert_eq!(memories[0].origin, BindingOrigin::Explicit);
+	assert!(matches!(
+		config.normalize(node),
+		Err(crate::Error::Invalid(_))
+	));
 }
 
 #[test]
@@ -122,7 +121,7 @@ fn agent_model_roles_do_not_add_registry_dependencies() {
 }
 #[rstest::rstest]
 fn agent_config_rejects_removed_cluster_field() {
-	let input = json!({"schema_version":1,"model":{"id":"model","version":"1.0.0"},"instructions":"Work on the Task.","cluster":null});
+	let input = json!({"model":{"id":"model","version":"1.0.0"},"instructions":"Work on the Task.","cluster":null});
 	let error = serde_json::from_value::<AgentBindings>(input).unwrap_err();
 	assert!(error.to_string().contains("unknown field `cluster`"));
 }
@@ -146,7 +145,7 @@ fn legacy_and_mixed_schemas_are_rejected() {
 	}
 	assert!(
 		serde_json::from_value::<AgentBindings>(
-			json!({"model":{"id":"model","version":"1.0.0"},"instructions":"old"})
+			json!({"model":{"id":"model","version":"1.0.0"},"instructions":"old","exposure":{"version":"legacy@1"}})
 		)
 		.is_err()
 	);
@@ -282,13 +281,14 @@ fn narrowing_intersects_and_enforces_bounds_without_changing_facts() {
 	assert!(serde_json::from_value::<Narrowing>(json!({"effect":"read_only"})).is_err());
 }
 #[test]
-fn explicit_source_does_not_implicitly_grant_memory_read_or_write() {
-	let mut agent = agent();
-	agent.bindings.push(Binding {
-		kind: BindingKind::Memory,
+fn an_explicit_source_does_not_restore_removed_memory_tools() {
+	let node = "aidash://node-a";
+	let mut config = agent();
+	config.bindings.push(Binding {
+		kind: BindingKind::Source,
 		target: QualifiedRef {
-			registry_deployment: "aidash://node-a".into(),
-			id: "native.memory".into(),
+			registry_deployment: node.into(),
+			id: "retrieval".into(),
 			version: "1.0.0".into(),
 		},
 		alias: None,
@@ -296,23 +296,25 @@ fn explicit_source_does_not_implicitly_grant_memory_read_or_write() {
 		members: vec![],
 		exposure: None,
 	});
-	let normalized = agent.normalize("aidash://node-a").unwrap();
-	assert_eq!(
+	config
+		.remove_default
+		.extend(MEMORY_TOOLS.iter().map(|tool| (*tool).to_owned()));
+	let normalized = config.normalize(node).unwrap();
+	assert!(
 		normalized
 			.iter()
-			.filter(|b| b.binding.kind == BindingKind::Memory)
-			.count(),
-		1
+			.any(|binding| binding.binding.target.id == "retrieval")
 	);
-	agent.remove_default.push("memory_mutate".into());
-	assert!(
-		agent
-			.normalize("aidash://node-a")
-			.unwrap()
-			.iter()
-			.any(|b| b.binding.kind == BindingKind::Memory)
-	);
+	for tool in MEMORY_TOOLS {
+		assert!(
+			!normalized
+				.iter()
+				.any(|binding| binding.binding.target.id == format!("aidash.{tool}")),
+			"{tool}"
+		);
+	}
 }
+
 #[test]
 fn memory_builtins_stay_default_bindings_and_may_be_explicit() {
 	let memory_tools = |agent: &AgentBindings| -> Vec<BindingOrigin> {
@@ -334,20 +336,8 @@ fn memory_builtins_stay_default_bindings_and_may_be_explicit() {
 	let explicit = Binding::tool(QualifiedRef::builtin("aidash://node-a", "memory_recall"));
 	agent.bindings.push(explicit.clone());
 	agent.validate().unwrap();
-	agent.bindings.push(Binding {
-		kind: BindingKind::Memory,
-		target: QualifiedRef {
-			registry_deployment: "aidash://node-a".into(),
-			id: "native.memory".into(),
-			version: "1.0.0".into(),
-		},
-		alias: None,
-		narrow: Narrowing::default(),
-		members: vec![],
-		exposure: None,
-	});
-	agent.validate().unwrap();
-	agent.bindings.retain(|b| b != &explicit);
+	assert!(memory_tools(&agent).contains(&BindingOrigin::Explicit));
+	agent.bindings.clear();
 	agent.remove_default.push("memory_recall".into());
 	assert_eq!(memory_tools(&agent).len(), 2);
 }
@@ -584,7 +574,6 @@ fn binding_exposure_requires_deferred_policy_and_exposable_kind() {
 #[test]
 fn legacy_agent_json_round_trips_byte_identically() {
 	let input = json!({
-		"schema_version": 1,
 		"model": {"id": "model", "version": "1.0.0"},
 		"instructions": "Work on the Task.",
 		"bindings": [{
@@ -593,8 +582,7 @@ fn legacy_agent_json_round_trips_byte_identically() {
 			"alias": "read",
 			"narrow": {}
 		}],
-		"remove_default": ["memory_mutate"],
-		"max_steps": 9
+		"remove_default": ["memory_mutate"]
 	});
 	let parsed: AgentBindings = serde_json::from_value(input.clone()).unwrap();
 	assert_eq!(parsed.exposure, None);
@@ -653,8 +641,7 @@ fn omitted_rendering_pins_keep_the_definition_bytes() {
 	assert_eq!(config.projection_version, None);
 	assert_eq!(config.harness_contract, None);
 	assert_eq!(
-		crate::registry::execution_contract(config.projection_version, config.harness_contract)
-			.unwrap(),
+		config.harness_contract.unwrap_or_default(),
 		crate::harness_contract::HarnessContract::Structured4
 	);
 	assert_eq!(serde_json::to_value(config).unwrap(), input);
@@ -664,31 +651,9 @@ fn omitted_rendering_pins_keep_the_definition_bytes() {
 fn unknown_harness_contract_versions_are_rejected() {
 	let mut input = serde_json::to_value(agent()).unwrap();
 	// structured@1 and structured@2 were removed by #532; nothing accepts them.
-	for contract in ["structured@1", "structured@2", "structured@5"] {
+	for contract in ["legacy@1", "structured@1", "structured@2", "structured@5"] {
 		input["harness_contract"] = json!(contract);
 		assert!(serde_json::from_value::<AgentBindings>(input.clone()).is_err());
-	}
-}
-
-#[test]
-fn retired_pins_keep_their_saved_serialization() {
-	for projection in ["legacy", "ordered", "native"] {
-		let mut input = serde_json::to_value(agent()).unwrap();
-		input["projection_version"] = json!(projection);
-		input["harness_contract"] = json!("legacy@1");
-		let parsed: crate::registry::AgentConfig = serde_json::from_value(input.clone()).unwrap();
-		let serialized = serde_json::to_value(&parsed).unwrap();
-		assert_eq!(
-			serialized["projection_version"],
-			input["projection_version"]
-		);
-		assert_eq!(serialized["harness_contract"], input["harness_contract"]);
-		assert_eq!(
-			parsed.definition().harness_contract,
-			Some(crate::harness_contract::HarnessContractPin::Retired(
-				crate::harness_contract::RetiredHarnessContract::V1
-			))
-		);
 	}
 }
 
