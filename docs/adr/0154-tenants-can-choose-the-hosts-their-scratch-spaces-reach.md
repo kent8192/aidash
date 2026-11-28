@@ -1,4 +1,4 @@
-# 0153. Tenants can choose the hosts their Scratch Spaces reach
+# 0154. Tenants can choose the hosts their Scratch Spaces reach
 
 Decided on 2026-11-28 in the Tenant Configurator live check (Issue #1155, ADR 0151).
 
