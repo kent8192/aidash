@@ -2166,10 +2166,11 @@ async fn local_database_preparation_uses_and_replays_the_native_history(
 		.args([&fixture.url, &fixture.url])
 		.kill_on_drop(true);
 
-	// Act: the second preparation must reuse the same applied records.
-	let output = tokio::time::timeout(Duration::from_secs(35), command.output())
+	// Apply the full graph and replay it in one process. The deadline catches
+	// a hung preparation while allowing both passes on a shared CI host.
+	let output = tokio::time::timeout(Duration::from_secs(120), command.output())
 		.await
-		.unwrap()
+		.expect("local database preparation did not complete")
 		.unwrap();
 
 	// Assert: local setup runs the shared migrator and its extension version check.
@@ -5833,14 +5834,9 @@ async fn memory_role_migration_accepts_agent_model_and_optional_embedding(
 	#[future] fresh_database: MigrationFixture,
 ) {
 	let fixture = fresh_database.await;
-	let source =
-		FilesystemSource::new(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("migrations"));
-	let migrations = source.all_migrations().await.unwrap();
-	DatabaseMigrationExecutor::new(fixture.connection.clone())
-		.with_migration_history(migrations.clone())
-		.apply_migrations(&migrations)
-		.await
-		.unwrap();
+	fixture
+		.migrate_before_goals(REGISTRY_PRUNING_MIGRATIONS)
+		.await;
 	let pool = fixture.connection.clone().into_postgres().unwrap();
 	let mut policy: serde_json::Value = serde_json::from_str(include_str!(
 		"../../../../../tests/fixtures/native_memory_policy_baseline.json"
