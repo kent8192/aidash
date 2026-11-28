@@ -246,9 +246,8 @@ pub fn legacy_journal_entries(validation: &DefinitionValidation, node: &str) -> 
 	Ok(old)
 }
 
-/// Every definition the Node declares to every Tenant's Registry: the built-in
-/// tools and the approval Decider. Unlike a tool, the Decider needs a Tenant's
-/// Catalog Approval before anything may use it.
+/// The Node's system definitions, including the private roles used to build
+/// Binding snapshots for built-in Memory.
 pub fn declarations(validation: &DefinitionValidation, node: &str) -> Result<Vec<Entry>> {
 	let mut declared = entries(validation, node)?;
 	declared.push(tenant_default_embedding()?);
@@ -366,10 +365,8 @@ fn tenant_default_embedding() -> Result<Entry> {
 	})
 }
 
-/// Writes every built-in definition into the scope's Tenant: the ordinary
-/// built-ins, the approval Decider, and the Sandboxed and research groups the
-/// Deployment offers, which the Tenant approves before use. The caller owns one
-/// transaction. Conflicting bytes fail.
+/// Seeds the Tenant's built-in definitions and the groups the Deployment offers
+/// for Tenant approval. The caller owns one transaction. Conflicting bytes fail.
 pub async fn seed(
 	scope: &mut dyn DefinitionWriter,
 	validation: &DefinitionValidation,
