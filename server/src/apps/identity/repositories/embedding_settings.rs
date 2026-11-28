@@ -5,8 +5,8 @@ use aidash_application::embedding::{
 use aidash_domain::semantic::EmbeddingConfig;
 use reinhardt::db::backends::TransactionExecutor;
 use reinhardt::query::{
-	Alias, Expr, ExprTrait, Func, LockType, OnConflict, PostgresQueryBuilder, Query,
-	QueryStatementBuilder,
+	Alias, Expr, ExprTrait, Func, IntoIden, LockType, OnConflict, PostgresQueryBuilder, Query,
+	QueryStatementBuilder, SimpleExpr,
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -200,11 +200,13 @@ pub(crate) async fn embedding_config(
 async fn drive_entries_exist(tx: &mut dyn TransactionExecutor) -> Result<bool> {
 	// Worker C creates the Drive tables. Until that migration is present,
 	// this branch has no Drive inventory.
+	let relation = SimpleExpr::FunctionCall(
+		"to_regclass".into_iden(),
+		vec![Expr::value("drive_entries").into()],
+	);
 	Ok(native::query_scalar(
 		&Query::select()
-			.expr(Expr::cust(
-				"to_regclass('public.drive_entries') IS NOT NULL",
-			))
+			.expr(relation.is_not_null())
 			.to_string(PostgresQueryBuilder),
 	)
 	.scalar_one(tx)
