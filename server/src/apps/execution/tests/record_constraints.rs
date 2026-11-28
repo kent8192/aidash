@@ -14,7 +14,7 @@ fn model() -> Entry {
 	serde_json::from_value(json!({
 		"id":"test-model", "version":"1.0.0", "kind":"model",
 		"name":{"en":"Test model"}, "description":{"en":"Fixture"},
-		"config":{"provider":"openrouter", "model_id":"vendor/model",
+		"config":{"provider":"openai_compatible", "model_id":"vendor/model",
 			"endpoint":"http://localhost:9999/v1",
 			"context_window":4096, "max_output_tokens":1024, "modalities":["text"], "cost":{}}
 	}))

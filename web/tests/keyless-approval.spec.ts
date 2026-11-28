@@ -22,12 +22,12 @@ const entry = (id: string, kind: string, config: Record<string, unknown>) => ({
   config,
 });
 const approvedKeyless = entry("approved-keyless-model", "model", {
-  provider: "openrouter",
+  provider: "openai_compatible",
   model_id: "fixture",
   endpoint: "http://ollama.lan:11434/v1",
 });
 const pendingKeyless = entry("pending-keyless-embedding", "embedding", {
-  provider: "openai",
+  provider: "openai_compatible",
   endpoint: "https://embeddings.example/v1",
   model: "fixture",
   model_version: "1",

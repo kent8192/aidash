@@ -123,7 +123,7 @@ class NativeMemory(RemoteMemory):
             peer = self.issue_credential(node, self.tenants[node], PEER_SUBJECT)
             self.ok(self.administer(node, f"/api/authorization/{self.tenants[node]}/peer-mappings", {"node": self.nodes[node]["node"], "source_node": self.nodes[1 - node]["address"], "source_subject": "alice", "credential_id": peer["credential"]["id"], "enabled": True, "expected_revision": 0}))
             for kind, name, config in [
-                ("model", "model", {"provider": "openrouter", "model_id": "fixture", "endpoint": "http://provider:8080/v1", "context_window": 128000, "max_output_tokens": 4096, "modalities": ["text"], "cost": {}}),
+                ("model", "model", {"provider": "openai_compatible", "model_id": "fixture", "endpoint": "http://provider:8080/v1", "context_window": 128000, "max_output_tokens": 4096, "modalities": ["text"], "cost": {}}),
                 ("embedding", "home-embedding", self.embedding), ("reranker", "native-reranker", {"provider": "rrf"}),
                 ("tokenizer", "native-tokenizer", {"provider": "utf8_upper_bound"}), ("memory", "native-memory", policy),
                 ("source", "native-shared", {"memory": self.memory, "scope": "workspace", "max_tokens": 16384}),

@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 
 pub struct MigrationSeeds;
 
-fn assets() -> [(&'static str, String); 37] {
+fn assets() -> [(&'static str, String); 41] {
 	use crate::apps::{
 		federation::services::migration_seed as federation,
 		marketplace::services::migration_seed as marketplace,
@@ -175,6 +175,22 @@ fn assets() -> [(&'static str, String); 37] {
 		(
 			"workspaces/sql/backward/0067_task_duty_start.sql",
 			crate::apps::workspaces::services::duty_start_backfill::backward(),
+		),
+		(
+			"registry/sql/forward/0083_keyless_openai_compatible.sql",
+			crate::apps::registry::services::keyless_provider_backfill::forward(),
+		),
+		(
+			"registry/sql/backward/0083_keyless_openai_compatible.sql",
+			crate::apps::registry::services::keyless_provider_backfill::backward(),
+		),
+		(
+			"knowledge/sql/forward/0060_keyless_openai_compatible.sql",
+			crate::apps::knowledge::services::keyless_embedding_backfill::forward(),
+		),
+		(
+			"knowledge/sql/backward/0060_keyless_openai_compatible.sql",
+			crate::apps::knowledge::services::keyless_embedding_backfill::backward(),
 		),
 	]
 }

@@ -1133,7 +1133,7 @@ async fn a_schedule_runs_on_the_registrants_mapping_and_outlives_the_token_it_wa
 		(
 			"model",
 			"reporter-model",
-			json!({"provider":"openrouter","model_id":"fixture","endpoint":"http://127.0.0.1:1/v1","context_window":128000,"max_output_tokens":4096,"modalities":["text"],"cost":{}}),
+			json!({"provider":"openai_compatible","model_id":"fixture","endpoint":"http://127.0.0.1:1/v1","context_window":128000,"max_output_tokens":4096,"modalities":["text"],"cost":{}}),
 		),
 		(
 			"agent",

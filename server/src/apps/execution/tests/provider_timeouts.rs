@@ -15,7 +15,7 @@ use std::time::Duration;
 fn model_config(#[default("https://openrouter.ai/api/v1")] endpoint: &str
 ) -> Value {
 	json!({
-		"provider":"openrouter", "model_id":"vendor/fixture-model",
+		"provider":"openai_compatible", "model_id":"vendor/fixture-model",
 		"endpoint":endpoint, "context_window":32768, "max_output_tokens":4096,
 		"modalities":["text"], "cost":{}, "streaming":false
 	})

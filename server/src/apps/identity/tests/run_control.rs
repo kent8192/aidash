@@ -63,7 +63,7 @@ async fn world(fixture: common::ApplicationFixture) -> World {
 		(
 			"model",
 			"fixture-model",
-			json!({"provider":"openrouter","model_id":"fixture","endpoint":"http://127.0.0.1:1/v1","context_window":128000,"max_output_tokens":4096,"modalities":["text"],"cost":{}}),
+			json!({"provider":"openai_compatible","model_id":"fixture","endpoint":"http://127.0.0.1:1/v1","context_window":128000,"max_output_tokens":4096,"modalities":["text"],"cost":{}}),
 		),
 		(
 			"agent",
@@ -625,7 +625,7 @@ async fn an_agent_that_bound_a_removed_package_index_starts_after_the_migrations
 		(
 			"model",
 			"fixture-model",
-			json!({"provider":"openrouter","model_id":"fixture","endpoint":"http://127.0.0.1:1/v1","context_window":128000,"max_output_tokens":4096,"modalities":["text"],"cost":{}}),
+			json!({"provider":"openai_compatible","model_id":"fixture","endpoint":"http://127.0.0.1:1/v1","context_window":128000,"max_output_tokens":4096,"modalities":["text"],"cost":{}}),
 		),
 		(
 			"agent",

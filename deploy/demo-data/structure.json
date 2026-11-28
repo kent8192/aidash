@@ -32,7 +32,7 @@
           "languages": ["en"],
           "schema": {},
           "config": {
-            "provider": "openrouter",
+            "provider": "openai_compatible",
             "model_id": "openai/gpt-4o-mini",
             "endpoint": "https://openrouter.ai/api/v1",
             "context_window": 128000,
@@ -187,7 +187,7 @@
           "languages": ["en"],
           "schema": {},
           "config": {
-            "provider": "openrouter",
+            "provider": "openai_compatible",
             "model_id": "openai/gpt-4o-mini",
             "endpoint": "https://openrouter.ai/api/v1",
             "context_window": 128000,

@@ -48,7 +48,21 @@ Key Material.
 A model configuration without both `provider_credential` and `plan_connection`,
 or an embedding configuration without `provider_credential`, is a Keyless
 endpoint: Aidash calls it without any grant, it has no Provider Catalog entry,
-and Aidash promises nothing about what it retains (ADR 0036). It may connect
+and Aidash promises nothing about what it retains (ADR 0036). Its definition
+names `provider: "openai_compatible"` (#1169): registration refuses a Keyless
+definition that names `openrouter`, which requires `provider_credential`, and an
+`openai_compatible` definition that names a grant. Aidash calls it as an
+OpenAI-compatible API and sends it nothing that only OpenRouter understands: a
+chat request carries no `provider`, `session_id`, `transforms`,
+`prompt_cache_options` or `reasoning` object, and a configured reasoning effort
+travels unchanged as the standard `reasoning_effort` field. A Keyless model
+cannot declare `cache_mode: "explicit"`, so no `cache_control` marker reaches
+it, and an embedding request carries no `provider` or `dimensions`. The Tenant
+Cache Salt still starts the system text, since it is content rather than a
+field. Stored Keyless definitions were rewritten to `openai_compatible` by
+registry migration 0083 (and semantic index embeddings by knowledge 0060),
+which also dropped a Keyless model's `provider_route` and explicit `cache_mode`.
+An embedding definition still accepts the older Keyless name `openai`. It may connect
 only to public addresses unless the Deployment Administrators list its exact
 origin in `[keyless_endpoints] permitted_private_origins` (Helm:
 `keylessEndpoints.permittedPrivateOrigins`; environment:

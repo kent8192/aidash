@@ -50,7 +50,7 @@ fn config(
 #[rstest::rstest]
 fn model_configuration_uses_the_catalog_limit_and_preserves_legacy_records() {
 	let selected: ModelConfig = serde_json::from_value(json!({
-		"provider":"openrouter", "model_id":"google/gemini-3.8-flash",
+		"provider":"openai_compatible", "model_id":"google/gemini-3.8-flash",
 		"endpoint":"https://openrouter.ai/api/v1", "context_window":1048576, "max_output_tokens":65536,
 		"modalities":["text"], "cost":{}
 	}))
@@ -58,7 +58,7 @@ fn model_configuration_uses_the_catalog_limit_and_preserves_legacy_records() {
 	assert_eq!(selected.output_token_limit(), 65536);
 
 	let legacy: ModelConfig = serde_json::from_value(json!({
-		"provider":"openrouter", "model_id":"vendor/legacy",
+		"provider":"openai_compatible", "model_id":"vendor/legacy",
 		"endpoint":"https://openrouter.ai/api/v1", "context_window":128000, "modalities":["text"], "cost":{}
 	}))
 	.unwrap();
@@ -70,7 +70,7 @@ fn local_model_registration_requires_a_valid_catalog_output_limit() {
 	let mut entry: Entry = serde_json::from_value(json!({
 		"id":"router-model","version":"1.0.0","kind":"model",
 		"name":{"en":"Router model"},"description":{"en":"Test model"},
-		"config":config("openrouter","https://openrouter.ai/api/v1".into())
+		"config":config("openai_compatible","https://openrouter.ai/api/v1".into())
 	}))
 	.unwrap();
 	validate(&entry).unwrap();
@@ -87,11 +87,11 @@ fn local_model_registration_requires_a_valid_catalog_output_limit() {
 }
 
 #[rstest::rstest]
-fn registry_accepts_openrouter_and_rejects_unknown_providers(http_client: Client) {
+fn registry_accepts_keyless_models_and_rejects_unknown_providers(http_client: Client) {
 	let mut entry: Entry = serde_json::from_value(json!({
 		"id":"router-model","version":"1.0.0","kind":"model",
 		"name":{"en":"Router model"},"description":{"en":"Test model"},
-		"config":config("openrouter","https://openrouter.ai/api/v1".into())
+		"config":config("openai_compatible","https://openrouter.ai/api/v1".into())
 	}))
 	.unwrap();
 	validate(&entry).unwrap();

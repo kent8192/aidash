@@ -130,7 +130,7 @@ test("subject dashboard completes a conversation and clears expired access", asy
         "model",
         `${id}-model`,
         {
-          provider: "openrouter",
+          provider: "openai_compatible",
           model_id: "fixture",
           endpoint: `${providerOrigin}/v1`,
           context_window: 128000,

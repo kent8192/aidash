@@ -144,7 +144,7 @@ async function createGenerationScenario(
         name: { en: "Generation fixture model", ja: "生成確認モデル" },
         description: { en: "Local generation fixture" },
         config: {
-          provider: "openrouter",
+          provider: "openai_compatible",
           model_id: "fixture",
           endpoint: `${providerOrigin}/v1`,
           context_window: 128000,
@@ -191,7 +191,7 @@ async function createGenerationScenario(
       credential.token,
     );
     const embeddingConfig = {
-      provider: "openai",
+      provider: "openai_compatible",
       endpoint: `${providerOrigin}/v1`,
       model: "fixture-embedding",
       model_version: "v1",
@@ -246,7 +246,7 @@ async function createGenerationScenario(
       .selectOption("embedding");
     await registryDialog
       .locator('[name="embedding_provider"]')
-      .selectOption("openai");
+      .selectOption("openai_compatible");
     await expect(registryDialog.getByLabel("エンティティID")).toHaveCount(0);
     await registryDialog.getByLabel("名前").fill("Approved embedding");
     await registryDialog.getByLabel("説明").fill("Local semantic provider");

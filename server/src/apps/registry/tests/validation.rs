@@ -8,7 +8,7 @@ use serde_json::{Value, json};
 
 #[fixture]
 fn model_entry() -> Value {
-	json!({"id":"validation-model","version":"1.0.0","kind":"model","name":{"en":"Model"},"description":{"en":"Validation fixture"},"config":{"provider":"openrouter","model_id":"fixture","endpoint":"http://localhost:9/v1","context_window":32768,"max_output_tokens":4096,"modalities":["text"],"cost":{}}})
+	json!({"id":"validation-model","version":"1.0.0","kind":"model","name":{"en":"Model"},"description":{"en":"Validation fixture"},"config":{"provider":"openai_compatible","model_id":"fixture","endpoint":"http://localhost:9/v1","context_window":32768,"max_output_tokens":4096,"modalities":["text"],"cost":{}}})
 }
 
 #[rstest]

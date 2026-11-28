@@ -296,7 +296,7 @@ impl BudgetRig {
 				"model",
 				"traffic-model",
 				serde_json::json!({
-					"provider": "openrouter", "model_id": "fixture", "endpoint": endpoint,
+					"provider": "openai_compatible", "model_id": "fixture", "endpoint": endpoint,
 					"context_window": 128000, "max_output_tokens": 4096, "modalities": ["text"], "cost": {},
 				}),
 			),

@@ -506,8 +506,11 @@ export function EntityForm({
                 }
               : kind === "model"
                 ? {
+                    // A Keyless endpoint gets only Chat Completions fields.
                     provider:
-                      modelSource === "keyless" ? "openrouter" : modelSource,
+                      modelSource === "keyless"
+                        ? "openai_compatible"
+                        : modelSource,
                     ...(modelSource === "chatgpt"
                       ? {
                           plan_connection: "chatgpt",
@@ -905,11 +908,14 @@ export function EntityForm({
                 name="embedding_provider"
                 defaultValue="openrouter"
                 onChange={(event) => {
-                  if (event.target.value === "openai") setEmbeddingImage(false);
+                  if (event.target.value === "openai_compatible")
+                    setEmbeddingImage(false);
                 }}
               >
                 <option value="openrouter">OpenRouter</option>
-                <option value="openai">{t("openaiCompatible")}</option>
+                <option value="openai_compatible">
+                  {t("openaiCompatible")}
+                </option>
               </NativeSelect>
             </Field>
             <Field label={t("endpoint")}>

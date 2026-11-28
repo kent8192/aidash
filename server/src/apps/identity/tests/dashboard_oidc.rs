@@ -819,7 +819,7 @@ async fn unmapped_identity_stays_denied_until_deployment_administrator_approves_
 		(
 			"model",
 			"fixture-model",
-			json!({"provider":"openrouter","model_id":"browser-fixture","endpoint":"http://127.0.0.1:1/v1","context_window":128000,"max_output_tokens":4096,"modalities":["text"],"cost":{}}),
+			json!({"provider":"openai_compatible","model_id":"browser-fixture","endpoint":"http://127.0.0.1:1/v1","context_window":128000,"max_output_tokens":4096,"modalities":["text"],"cost":{}}),
 		),
 		(
 			"agent",

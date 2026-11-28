@@ -40,7 +40,7 @@ def configure_research(base, node, fixture_url, issue):
     }))
     tool["schema"] = {"type": "object", "required": ["topic"], "properties": {"topic": {"type": "string"}}, "additionalProperties": False}
     entries = [
-        entity("model", "fixture-model", {"provider": "openrouter", "model_id": "protocol-fixture", "endpoint": fixture_url + "/v1", "context_window": 256000, "max_output_tokens": 4096, "modalities": ["text"], "cost": {"currency": "USD", "input_per_million": 0}}),
+        entity("model", "fixture-model", {"provider": "openai_compatible", "model_id": "protocol-fixture", "endpoint": fixture_url + "/v1", "context_window": 256000, "max_output_tokens": 4096, "modalities": ["text"], "cost": {"currency": "USD", "input_per_million": 0}}),
         tool,
         # The coordinator's inherited lease must include its child's tool (#401).
         entity("agent", "coordinator", {"model": {"id": "fixture-model", "version": "1.0.0"}, "instructions": "Discover, delegate and synthesize.", "schema_version": 1, "bindings": [tool_binding(node, "research-http")], "remove_default": [], "max_steps": 128}, capability="task.coordinate"),

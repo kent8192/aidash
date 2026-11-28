@@ -93,14 +93,14 @@ export function RegistryModelPicker({
       (!selfHostedPlanConnections || access.kind !== "subject")
     )
       continue;
-    // The model's wire adapter remains openrouter for Keyless OpenAI-compatible endpoints.
+    // A Keyless model names `openai_compatible` and gets only Chat Completions fields.
     const provider =
       source === "keyless"
-        ? "openai"
+        ? "openai_compatible"
         : (config.plan_connection ??
           config.provider_credential ??
           config.provider ??
-          "openai");
+          "openai_compatible");
     const key = `${source}:${provider}`;
     if (!groups.has(key)) groups.set(key, { provider, source, entries: [] });
     groups.get(key)!.entries.push(entry);
@@ -125,7 +125,7 @@ export function RegistryModelPicker({
       ? "ChatGPT"
       : value === "openrouter"
         ? "OpenRouter"
-        : value === "openai"
+        : value === "openai_compatible"
           ? t("openaiCompatible")
           : value;
   const validModel = group?.entries.some(

@@ -3268,7 +3268,7 @@ async fn generated_agent_budget_includes_the_models_full_output_limit(
 		"name":{"en":"Large output model"},"description":{"en":"Budget fixture"},
 		"capabilities":[],"languages":["en"],"tags":[],"skills":[],
 		"schema":{"type":"object"},
-		"config":{"provider":"openrouter","model_id":"google/gemini-3.8-flash",
+		"config":{"provider":"openai_compatible","model_id":"google/gemini-3.8-flash",
 			"endpoint":"https://openrouter.ai/api/v1","context_window":1048576,"max_output_tokens":65536,
 			"modalities":["text"],"cost":{}}
 	});

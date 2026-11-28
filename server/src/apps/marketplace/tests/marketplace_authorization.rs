@@ -522,7 +522,7 @@ async fn hidden_typed_dependency_and_denial_leave_no_installation(
 	let a = token(&f, "a", "user").await;
 	let b = token(&f, "b", "user").await;
 	trace_errors();
-	let model:Entry=serde_json::from_value(json!({"id":"hidden-model","version":"1.0.0","kind":"model","name":{"en":"Hidden model"},"description":{"en":"private"},"config":{"provider":"openrouter","model_id":"fixture/model","endpoint":"http://localhost:9","context_window":128000,"max_output_tokens":1024,"modalities":["text"],"cost":{}}})).unwrap();
+	let model:Entry=serde_json::from_value(json!({"id":"hidden-model","version":"1.0.0","kind":"model","name":{"en":"Hidden model"},"description":{"en":"private"},"config":{"provider":"openai_compatible","model_id":"fixture/model","endpoint":"http://localhost:9","context_window":128000,"max_output_tokens":1024,"modalities":["text"],"cost":{}}})).unwrap();
 	f.registry
 		.register(
 			&aidash_domain::tenancy::TenantName::new("a").unwrap(),
@@ -1371,7 +1371,7 @@ async fn new_runs_select_active_revision_and_restarted_runs_keep_exact_old_refer
 	let app = common::application(f.clone()).await;
 	let a = token(&f, "a", "user").await;
 	trace_errors();
-	let model:Entry=serde_json::from_value(json!({"id":"model","version":"1.0.0","kind":"model","name":{"en":"Model"},"description":{"en":"fixture"},"config":{"provider":"openrouter","model_id":"fixture/model","endpoint":"http://localhost:9","context_window":128000,"max_output_tokens":1024,"modalities":["text"],"cost":{}}})).unwrap();
+	let model:Entry=serde_json::from_value(json!({"id":"model","version":"1.0.0","kind":"model","name":{"en":"Model"},"description":{"en":"fixture"},"config":{"provider":"openai_compatible","model_id":"fixture/model","endpoint":"http://localhost:9","context_window":128000,"max_output_tokens":1024,"modalities":["text"],"cost":{}}})).unwrap();
 	f.registry
 		.register(
 			&aidash_domain::tenancy::TenantName::new("a").unwrap(),
@@ -1729,7 +1729,7 @@ async fn readable_distribution_precedes_dependency_preparation_and_bindings_pin_
 	let a = token(&f, "a", "user").await;
 	let b = token(&f, "b", "user").await;
 	trace_errors();
-	let model: Entry = serde_json::from_value(json!({"id":"model","version":"1.0.0","kind":"model","name":{"en":"Model"},"description":{"en":"fixture"},"config":{"provider":"openrouter","model_id":"fixture/model","endpoint":"http://localhost:9","context_window":128000,"max_output_tokens":1024,"modalities":["text"],"cost":{}}})).unwrap();
+	let model: Entry = serde_json::from_value(json!({"id":"model","version":"1.0.0","kind":"model","name":{"en":"Model"},"description":{"en":"fixture"},"config":{"provider":"openai_compatible","model_id":"fixture/model","endpoint":"http://localhost:9","context_window":128000,"max_output_tokens":1024,"modalities":["text"],"cost":{}}})).unwrap();
 	f.registry
 		.register(
 			&aidash_domain::tenancy::TenantName::new("a").unwrap(),
@@ -3392,7 +3392,7 @@ async fn transitive_bindings_cannot_claim_to_rewrite_immutable_dependencies(
 	let app = application_fixture.application.clone();
 	let a = token(&f, "a", "user").await;
 	trace_errors();
-	let model:Entry=serde_json::from_value(json!({"id":"model","version":"1.0.0","kind":"model","name":{"en":"Model"},"description":{"en":"fixture"},"config":{"provider":"openrouter","model_id":"fixture/model","endpoint":"http://localhost:9","context_window":128000,"max_output_tokens":1024,"modalities":["text"],"cost":{}}})).unwrap();
+	let model:Entry=serde_json::from_value(json!({"id":"model","version":"1.0.0","kind":"model","name":{"en":"Model"},"description":{"en":"fixture"},"config":{"provider":"openai_compatible","model_id":"fixture/model","endpoint":"http://localhost:9","context_window":128000,"max_output_tokens":1024,"modalities":["text"],"cost":{}}})).unwrap();
 	f.registry
 		.register(
 			&aidash_domain::tenancy::TenantName::new("a").unwrap(),
@@ -3484,7 +3484,7 @@ async fn installation_rejects_missing_private_knowledge(
 	let app = application_fixture.application.clone();
 	let a = token(&f, "a", "user").await;
 	trace_errors();
-	let model: Entry = serde_json::from_value(json!({"id":"private-model","version":"1.0.0","kind":"model","name":{"en":"Model"},"description":{"en":"fixture"},"config":{"provider":"openrouter","model_id":"fixture/model","endpoint":"http://localhost:9","context_window":128000,"max_output_tokens":1024,"modalities":["text"],"cost":{}}})).unwrap();
+	let model: Entry = serde_json::from_value(json!({"id":"private-model","version":"1.0.0","kind":"model","name":{"en":"Model"},"description":{"en":"fixture"},"config":{"provider":"openai_compatible","model_id":"fixture/model","endpoint":"http://localhost:9","context_window":128000,"max_output_tokens":1024,"modalities":["text"],"cost":{}}})).unwrap();
 	f.registry
 		.register(
 			&aidash_domain::tenancy::TenantName::new("a").unwrap(),

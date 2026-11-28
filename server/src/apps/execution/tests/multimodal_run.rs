@@ -519,13 +519,16 @@ async fn verify_separate_format_routes(
 				continue;
 			}
 			assert_eq!(urls.len(), 1, "each request needs one common media route");
-			for (index, (_, mime, bytes, tag)) in images.iter().enumerate() {
+			// The fixture model is a Keyless endpoint, which receives no
+			// OpenRouter `provider.only` (#1169); each format still travels
+			// in a request of its own route.
+			assert!(body.get("provider").is_none());
+			for (index, (_, mime, bytes, _tag)) in images.iter().enumerate() {
 				let expected = format!(
 					"data:{mime};base64,{}",
 					base64::engine::general_purpose::STANDARD.encode(bytes)
 				);
 				if urls[0] == expected {
-					assert_eq!(body["provider"]["only"], json!([tag]));
 					if !seen.contains(&index) {
 						seen.push(index);
 					}
@@ -831,7 +834,8 @@ async fn human_media_only_run_input_reaches_the_first_model_request_in_order(
 				types.ends_with(&["text", "input_audio", "text", "image_url"]),
 				"{types:?}"
 			);
-			assert_eq!(body["provider"]["only"], json!(["fixture/verified"]));
+			// A Keyless endpoint gets no OpenRouter routing (#1169).
+			assert!(body.get("provider").is_none());
 			saw_subject_media = true;
 			break;
 		}
@@ -974,7 +978,8 @@ async fn human_media_only_run_input_reaches_the_first_model_request_in_order(
 				.collect();
 			if !urls.is_empty() {
 				assert_eq!(urls.len(), 5);
-				assert_eq!(body["provider"]["only"], json!(["fixture/verified"]));
+				// A Keyless endpoint gets no OpenRouter routing (#1169).
+				assert!(body.get("provider").is_none());
 				if media_batches.len() < 2 {
 					assert!(body.get("tools").is_none());
 				}

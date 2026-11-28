@@ -408,8 +408,9 @@ class Fixture:
         self.provider_calls = collections.Counter()
 
     def infer(self, body):
-        # A new Tenant starts at No Training; stricter levels ask for ZDR (#963).
-        assert body["provider"].get("data_collection") == "deny" or body["provider"].get("zdr") is True
+        # The fixture model is a Keyless endpoint, which receives nothing that
+        # only OpenRouter understands (#1169).
+        assert "provider" not in body and "session_id" not in body
         self.provider_calls["openrouter"] += 1
         current, history = native_run_context(body)
         task = current["task"]
@@ -983,7 +984,7 @@ def main():
                 api_request(base, "/api/registry", entry, token=tokens[base])
             approve(base, tenants[base], tokens[base], entries)
 
-        model = entity("model", "fixture-model", {"provider": "openrouter", "model_id": "protocol-fixture", "endpoint": fixture_url + "/v1", "context_window": 256000, "max_output_tokens": 4096, "modalities": ["text"], "cost": {"currency": "USD", "input_per_million": 0}})
+        model = entity("model", "fixture-model", {"provider": "openai_compatible", "model_id": "protocol-fixture", "endpoint": fixture_url + "/v1", "context_window": 256000, "max_output_tokens": 4096, "modalities": ["text"], "cost": {"currency": "USD", "input_per_million": 0}})
         tool = entity("tool", "research-http", tool_descriptor(node_a, {"transport": "http", "endpoint": fixture_url + "/research", "replay": "unsafe"}))
         tool["schema"] = {"type": "object", "required": ["topic"], "properties": {"topic": {"type": "string"}}, "additionalProperties": False}
         register(base_a, [

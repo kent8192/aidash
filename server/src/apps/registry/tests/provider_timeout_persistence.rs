@@ -23,7 +23,7 @@ use serde_json::{Value, json};
 fn timeout_model() -> Value {
 	json!({"id":"timeout-model","version":"1.0.0","kind":"model",
         "name":{"en":"Timeout fixture"},"description":{"en":"Persistence test"},
-        "config":{"provider":"openrouter","model_id":"vendor/model",
+        "config":{"provider":"openai_compatible","model_id":"vendor/model",
             "endpoint":"http://127.0.0.1:1/v1","context_window":65536,"max_output_tokens":4096,
             "modalities":["text"],"cost":{}}})
 }
@@ -279,7 +279,7 @@ fn dashboard_model() -> Value {
 	json!({"id":"","version":"1.0.0","kind":"model",
 		"name":{"en":"Dashboard fixture"},"description":{"en":"Persistence test"},
 		"capabilities":[],"languages":["ja","en"],"tags":[],"skills":[],"schema":{},
-		"config":{"provider":"openrouter","model_id":"vendor/model",
+		"config":{"provider":"openai_compatible","model_id":"vendor/model",
 			"endpoint":"https://openrouter.ai/api/v1",
 			"reasoning_effort":null,"context_window":32768,"max_output_tokens":4096,
 			"modalities":["text"],"media_routes":[],"cost":{},

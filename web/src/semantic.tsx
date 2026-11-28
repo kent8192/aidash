@@ -739,11 +739,12 @@ function IndexForm({
           name="embeddingProvider"
           defaultValue={previous?.embedding.provider ?? "openrouter"}
           onChange={(event) => {
-            if (event.target.value === "openai") setAcceptImage(false);
+            if (event.target.value === "openai_compatible")
+              setAcceptImage(false);
           }}
         >
           <option value="openrouter">OpenRouter</option>
-          <option value="openai">{t("openaiCompatible")}</option>
+          <option value="openai_compatible">{t("openaiCompatible")}</option>
         </NativeSelect>
       </Field>
       <Field label={t("semanticEmbeddingEndpoint")}>

@@ -1505,7 +1505,7 @@ async fn memory_maintenance_skips_a_completed_run_whose_identity_was_disabled(
 		(
 			"model",
 			"model",
-			json!({"provider":"openrouter","model_id":"fixture","endpoint":"http://127.0.0.1:9/v1","context_window":128000,"max_output_tokens":4096,"modalities":["text"],"cost":{}}),
+			json!({"provider":"openai_compatible","model_id":"fixture","endpoint":"http://127.0.0.1:9/v1","context_window":128000,"max_output_tokens":4096,"modalities":["text"],"cost":{}}),
 		),
 		(
 			"fixture",
@@ -1722,7 +1722,7 @@ async fn a_sweep_pass_that_only_repeats_adds_no_rows_for_a_running_command(
 	let model = json!({
 		"id":"model", "version":"1.0.0", "kind":"model",
 		"name":{"en":"Model"}, "description":{"en":"Fixture"},
-		"config":{"provider":"openrouter","model_id":"fixture","endpoint":"http://127.0.0.1:9/v1","context_window":128000,"max_output_tokens":4096,"modalities":["text"],"cost":{}}
+		"config":{"provider":"openai_compatible","model_id":"fixture","endpoint":"http://127.0.0.1:9/v1","context_window":128000,"max_output_tokens":4096,"modalities":["text"],"cost":{}}
 	});
 	sqlx::query("INSERT INTO registry (tenant,id,version,kind,metadata) VALUES ('acme','model','1.0.0','model',$1)")
 		.bind(model)

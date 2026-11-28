@@ -5,6 +5,7 @@
 pub use super::models::states;
 
 pub mod entries;
+pub(crate) mod keyless_embedding_backfill;
 pub(crate) mod memory_models;
 pub mod memory_recovery;
 pub mod native_memory;

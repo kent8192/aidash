@@ -91,7 +91,7 @@ async fn credential(fixture: &EndpointFixture, tenant: &str, subject: &str) -> A
 
 fn model(id: &str) -> Value {
 	json!({"id":id,"version":"1.0.0","kind":"model","name":{"en":id},"description":{"en":"Acceptance"},"schema":{},
-		"config":{"provider":"openrouter","model_id":"fixture","endpoint":"http://127.0.0.1:9/v1","context_window":128000,"max_output_tokens":4096,"modalities":["text"],"cost":{}}})
+		"config":{"provider":"openai_compatible","model_id":"fixture","endpoint":"http://127.0.0.1:9/v1","context_window":128000,"max_output_tokens":4096,"modalities":["text"],"cost":{}}})
 }
 fn agent(id: &str, version: &str, model: &str) -> Value {
 	json!({"id":id,"version":version,"kind":"agent","name":{"en":id},"description":{"en":"Acceptance"},"schema":{},

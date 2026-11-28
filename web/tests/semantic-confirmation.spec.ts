@@ -18,7 +18,7 @@ for (const action of ["deletes", "recomputes"] as const) {
         enabled: true,
         auto_context: false,
         embedding: {
-          provider: "openai",
+          provider: "openai_compatible",
           endpoint: "https://embedding.example/v1",
           model: "fixture",
           model_version: "v1",

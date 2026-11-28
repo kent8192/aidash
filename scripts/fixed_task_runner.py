@@ -187,7 +187,7 @@ class Experiment:
 
 
 def model_config(model, fixture_url, name):
-    config = {"provider": "openrouter", "model_id": model["model_id"], "endpoint": fixture_url + "/v1",
+    config = {"provider": "openai_compatible", "model_id": model["model_id"], "endpoint": fixture_url + "/v1",
               "context_window": model["context_window"],
               "max_output_tokens": model["max_output_tokens"], "modalities": ["text"], "cost": {},
               "request_estimator": "bytes",

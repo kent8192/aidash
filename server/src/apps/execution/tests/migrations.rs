@@ -203,11 +203,13 @@ const TENANT_REGISTRY_MIGRATIONS: &[(&str, &str)] = &[
 	("identity", "0115_suspension_resume_refusal"),
 	("knowledge", "0058_threads"),
 	("knowledge", "0059_threads_state"),
+	("knowledge", "0060_keyless_openai_compatible"),
 	("federation", "0030_threads"),
 	("federation", "0031_transaction_parts"),
 	("federation", "0032_transaction_parts_state"),
 	("registry", "0081_thread_tools"),
 	("registry", "0082_thread_source_scope"),
+	("registry", "0083_keyless_openai_compatible"),
 ];
 
 /// Exclude the content-store cutover to seed legacy data for its migration test.
@@ -282,6 +284,7 @@ const CONTENT_STORE_CUTOVER_MIGRATIONS: &[(&str, &str)] = &[
 	("identity", "0115_suspension_resume_refusal"),
 	("knowledge", "0058_threads"),
 	("knowledge", "0059_threads_state"),
+	("knowledge", "0060_keyless_openai_compatible"),
 	("federation", "0030_threads"),
 	("federation", "0031_transaction_parts"),
 	("federation", "0032_transaction_parts_state"),
@@ -391,9 +394,9 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 			.collect::<Vec<_>>()
 	};
 	assert_eq!(head("federation"), ["0032_transaction_parts_state"]);
-	assert_eq!(head("registry"), ["0082_thread_source_scope"]);
+	assert_eq!(head("registry"), ["0083_keyless_openai_compatible"]);
 	assert_eq!(head("execution"), ["0166_scope_connection_debits"]);
-	assert_eq!(head("knowledge"), ["0059_threads_state"]);
+	assert_eq!(head("knowledge"), ["0060_keyless_openai_compatible"]);
 	assert_eq!(head("workspaces"), ["0067_task_duty_start"]);
 	// Assert: retain the physical graph, model snapshots, and all supported tables.
 	assert!(
@@ -793,6 +796,7 @@ async fn run_created_at_backfills_last_update_and_remains_fixed_on_later_updates
 			("identity", "0115_suspension_resume_refusal"),
 			("knowledge", "0058_threads"),
 			("knowledge", "0059_threads_state"),
+			("knowledge", "0060_keyless_openai_compatible"),
 			("federation", "0030_threads"),
 			("federation", "0031_transaction_parts"),
 			("federation", "0032_transaction_parts_state"),
@@ -2557,11 +2561,13 @@ async fn registry_upgrade_keeps_existing_compaction_decider(
 			("identity", "0115_suspension_resume_refusal"),
 			("knowledge", "0058_threads"),
 			("knowledge", "0059_threads_state"),
+			("knowledge", "0060_keyless_openai_compatible"),
 			("federation", "0030_threads"),
 			("federation", "0031_transaction_parts"),
 			("federation", "0032_transaction_parts_state"),
 			("registry", "0081_thread_tools"),
 			("registry", "0082_thread_source_scope"),
+			("registry", "0083_keyless_openai_compatible"),
 		])
 		.await;
 	fixture.tenant_root("acme").await;
@@ -5237,6 +5243,7 @@ const THREAD_MIGRATIONS: &[(&str, &str)] = &[
 	("identity", "0115_suspension_resume_refusal"),
 	("knowledge", "0058_threads"),
 	("knowledge", "0059_threads_state"),
+	("knowledge", "0060_keyless_openai_compatible"),
 	("federation", "0030_threads"),
 	("federation", "0031_transaction_parts"),
 	("federation", "0032_transaction_parts_state"),
@@ -5837,6 +5844,7 @@ async fn existing_conversations_receive_distinct_dedicated_scratch_spaces(
 			("identity", "0115_suspension_resume_refusal"),
 			("knowledge", "0058_threads"),
 			("knowledge", "0059_threads_state"),
+			("knowledge", "0060_keyless_openai_compatible"),
 			("federation", "0030_threads"),
 			("federation", "0031_transaction_parts"),
 			("federation", "0032_transaction_parts_state"),
@@ -5949,6 +5957,7 @@ async fn existing_conversations_receive_distinct_dedicated_scratch_spaces(
 			("identity", "0115_suspension_resume_refusal"),
 			("knowledge", "0058_threads"),
 			("knowledge", "0059_threads_state"),
+			("knowledge", "0060_keyless_openai_compatible"),
 			("federation", "0030_threads"),
 			("federation", "0031_transaction_parts"),
 			("federation", "0032_transaction_parts_state"),
@@ -6069,6 +6078,7 @@ async fn existing_workspace_receives_scratch_space_owned_by_its_creator(
 			("identity", "0115_suspension_resume_refusal"),
 			("knowledge", "0058_threads"),
 			("knowledge", "0059_threads_state"),
+			("knowledge", "0060_keyless_openai_compatible"),
 			("federation", "0030_threads"),
 			("federation", "0031_transaction_parts"),
 			("federation", "0032_transaction_parts_state"),
@@ -7371,6 +7381,158 @@ async fn thread_source_scope_migration_admits_thread_and_reverses(
 	assert!(accepts("workspace").await);
 	executor.apply_migrations(&[migration]).await.unwrap();
 	assert!(accepts("thread").await);
+	pool.close().await;
+}
+
+/// `registry/0083_keyless_openai_compatible` and
+/// `knowledge/0060_keyless_openai_compatible` (#1169): stored Keyless model and
+/// embedding definitions, and pending requests, name `openai_compatible`; a
+/// Keyless model loses its explicit `cache_mode`; definitions with a grant keep
+/// their bytes; and the reverse restores `openrouter` (models) and `openai`
+/// (embeddings).
+#[rstest]
+#[tokio::test]
+async fn keyless_definitions_move_to_openai_compatible_and_reverse(
+	#[future] fresh_database: MigrationFixture,
+) {
+	// Arrange: definitions stored before the migrations.
+	let fixture = fresh_database.await;
+	fixture
+		.migrate_excluding(&[
+			("registry", "0083_keyless_openai_compatible"),
+			("knowledge", "0060_keyless_openai_compatible"),
+		])
+		.await;
+	fixture.tenant_root("acme").await;
+	let pool = fixture.connection.clone().into_postgres().unwrap();
+	let entry = |id: &str, kind: &str, config: serde_json::Value| json!({"id":id,"version":"1.0.0","kind":kind,"name":{"en":id},"description":{"en":"Fixture"},"config":config});
+	let keyless_model = entry(
+		"keyless-model",
+		"model",
+		json!({"provider":"openrouter","model_id":"anthropic/fixture","endpoint":"http://127.0.0.1:1/v1","context_window":32768,"max_output_tokens":4096,"modalities":["text"],"cost":{},"cache_mode":"explicit"}),
+	);
+	let byok_model = entry(
+		"byok-model",
+		"model",
+		json!({"provider":"openrouter","provider_credential":"openrouter","model_id":"anthropic/fixture","endpoint":"https://openrouter.ai/api/v1","context_window":32768,"max_output_tokens":4096,"modalities":["text"],"cost":{},"cache_mode":"explicit"}),
+	);
+	let keyless_embedding = |id: &str, provider: &str| {
+		entry(
+			id,
+			"embedding",
+			json!({"provider":provider,"endpoint":"http://127.0.0.1:1/v1","model":"fixture","model_version":"1","dimensions":3}),
+		)
+	};
+	let byok_embedding = entry(
+		"byok-embedding",
+		"embedding",
+		json!({"provider":"openrouter","provider_credential":"openrouter","endpoint":"https://openrouter.ai/api/v1","model":"vendor/fixture","model_version":"1","dimensions":3}),
+	);
+	let definitions = [
+		keyless_model.clone(),
+		byok_model.clone(),
+		keyless_embedding("openrouter-embedding", "openrouter"),
+		keyless_embedding("openai-embedding", "openai"),
+		byok_embedding.clone(),
+	];
+	let mut tx = aidash_server::database::scope::begin_fixture_deployment(&pool)
+		.await
+		.unwrap();
+	for definition in &definitions {
+		sqlx::query(
+			"INSERT INTO registry (tenant,id,version,kind,metadata) VALUES ('acme',$1,'1.0.0',$2,$3)",
+		)
+		.bind(definition["id"].as_str().unwrap())
+		.bind(definition["kind"].as_str().unwrap())
+		.bind(definition)
+		.execute(&mut *tx)
+		.await
+		.unwrap();
+	}
+	sqlx::query("INSERT INTO registry_requests (tenant,principal,key,request,entity_id) VALUES ('acme','alice',$1,$2,'keyless-model')")
+		.bind(Uuid::new_v4())
+		.bind(&keyless_model)
+		.execute(&mut *tx)
+		.await
+		.unwrap();
+	tx.commit().await.unwrap();
+	let stored = async || {
+		let mut tx = aidash_server::database::scope::begin_fixture_deployment(&pool)
+			.await
+			.unwrap();
+		let rows: Vec<(String, serde_json::Value)> =
+			sqlx::query_as("SELECT id, metadata -> 'config' FROM registry WHERE tenant = 'acme' AND id IN ('keyless-model','byok-model','openrouter-embedding','openai-embedding','byok-embedding')")
+				.fetch_all(&mut *tx)
+				.await
+				.unwrap();
+		let request: serde_json::Value = sqlx::query_scalar(
+			"SELECT request -> 'config' FROM registry_requests WHERE tenant = 'acme' AND entity_id = 'keyless-model'",
+		)
+		.fetch_one(&mut *tx)
+		.await
+		.unwrap();
+		tx.commit().await.unwrap();
+		(
+			rows.into_iter()
+				.collect::<std::collections::BTreeMap<_, _>>(),
+			request,
+		)
+	};
+
+	// Act
+	fixture.migrate().await;
+
+	// Assert: Keyless definitions say so; granted ones keep their bytes.
+	let (configs, request) = stored().await;
+	assert_eq!(configs["keyless-model"]["provider"], "openai_compatible");
+	assert!(configs["keyless-model"].get("cache_mode").is_none());
+	assert_eq!(request["provider"], "openai_compatible");
+	assert!(request.get("cache_mode").is_none());
+	assert_eq!(
+		configs["openrouter-embedding"]["provider"],
+		"openai_compatible"
+	);
+	assert_eq!(configs["openai-embedding"]["provider"], "openai_compatible");
+	assert_eq!(configs["byok-model"], byok_model["config"]);
+	assert_eq!(configs["byok-embedding"], byok_embedding["config"]);
+	let mut tx = aidash_server::database::scope::begin_fixture_deployment(&pool)
+		.await
+		.unwrap();
+	let index_check: String = sqlx::query_scalar("SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conrelid = 'semantic_indexes'::regclass AND conname = 'semantic_indexes_revision'")
+		.fetch_one(&mut *tx)
+		.await
+		.unwrap();
+	tx.commit().await.unwrap();
+	assert!(index_check.contains("'openai_compatible'::text"));
+
+	// Act and Assert: the reverse restores the providers each kind accepted.
+	let source =
+		FilesystemSource::new(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("migrations"));
+	let registry = source
+		.get_migration("registry", "0083_keyless_openai_compatible")
+		.await
+		.unwrap();
+	let knowledge = source
+		.get_migration("knowledge", "0060_keyless_openai_compatible")
+		.await
+		.unwrap();
+	let mut executor = DatabaseMigrationExecutor::new(fixture.connection.clone());
+	executor
+		.rollback_migrations(&[registry.clone(), knowledge.clone()])
+		.await
+		.unwrap();
+	let (configs, request) = stored().await;
+	assert_eq!(configs["keyless-model"]["provider"], "openrouter");
+	assert_eq!(request["provider"], "openrouter");
+	assert_eq!(configs["openrouter-embedding"]["provider"], "openai");
+	assert_eq!(configs["openai-embedding"]["provider"], "openai");
+	assert_eq!(configs["byok-model"], byok_model["config"]);
+	executor
+		.apply_migrations(&[registry, knowledge])
+		.await
+		.unwrap();
+	let (configs, _) = stored().await;
+	assert_eq!(configs["keyless-model"]["provider"], "openai_compatible");
 	pool.close().await;
 }
 

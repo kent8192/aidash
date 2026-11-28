@@ -59,7 +59,7 @@ test("semantic dashboard configures, searches, migrates and deletes persistent s
       .click();
     await page
       .locator('select[name="embeddingProvider"]')
-      .selectOption("openai");
+      .selectOption("openai_compatible");
     await page
       .getByLabel("Embedding API endpoint", { exact: true })
       .fill(endpoint);

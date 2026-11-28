@@ -70,7 +70,7 @@ async fn admitted_with(
 	let mut entries =
 		aidash_application::registry::system::declarations(&validation, NODE).unwrap();
 	entries.extend(source);
-	entries.push(entry("model", "model", json!({"provider":"openrouter","model_id":"fixture","endpoint":"https://models.invalid","context_window":32768,"max_output_tokens":1024,"modalities":["text"],"cost":{}})));
+	entries.push(entry("model", "model", json!({"provider":"openai_compatible","model_id":"fixture","endpoint":"https://models.invalid","context_window":32768,"max_output_tokens":1024,"modalities":["text"],"cost":{}})));
 	let snapshot = aidash_application::registry::bindings::resolve(
 		&mut Catalog(entries, plugin),
 		&validation,

@@ -6,6 +6,8 @@ pub use super::models::states;
 
 pub(crate) mod admission;
 
+pub(crate) mod keyless_provider_backfill;
+
 pub mod agent_plugin_import;
 
 pub mod management;

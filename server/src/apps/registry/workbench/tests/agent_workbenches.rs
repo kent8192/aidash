@@ -60,7 +60,7 @@ async fn simulated_test_never_invokes_the_registered_external_tool(
 			"fixture-model",
 			"model",
 			// The default tools, including the Schedule tools (#557), outgrow 32,768.
-			json!({"provider":"openrouter","model_id":"fixture","endpoint":format!("{endpoint}/v1"),"context_window":65536,"max_output_tokens":2048,"modalities":["text"],"cost":{}}),
+			json!({"provider":"openai_compatible","model_id":"fixture","endpoint":format!("{endpoint}/v1"),"context_window":65536,"max_output_tokens":2048,"modalities":["text"],"cost":{}}),
 		),
 		(
 			"fixture-tool",
@@ -308,7 +308,7 @@ async fn draft_conflict_register_and_factual_inspection(
 	let app = application_fixture.application.clone();
 	common::tenant_root_in(f.store.pool.fixture_driver(), "acme").await;
 	let deployment_administrator = f.config.api_token.clone();
-	let model = json!({"id":"fixture-model","version":"1.0.0","kind":"model","name":{"en":"Fixture model"},"description":{"en":"Fixture"},"capabilities":[],"tags":[],"languages":["en"],"skills":[],"schema":{},"config":{"provider":"openrouter","model_id":"fixture","endpoint":"http://127.0.0.1:9999/v1","context_window":32768,"max_output_tokens":2048,"modalities":["text"],"cost":{}}});
+	let model = json!({"id":"fixture-model","version":"1.0.0","kind":"model","name":{"en":"Fixture model"},"description":{"en":"Fixture"},"capabilities":[],"tags":[],"languages":["en"],"skills":[],"schema":{},"config":{"provider":"openai_compatible","model_id":"fixture","endpoint":"http://127.0.0.1:9999/v1","context_window":32768,"max_output_tokens":2048,"modalities":["text"],"cost":{}}});
 	f.registry
 		.register(
 			&aidash_domain::tenancy::TenantName::new("acme").unwrap(),

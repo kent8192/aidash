@@ -197,7 +197,8 @@ async fn selected_file_media_preserves_order_and_duplicate_bytes_through_worker_
 				"Selected file: images/second.png"
 			]
 		);
-		assert_eq!(requests[1]["provider"]["only"], json!(["fixture/selected"]));
+		// The fixture model is a Keyless endpoint: no OpenRouter routing (#1169).
+		assert!(requests[1].get("provider").is_none());
 	}
 	c.close().await;
 }

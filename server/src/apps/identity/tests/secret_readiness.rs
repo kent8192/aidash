@@ -26,7 +26,7 @@ fn model(_node: &str) -> Entry {
 	entry(json!({
 		"id":"model","version":"1.0.0","kind":"model",
 		"name":{"en":"Model"},"description":{"en":"Model"},
-		"config":{"provider":"openrouter","model_id":"fixture","endpoint":"https://fixture.invalid","context_window":200000,"max_output_tokens":1024,"modalities":["text"],"cost":{}}
+		"config":{"provider":"openai_compatible","model_id":"fixture","endpoint":"https://fixture.invalid","context_window":200000,"max_output_tokens":1024,"modalities":["text"],"cost":{}}
 	}))
 }
 

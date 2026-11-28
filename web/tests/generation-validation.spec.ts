@@ -36,7 +36,7 @@ for (const context of [
       languages: [],
       tags: [],
       config: {
-        provider: "openrouter",
+        provider: "openai_compatible",
         model_id: "fixture",
         endpoint: "https://example.invalid/v1",
         context_window: 128000,

@@ -257,7 +257,7 @@ async fn setup_endpoint_policy_with_window(
 		(
 			"model",
 			"m",
-			json!({"provider":"openrouter","model_id":"fixture","endpoint":endpoint,"context_window":context_window,"max_output_tokens":8192,"modalities":["text"],"cost":{}}),
+			json!({"provider":"openai_compatible","model_id":"fixture","endpoint":endpoint,"context_window":context_window,"max_output_tokens":8192,"modalities":["text"],"cost":{}}),
 		),
 		(
 			"embedding",

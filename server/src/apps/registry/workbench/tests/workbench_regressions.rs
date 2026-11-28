@@ -184,7 +184,7 @@ fn workbench(
 			(
 				"fixture-model",
 				"model",
-				json!({"provider":"openrouter","model_id":"fixture","endpoint":format!("{endpoint}/v1"),"context_window":65536,"max_output_tokens":2048,"modalities":["text"],"cost":{}}),
+				json!({"provider":"openai_compatible","model_id":"fixture","endpoint":format!("{endpoint}/v1"),"context_window":65536,"max_output_tokens":2048,"modalities":["text"],"cost":{}}),
 			),
 			(
 				"fixture-tool",

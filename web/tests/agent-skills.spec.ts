@@ -536,7 +536,7 @@ for (const selected of [
     id: "plan-model",
     label: "個人 Plan 接続",
   },
-  { source: "keyless:openai", id: "local-model", label: "Keyless" },
+  { source: "keyless:openai_compatible", id: "local-model", label: "Keyless" },
 ])
   test(`agent selection cascades ${selected.source} to its versioned Registry reference`, async ({
     page,
@@ -555,7 +555,7 @@ for (const selected of [
         {
           id: "local-model",
           config: {
-            provider: "openrouter",
+            provider: "openai_compatible",
             endpoint: "http://localhost:11434/v1",
           },
         },
