@@ -92,7 +92,7 @@ async fn withdrawn_operation_fixture(
 
 #[rstest::rstest]
 #[tokio::test]
-async fn authority_withdrawal_before_dispatch_keeps_saved_files_usable(
+async fn authority_withdrawal_before_dispatch_leaves_the_execution_scope_usable(
 	#[future]
 	#[from(running_withdrawn_operation_fixture)]
 	withdrawn_operation_fixture: (
@@ -159,8 +159,16 @@ async fn authority_withdrawal_before_dispatch_keeps_saved_files_usable(
 		state, "active",
 		"an undispatched operation has no uncertain effects"
 	);
-	let (status,patched) = request(&c.app,&c.token,"POST",&path_for_patch(run.id),json!({"idempotency_key":Uuid::new_v4(),"expected_revision":area["revision"],"preconditions":{"saved.txt":null},"patch":"*** Begin Patch\n*** Add File: saved.txt\n+still usable\n*** End Patch"})).await;
-	assert_eq!(status, 200, "{patched}");
+	let (status, result) = request(
+		&c.app,
+		&c.token,
+		"POST",
+		&format!("/api/executions/{}/files/search", run.id),
+		json!({"query":"","mode":"path","scope":"references"}),
+	)
+	.await;
+	assert_eq!(status, 200, "{result}");
+	assert!(result["matches"].is_array(), "{result}");
 	c.close().await;
 }
 

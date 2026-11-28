@@ -618,9 +618,9 @@ async fn deferred_journey_searches_describes_loads_and_invokes_a_tool(
 			),
 			3 => Reply::Call(
 				"file_search",
-				json!({"query":"東京","mode":"literal","scope":"working"}),
+				json!({"query":"東京","mode":"literal","scope":"references"}),
 			),
-			_ => Reply::Text("Searched the working files."),
+			_ => Reply::Text("Searched the Reference set."),
 		}
 	});
 	let run = d.delegate(d.c.task, DEFERRED).await;
@@ -1117,7 +1117,7 @@ async fn deferred_exposure_survives_fresh_harness_instances_without_duplication(
 			),
 			4 => Reply::Call(
 				"file_search",
-				json!({"query":"release","mode":"literal","scope":"working"}),
+				json!({"query":"release","mode":"literal","scope":"references"}),
 			),
 			_ => Reply::Text("Finished after restarts."),
 		}
