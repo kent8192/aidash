@@ -4267,6 +4267,19 @@ fn position(calls: &[&str], name: &str) -> usize {
 }
 
 #[rstest]
+#[tokio::test]
+async fn first_inference_knows_the_language_of_a_japanese_task(fixture: Fixture) {
+	let mut fixture = thinking(fixture);
+	fixture.backend.0.task.lock().unwrap().description =
+		"飲食店に関する情報収集を行い、それらの情報を元に動画作成してXを運用したい。".into();
+	advance_sources(&mut fixture).await.unwrap();
+
+	let requests = fixture.backend.0.requests.lock().unwrap();
+	assert!(requests[0].instructions.contains("Japanese"));
+	assert!(requests[0].instructions.contains("progress"));
+}
+
+#[rstest]
 #[tokio::test(start_paused = true)]
 async fn streamed_progress_is_stored_before_the_response_is_accepted(fixture: Fixture) {
 	// Arrange
