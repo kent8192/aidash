@@ -71,7 +71,7 @@ async fn working_files_require_explicit_agent_settings(
 	)
 	.await;
 	assert_eq!(status, 200, "{delegation}");
-	let (status, result) = request(&app, &token, "GET", "/api/working-areas", json!(null)).await;
+	let (status, result) = request(&app, &token, "GET", "/api/execution-scopes", json!(null)).await;
 	assert_eq!(status, 200, "{result}");
 	assert_eq!(
 		result["items"],
@@ -550,7 +550,7 @@ async fn isolated_shell_survives_worker_restart_and_confirms_descendant_cancella
 		&c.app,
 		&c.token,
 		"GET",
-		&format!("/api/executions/{}/working-area", run.id),
+		&format!("/api/executions/{}/execution-scope", run.id),
 		Value::Null,
 	)
 	.await;
@@ -787,12 +787,15 @@ async fn only_the_requester_can_steer_with_an_idempotent_request(
 		&c.app,
 		&c.token,
 		"GET",
-		&format!("/api/executions/{}/working-area", run.id),
+		&format!("/api/executions/{}/execution-scope", run.id),
 		Value::Null,
 	)
 	.await;
 	assert_eq!(status, 200, "{area}");
-	let steer_path = format!("/api/working-areas/{}/steer", area["id"].as_str().unwrap());
+	let steer_path = format!(
+		"/api/execution-scopes/{}/steer",
+		area["id"].as_str().unwrap()
+	);
 	let (status, result) = request(&c.app, &c.token, "POST", &steer_path, json!({"idempotency_key":Uuid::new_v4(),"expected_run_id":Uuid::new_v4(),"content":"Must only reach the selected Run"})).await;
 	assert_eq!(status, 409, "{result}");
 	let steer = json!({"idempotency_key":Uuid::new_v4(),"expected_run_id":run.id,"content":"Prioritize the current question"});
@@ -859,7 +862,7 @@ async fn patches_publish_all_files_or_keep_the_previous_revision(
 		&c.app,
 		&c.token,
 		"GET",
-		&format!("/api/executions/{}/working-area", run.id),
+		&format!("/api/executions/{}/execution-scope", run.id),
 		Value::Null,
 	)
 	.await;
@@ -879,7 +882,7 @@ async fn patches_publish_all_files_or_keep_the_previous_revision(
 		&c.app,
 		&c.token,
 		"GET",
-		&format!("/api/executions/{}/working-area", run.id),
+		&format!("/api/executions/{}/execution-scope", run.id),
 		Value::Null,
 	)
 	.await;
@@ -892,7 +895,7 @@ async fn patches_publish_all_files_or_keep_the_previous_revision(
 		&c.app,
 		&c.token,
 		"GET",
-		&format!("/api/executions/{}/working-area", run.id),
+		&format!("/api/executions/{}/execution-scope", run.id),
 		Value::Null,
 	)
 	.await;
@@ -981,7 +984,7 @@ async fn direct_skills_are_pinned_and_loaded_progressively(
 		&c.app,
 		&c.token,
 		"GET",
-		&format!("/api/executions/{}/working-area", run.id),
+		&format!("/api/executions/{}/execution-scope", run.id),
 		Value::Null,
 	)
 	.await;
@@ -1399,7 +1402,7 @@ async fn reference_original_is_private_located_and_unchanged_by_python(
 		&c.app,
 		&c.token,
 		"GET",
-		&format!("/api/executions/{}/working-area", run.id),
+		&format!("/api/executions/{}/execution-scope", run.id),
 		Value::Null,
 	)
 	.await;
@@ -1492,7 +1495,7 @@ async fn cleanup_restores_exact_bytes_and_fences_old_runs_and_confirmations(
 		&c.app,
 		&c.token,
 		"GET",
-		&format!("/api/executions/{}/working-area", run.id),
+		&format!("/api/executions/{}/execution-scope", run.id),
 		Value::Null,
 	)
 	.await;
@@ -1540,7 +1543,7 @@ async fn cleanup_restores_exact_bytes_and_fences_old_runs_and_confirmations(
 			&c.app,
 			&c.token,
 			"GET",
-			&format!("/api/executions/{}/working-area", run.id),
+			&format!("/api/executions/{}/execution-scope", run.id),
 			Value::Null
 		)
 		.await

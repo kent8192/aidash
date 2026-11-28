@@ -74,6 +74,7 @@ pub struct Area {
 	pub revision: i64,
 	pub epoch: i64,
 	pub state: String,
+	#[serde(skip)]
 	pub manifest: Value,
 	pub constraints: Value,
 }

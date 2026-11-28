@@ -23,7 +23,11 @@ pub async fn configure_agent(
 	crate::http::json(api::configure_agent(service.runtime.clone(), actor, id, input).await)
 }
 
-#[get("/api/working-areas", name = "!working_area_list", auth = "protected")]
+#[get(
+	"/api/execution-scopes",
+	name = "!execution_scope_list",
+	auth = "protected"
+)]
 pub async fn areas(
 	#[inject] service: Depends<CapabilitiesManagement>,
 	#[inject] actor: Actor,
@@ -33,8 +37,8 @@ pub async fn areas(
 }
 
 #[get(
-	"/api/executions/{id}/working-area",
-	name = "!execution_working_area",
+	"/api/executions/{id}/execution-scope",
+	name = "!execution_scope",
 	auth = "protected"
 )]
 pub async fn area_for_run(
@@ -144,7 +148,7 @@ pub async fn shell_cancel(
 }
 
 #[get(
-	"/api/working-areas/{id}/session",
+	"/api/execution-scopes/{id}/session",
 	name = "!core_session_status",
 	auth = "protected"
 )]
@@ -157,7 +161,7 @@ pub async fn session(
 }
 
 #[post(
-	"/api/working-areas/{id}/steer",
+	"/api/execution-scopes/{id}/steer",
 	name = "!core_session_steer",
 	auth = "protected"
 )]
@@ -529,18 +533,24 @@ pub async fn reference_download(
 }
 
 #[get(
-	"/api/working-areas/{id}/files/{file}/download",
-	name = "!core_file_download",
+	"/api/executions/{id}/core-operations/{operation}/files/{file}/download",
+	name = "!command_output_download",
 	auth = "protected"
 )]
-pub async fn file_download(
+pub async fn command_output_download(
 	#[inject] service: Depends<CapabilitiesManagement>,
 	#[inject] actor: Actor,
-	Path((id, file)): Path<(Uuid, Uuid)>,
+	Path((id, operation, file)): Path<(Uuid, Uuid, Uuid)>,
 	Query(input): Query<Offset>,
 ) -> ViewResult<Response> {
 	crate::http::json(
-		api::file_download(service.runtime.clone(), actor, (id, file), Query(input)).await,
+		api::command_output_download(
+			service.runtime.clone(),
+			actor,
+			(id, operation, file),
+			Query(input),
+		)
+		.await,
 	)
 }
 

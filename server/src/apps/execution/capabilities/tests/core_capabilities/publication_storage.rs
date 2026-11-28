@@ -15,7 +15,7 @@ fn storage_fixture(
 			&c.app,
 			&c.token,
 			"GET",
-			&format!("/api/executions/{}/working-area", run.id),
+			&format!("/api/executions/{}/execution-scope", run.id),
 			Value::Null,
 		)
 		.await;
@@ -65,7 +65,7 @@ async fn unchanged_exports_reuse_objects_and_sweep_reclaims_superseded_bytes(
 			&c.app,
 			&c.token,
 			"GET",
-			&format!("/api/executions/{run}/working-area"),
+			&format!("/api/executions/{run}/execution-scope"),
 			Value::Null,
 		)
 		.await;

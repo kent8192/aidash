@@ -9004,7 +9004,7 @@ impl LateFiles {
 			&rig.app,
 			&rig.token,
 			"GET",
-			&format!("/api/executions/{}/working-area", late.member.id),
+			&format!("/api/executions/{}/execution-scope", late.member.id),
 			Value::Null,
 		)
 		.await;

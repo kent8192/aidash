@@ -40,7 +40,7 @@ fn shared_thread(
 				&c.app,
 				token,
 				&format!(
-					"/api/working-areas/{}/session",
+					"/api/execution-scopes/{}/session",
 					area["id"].as_str().unwrap()
 				),
 			)
@@ -51,7 +51,7 @@ fn shared_thread(
 			let (_, area) = common::get(
 				&c.app,
 				token,
-				&format!("/api/executions/{run}/working-area"),
+				&format!("/api/executions/{run}/execution-scope"),
 			)
 			.await;
 			areas.push(area);
@@ -87,13 +87,13 @@ async fn same_thread_agent_keeps_subject_sessions_private_and_deletion_choices_s
 	let hidden = common::get(
 		&f.c.app,
 		&f.bob,
-		&format!("/api/executions/{}/working-area", f.runs[0]),
+		&format!("/api/executions/{}/execution-scope", f.runs[0]),
 	)
 	.await;
 	let absent = common::get(
 		&f.c.app,
 		&f.bob,
-		&format!("/api/executions/{}/working-area", Uuid::new_v4()),
+		&format!("/api/executions/{}/execution-scope", Uuid::new_v4()),
 	)
 	.await;
 	assert_eq!(hidden.0, 403);
@@ -104,7 +104,7 @@ async fn same_thread_agent_keeps_subject_sessions_private_and_deletion_choices_s
 	let (_, visible) = common::get(
 		&f.c.app,
 		&f.c.token,
-		&format!("/api/working-areas?thread_id={}", f.thread),
+		&format!("/api/execution-scopes?thread_id={}", f.thread),
 	)
 	.await;
 	assert_eq!(visible["items"].as_array().unwrap().len(), 1);
@@ -185,7 +185,7 @@ fn successor_fixture(
 			&f.c.app,
 			&f.c.token,
 			&format!(
-				"/api/working-areas/{}/session",
+				"/api/execution-scopes/{}/session",
 				f.areas[0]["id"].as_str().unwrap()
 			),
 		)

@@ -965,82 +965,41 @@ pub(crate) async fn reference_download(
 	.await;
 	access.finish(result).await
 }
-pub(crate) async fn file_download(
+pub(crate) async fn command_output_download(
 	f: Federation,
 	actor: Actor,
-	(id, file): (Uuid, Uuid),
+	(run_id, operation_id, file_id): (Uuid, Uuid, Uuid),
 	QueryInput(input): QueryInput<Offset>,
 ) -> Result<DownloadChunk> {
-	let mut access = access(&f, actor).await?;
+	let (mut access, run) = run_access(&f, actor, run_id).await?;
 	let result = async {
-		let area = sessions::load(&mut access, id).await?;
-		let entry = if let Some(entry) = service::files(&area)?
-			.into_iter()
-			.find(|entry| entry.file_id == file)
+		let operation =
+			crate::apps::execution::repositories::operations::get(&mut access, operation_id)
+				.await?;
+		if operation.run_id != run.id
+			|| operation.principal != access.identity.subject
+			|| !matches!(operation.kind.as_str(), "shell" | "code_interpreter")
 		{
-			service::available(&area)?;
-			// A Run can read a Reference file; downloading it, or a copy of it,
-			// stays with its uploader (ADR 0114).
-			if entry.provenance["kind"] == "reference" {
-				let id = serde_json::from_value(entry.provenance["id"].clone())
-					.map_err(|_| Error::Forbidden)?;
-				super::references::get(&mut access, id, "reference.read").await?;
-			}
-			entry
-		} else {
-			let meta: Option<(String, i64, String)> = {
-				let query_bind_1 = file;
-				let query_bind_2 = id;
-				let query_bind_3 = &access.identity.tenant;
-				crate::database::native::query_as(
-					&reinhardt::query::Query::select()
-						.columns(["digest", "size", "kind"].map(Alias::new))
-						.from(Alias::new("core_objects"))
-						.and_where(
-							Expr::col(Alias::new("id")).eq(Expr::value(query_bind_1.to_owned())),
-						)
-						.and_where(
-							Expr::col(Alias::new("area_id"))
-								.eq(Expr::value(query_bind_2.to_owned())),
-						)
-						.and_where(
-							Expr::col(Alias::new("tenant"))
-								.eq(Expr::value(query_bind_3.to_owned())),
-						)
-						.and_where(Expr::col(Alias::new("kind")).is_in([
-							"display",
-							"output",
-							"network_output",
-						]))
-						.to_string(PostgresQueryBuilder),
-				)
-				.columns(&["digest", "size", "kind"])
-				.fetch_optional(&mut **access.tx)
-				.await?
-			};
-			if let Some((digest, size, kind)) = meta {
-				service::available(&area)?;
-				FileEntry {
-					file_id: file,
-					path: file.to_string(),
-					digest,
-					size: size as u64,
-					media_type: if kind == "display" {
-						"image/png"
-					} else if kind == "network_output" {
-						"application/octet-stream"
-					} else {
-						"text/plain; charset=utf-8"
-					}
-					.into(),
-					scope: FileScope::Working,
-					provenance: json!({"kind":kind,"area_id":id}),
-				}
-			} else {
-				service::available(&area)?;
-				return Err(Error::NotFound("file unavailable".into()));
-			}
-		};
+			return Err(Error::NotFound("command output unavailable".into()));
+		}
+		let mut files = serde_json::from_value::<Vec<FileEntry>>(
+			operation
+				.result
+				.get("displays")
+				.cloned()
+				.unwrap_or_else(|| json!([])),
+		)?;
+		if let Some(output) = operation
+			.result
+			.get("output_file")
+			.filter(|value| !value.is_null())
+		{
+			files.push(serde_json::from_value(output.clone())?);
+		}
+		let entry = files
+			.into_iter()
+			.find(|entry| entry.file_id == file_id)
+			.ok_or_else(|| Error::NotFound("command output unavailable".into()))?;
 		download(&f.store, &mut access, entry, input.offset.unwrap_or(0)).await
 	}
 	.await;

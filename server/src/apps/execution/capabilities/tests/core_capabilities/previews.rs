@@ -32,7 +32,7 @@ async fn area_and_file(c: &CoreFixture) -> (Uuid, Uuid) {
 		&c.app,
 		&c.token,
 		"GET",
-		&format!("/api/executions/{}/working-area", run.id),
+		&format!("/api/executions/{}/execution-scope", run.id),
 		Value::Null,
 	)
 	.await;

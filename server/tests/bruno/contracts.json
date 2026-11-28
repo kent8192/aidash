@@ -7717,8 +7717,8 @@
   {
     "json": false,
     "method": "GET",
-    "name": "working_area_list",
-    "path": "/api/working-areas",
+    "name": "execution_scope_list",
+    "path": "/api/execution-scopes",
     "query_parameters": ["cursor", "thread_id"],
     "responses": {
       "200": {
@@ -7744,7 +7744,6 @@
                 "format": "uuid",
                 "type": "string"
               },
-              "manifest": {},
               "owner": {
                 "type": "string"
               },
@@ -7774,7 +7773,6 @@
               "revision",
               "epoch",
               "state",
-              "manifest",
               "constraints"
             ],
             "type": "object"
@@ -7807,8 +7805,8 @@
   {
     "json": false,
     "method": "GET",
-    "name": "execution_working_area",
-    "path": "/api/executions/{id}/working-area",
+    "name": "execution_scope",
+    "path": "/api/executions/{id}/execution-scope",
     "query_parameters": [],
     "responses": {
       "200": {
@@ -7834,7 +7832,6 @@
                 "format": "uuid",
                 "type": "string"
               },
-              "manifest": {},
               "owner": {
                 "type": "string"
               },
@@ -7864,7 +7861,6 @@
               "revision",
               "epoch",
               "state",
-              "manifest",
               "constraints"
             ],
             "type": "object"
@@ -8626,7 +8622,7 @@
     "json": false,
     "method": "GET",
     "name": "core_session_status",
-    "path": "/api/working-areas/{id}/session",
+    "path": "/api/execution-scopes/{id}/session",
     "query_parameters": [],
     "responses": {
       "200": {
@@ -8670,7 +8666,7 @@
     "json": true,
     "method": "POST",
     "name": "core_session_steer",
-    "path": "/api/working-areas/{id}/steer",
+    "path": "/api/execution-scopes/{id}/steer",
     "query_parameters": [],
     "responses": {
       "200": {
@@ -8952,7 +8948,6 @@
                 "format": "uuid",
                 "type": "string"
               },
-              "manifest": {},
               "owner": {
                 "type": "string"
               },
@@ -8982,7 +8977,6 @@
               "revision",
               "epoch",
               "state",
-              "manifest",
               "constraints"
             ],
             "type": "object"
@@ -10524,8 +10518,8 @@
   {
     "json": false,
     "method": "GET",
-    "name": "core_file_download",
-    "path": "/api/working-areas/{id}/files/{file}/download",
+    "name": "command_output_download",
+    "path": "/api/executions/{id}/core-operations/{operation}/files/{file}/download",
     "query_parameters": ["offset"],
     "responses": {
       "200": {

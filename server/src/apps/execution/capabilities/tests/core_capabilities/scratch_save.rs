@@ -316,7 +316,7 @@ async fn scratch_save_releases_authority_while_streaming(
 		&c.app,
 		&c.token,
 		"GET",
-		&format!("/api/executions/{}/working-area", run.id),
+		&format!("/api/executions/{}/execution-scope", run.id),
 		Value::Null,
 	)
 	.await;

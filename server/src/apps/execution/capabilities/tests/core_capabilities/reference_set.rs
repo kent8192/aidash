@@ -246,7 +246,7 @@ async fn another_person_can_run_the_agent_but_cannot_download_its_files(
 		&c.app,
 		&bob,
 		"GET",
-		&format!("/api/executions/{}/working-area", run.id),
+		&format!("/api/executions/{}/execution-scope", run.id),
 		Value::Null,
 	)
 	.await;
@@ -726,7 +726,7 @@ async fn revoking_a_file_does_not_lock_an_area_that_never_copied_it(
 		&c.app,
 		&token,
 		"GET",
-		&format!("/api/executions/{}/working-area", run.id),
+		&format!("/api/executions/{}/execution-scope", run.id),
 		Value::Null,
 	)
 	.await;
@@ -830,7 +830,7 @@ async fn a_revoked_file_stops_being_readable_through_the_run_file_routes(
 		&c.app,
 		&token,
 		"GET",
-		&format!("/api/executions/{}/working-area", run.id),
+		&format!("/api/executions/{}/execution-scope", run.id),
 		Value::Null,
 	)
 	.await;
@@ -876,7 +876,7 @@ async fn withdrawing_a_sources_approval_stops_the_run_file_routes(
 		&c.app,
 		&token,
 		"GET",
-		&format!("/api/executions/{}/working-area", run.id),
+		&format!("/api/executions/{}/execution-scope", run.id),
 		Value::Null,
 	)
 	.await;
@@ -996,7 +996,7 @@ async fn a_copy_of_a_reference_file_downloads_only_for_its_uploader(
 		&c.app,
 		&bob,
 		"GET",
-		&format!("/api/executions/{}/working-area", run.id),
+		&format!("/api/executions/{}/execution-scope", run.id),
 		Value::Null,
 	)
 	.await;
@@ -1053,7 +1053,7 @@ async fn an_agent_can_write_the_same_path_as_a_reference_file_without_losing_eit
 		&c.app,
 		&token,
 		"GET",
-		&format!("/api/executions/{}/working-area", run.id),
+		&format!("/api/executions/{}/execution-scope", run.id),
 		Value::Null,
 	)
 	.await;
@@ -1198,7 +1198,7 @@ async fn every_published_revision_holds_one_row_per_file_of_its_manifest(
 		&c.app,
 		&token,
 		"GET",
-		&format!("/api/executions/{}/working-area", run.id),
+		&format!("/api/executions/{}/execution-scope", run.id),
 		Value::Null,
 	)
 	.await;
@@ -1264,7 +1264,7 @@ async fn publication_batches_new_revision_references_without_rewriting_the_old_r
 		&c.app,
 		&token,
 		"GET",
-		&format!("/api/executions/{}/working-area", run.id),
+		&format!("/api/executions/{}/execution-scope", run.id),
 		Value::Null,
 	)
 	.await;

@@ -13,7 +13,7 @@ async fn withdrawn_operation_fixture(
 		&c.app,
 		&c.token,
 		"GET",
-		&format!("/api/executions/{}/working-area", run.id),
+		&format!("/api/executions/{}/execution-scope", run.id),
 		Value::Null,
 	)
 	.await;
@@ -379,7 +379,7 @@ async fn mounted_skills_require_writable_capacity_before_operation_commit(
 		&c.app,
 		&c.token,
 		"GET",
-		&format!("/api/executions/{}/working-area", run.id),
+		&format!("/api/executions/{}/execution-scope", run.id),
 		Value::Null,
 	)
 	.await;

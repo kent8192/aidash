@@ -45,12 +45,10 @@ type Session = {
 function OperationCard({
   run,
   operation,
-  area,
   onSession,
 }: {
   run: string;
   operation: Operation;
-  area: Area;
   onSession: (id: string) => void;
 }) {
   const { locale } = useI18n();
@@ -86,10 +84,9 @@ function OperationCard({
       {value.displays?.map((file) => (
         <DisplayFile
           key={file.file_id}
-          area={value.area_id ?? area.id}
+          run={run}
+          operation={value.operation_id}
           file={file}
-          files={area.manifest}
-          revision={area.revision}
         />
       ))}
       {(query.error || error || value.error) && (
@@ -284,7 +281,6 @@ function ScratchOperations({
               key={op.operation_id}
               run={run}
               operation={op}
-              area={area}
               onSession={setSession}
             />
           ))}
@@ -361,7 +357,7 @@ export function ThreadCapabilities({
       do {
         const page: { items: Area[]; next_cursor: string | null } =
           await apiFetch(
-            `/api/working-areas?thread_id=${thread}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`,
+            `/api/execution-scopes?thread_id=${thread}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`,
             { signal },
           );
         items.push(...page.items);
@@ -381,7 +377,9 @@ export function ThreadCapabilities({
   const session = useQuery({
     queryKey: ["core-session", area?.id],
     queryFn: ({ signal }) =>
-      apiFetch<Session>(`/api/working-areas/${area!.id}/session`, { signal }),
+      apiFetch<Session>(`/api/execution-scopes/${area!.id}/session`, {
+        signal,
+      }),
     enabled: !!area,
     refetchInterval: 2000,
     retry: false,
@@ -608,7 +606,7 @@ export function ThreadCapabilities({
                       signature,
                       key: crypto.randomUUID(),
                     };
-                  await post(`/working-areas/${area.id}/steer`, {
+                  await post(`/execution-scopes/${area.id}/steer`, {
                     idempotency_key: pendingSteer.current.key,
                     expected_run_id: expectedRunId,
                     content: prompt,

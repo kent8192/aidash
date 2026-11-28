@@ -78,7 +78,7 @@ async fn working_area(c: &CoreFixture, run: Uuid) -> Value {
 		&c.app,
 		&c.token,
 		"GET",
-		&format!("/api/executions/{run}/working-area"),
+		&format!("/api/executions/{run}/execution-scope"),
 		Value::Null,
 	)
 	.await;

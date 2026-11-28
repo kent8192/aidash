@@ -386,18 +386,18 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 	contracts
 		.response::<_, crate::apps::execution::capabilities::serializers::endpoints::DownloadChunk>(
 			document,
-			views::management::file_download,
+			views::management::command_output_download,
 			200,
 			"application/json",
 		)?;
 	contracts.path(
 		document,
-		views::management::file_download,
-		&["Uuid", "Uuid"],
+		views::management::command_output_download,
+		&["Uuid", "Uuid", "Uuid"],
 	)?;
 	contracts.query::<_, crate::apps::execution::capabilities::serializers::endpoints::Offset>(
 		document,
-		views::management::file_download,
+		views::management::command_output_download,
 	)?;
 	contracts
 		.response::<_, crate::apps::execution::capabilities::serializers::previews::PreviewAvailability>(

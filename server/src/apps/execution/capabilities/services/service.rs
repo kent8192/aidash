@@ -8,9 +8,6 @@ use serde_json::Value;
 pub(crate) fn files(area: &Area) -> Result<Vec<FileEntry>> {
 	Ok(serde_json::from_value(area.manifest.clone())?)
 }
-pub(crate) fn available(area: &Area) -> Result<()> {
-	aidash_domain::capabilities::operations::available(&area.state).map_err(Into::into)
-}
 pub(crate) async fn settings(access: &mut Access, run: &Run) -> Result<AgentConfig> {
 	application::settings(
 		&mut crate::bootstrap::file_scope(None, access, Some(run)),

@@ -12,7 +12,7 @@ async fn same_agent_child_cannot_deadlock_parent_and_another_thread_remains_runn
 	let (_, area) = common::get(
 		&c.app,
 		&c.token,
-		&format!("/api/executions/{}/working-area", parent.id),
+		&format!("/api/executions/{}/execution-scope", parent.id),
 	)
 	.await;
 	let (_, child) = common::post(
@@ -74,7 +74,7 @@ async fn same_agent_child_cannot_deadlock_parent_and_another_thread_remains_runn
 	let (_, own) = common::get(
 		&c.app,
 		&c.token,
-		&format!("/api/executions/{}/working-area", second.id),
+		&format!("/api/executions/{}/execution-scope", second.id),
 	)
 	.await;
 	assert_ne!(own["id"], area["id"]);

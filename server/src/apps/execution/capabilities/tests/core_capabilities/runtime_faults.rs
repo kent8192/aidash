@@ -131,7 +131,7 @@ async fn python_timeout_exports_prior_files_and_requires_new_memory_ack(
 	let (_, area) = common::get(
 		&c.app,
 		&c.token,
-		&format!("/api/executions/{}/working-area", run.id),
+		&format!("/api/executions/{}/execution-scope", run.id),
 	)
 	.await;
 	let file = area["manifest"]
@@ -414,7 +414,7 @@ async fn cleanup_waits_for_proven_shell_stop_and_fences_delayed_writes(
 	let (_, area) = common::get(
 		&c.app,
 		&c.token,
-		&format!("/api/executions/{}/working-area", run.id),
+		&format!("/api/executions/{}/execution-scope", run.id),
 	)
 	.await;
 	assert_eq!(

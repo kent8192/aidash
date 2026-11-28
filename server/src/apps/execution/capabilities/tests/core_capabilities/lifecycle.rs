@@ -124,7 +124,7 @@ async fn interrupted_patch_keeps_old_manifest_and_reclaims_only_abandoned_object
 		&c.app,
 		&c.token,
 		"GET",
-		&format!("/api/executions/{}/working-area", run.id),
+		&format!("/api/executions/{}/execution-scope", run.id),
 		Value::Null,
 	)
 	.await;
@@ -161,7 +161,7 @@ async fn interrupted_patch_keeps_old_manifest_and_reclaims_only_abandoned_object
 		&c.app,
 		&c.token,
 		"GET",
-		&format!("/api/executions/{}/working-area", run.id),
+		&format!("/api/executions/{}/execution-scope", run.id),
 		Value::Null,
 	)
 	.await;
@@ -368,7 +368,7 @@ async fn deleting_a_thread_schedules_the_scratch_wipe_and_closes_its_records(
 		&c.token,
 		"GET",
 		&format!(
-			"/api/working-areas/{}/session",
+			"/api/execution-scopes/{}/session",
 			area["id"].as_str().unwrap()
 		),
 		Value::Null,
@@ -464,7 +464,7 @@ async fn a_node_administrator_deleting_a_thread_stops_its_owners_work(
 		&c.token,
 		"GET",
 		&format!(
-			"/api/working-areas/{}/session",
+			"/api/execution-scopes/{}/session",
 			area["id"].as_str().unwrap()
 		),
 		Value::Null,
@@ -617,7 +617,7 @@ async fn cleanup_fault_fixture(#[future] capability_fixture: CoreFixture) -> (Co
 		&c.app,
 		&c.token,
 		"GET",
-		&format!("/api/executions/{}/working-area", run.id),
+		&format!("/api/executions/{}/execution-scope", run.id),
 		Value::Null,
 	)
 	.await;
@@ -862,7 +862,7 @@ async fn cleanup_status_does_not_block_the_worker_while_waiting_for_its_area(
 		&c.app,
 		&c.token,
 		"GET",
-		&format!("/api/executions/{}/working-area", run.id),
+		&format!("/api/executions/{}/execution-scope", run.id),
 		Value::Null,
 	)
 	.await;
