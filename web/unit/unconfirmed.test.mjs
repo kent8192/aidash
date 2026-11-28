@@ -25,7 +25,7 @@ const entry = (node, kind, thread_id, count) => ({
 test("a list counts only its kind in the Threads in view", () => {
   const entries = [
     entry("b", "task", "w1", 2),
-    entry("b", "artifact", "w1", 5),
+    entry("b", "message", "w1", 5),
     entry("b", "task", "w2", 7),
   ];
   assert.deepEqual(unconfirmedFor(entries, ["task"], ["w1"]), [
@@ -34,7 +34,7 @@ test("a list counts only its kind in the Threads in view", () => {
   assert.deepEqual(unconfirmedFor(entries, ["task"], ["w1", "w2"]), [
     { node: "aidash://local/b", count: 9 },
   ]);
-  assert.deepEqual(unconfirmedFor(entries, ["task", "artifact"], ["w1"]), [
+  assert.deepEqual(unconfirmedFor(entries, ["task", "message"], ["w1"]), [
     { node: "aidash://local/b", count: 7 },
   ]);
 });

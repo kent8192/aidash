@@ -71,10 +71,6 @@ const state = () => ({
     { id: "e2", node: "second" },
     { id: "e3", node: null },
   ],
-  artifacts: [
-    { id: "a1", thread_id: "w1" },
-    { id: "a2", thread_id: "w2" },
-  ],
   unconfirmed: [
     { node: "aidash://home/other", kind: "task", thread_id: "w1", count: 1 },
     { node: "aidash://home/other", kind: "task", thread_id: "w2", count: 3 },
@@ -94,7 +90,6 @@ test("a Node's view holds only what its Threads own, and names the Node", () => 
     runs: ["r2", "r3"],
     human_requests: ["h2"],
     conversations: ["c2"],
-    artifacts: ["a2"],
   };
   for (const [key, ids] of Object.entries(expected))
     assert.deepEqual(

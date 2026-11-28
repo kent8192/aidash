@@ -1,4 +1,3 @@
-import type { Artifact } from "../src/generated/models";
 import type { Unconfirmed } from "../src/unconfirmed";
 import type { Page } from "@playwright/test";
 import { installBearerDashboard } from "./auth-fixture";
@@ -115,14 +114,12 @@ export function fixture(reference = false) {
     ],
     conversations: [],
     events: [],
-    artifacts: [] as Artifact[],
     unconfirmed: [] as Unconfirmed[],
     installations: [],
     next_cursors: {
       threads: null,
       tasks: null,
       runs: null,
-      artifacts: null,
       human_requests: null,
       conversations: null,
     },
@@ -205,25 +202,6 @@ export function fixture(reference = false) {
         run_id: "run-3",
         kind: "APPROVAL_REQUIRED",
         prompt: "パッケージの公開を承認しますか？",
-      },
-    ];
-    data.artifacts = [
-      {
-        id: "artifact-one",
-        thread_id: "thread-one",
-        task_id: "task-1",
-        name: "release-checklist.md",
-        kind: "document",
-        content: {
-          checklist: [
-            "接続処理を確認",
-            "復旧テストを実行",
-            "人間の承認後に公開",
-          ],
-        },
-        created_by: "researcher",
-        idempotency_key: "artifact-key",
-        created_at: "2026-09-24T01:34:00Z",
       },
     ];
   }
@@ -321,7 +299,7 @@ export async function setup(
           ["execution.created", "01:32:20", data.runs[0]],
           ["tool.invoke", "01:33:10", {}],
           ["task.completed", "01:34:00", { task: data.tasks[2] }],
-          ["artifact.created", "01:34:30", {}],
+          ["message.created", "01:34:30", {}],
           ["task.claimed", "01:35:00", data.tasks[3]],
           ["task.completed", "01:36:30", { task: data.tasks[3] }],
           ["task.claimed", "01:37:00", data.tasks[4]],
@@ -846,9 +824,6 @@ export async function setup(
           thread,
           messages: messages[thread.id],
           tasks: data.tasks.filter((task) => task.thread_id === thread.id),
-          artifacts: data.artifacts.filter(
-            (artifact) => artifact.thread_id === thread.id,
-          ),
           events:
             thread.id === "thread-one"
               ? [...referenceEvents, ...deadlineEvents]

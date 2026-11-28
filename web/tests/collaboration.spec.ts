@@ -690,8 +690,8 @@ for (const locale of ["en-US", "ja-JP"] as const) {
                         verification: "unverified",
                         evidence: [
                           {
-                            kind: "artifact",
-                            id: "supporting-artifact",
+                            kind: "message",
+                            id: "supporting-message",
                             revision: 2,
                             digest: "sha256:source",
                           },
@@ -1964,8 +1964,8 @@ for (const locale of ["en-US", "ja-JP"] as const) {
     });
     await expect(pause).toBeVisible();
     for (const name of ja
-      ? ["タスクと成果物", "成果物", "実行履歴"]
-      : ["Tasks and results", "Artifacts", "Execution history"]) {
+      ? ["タスクと成果物", "実行履歴"]
+      : ["Tasks and results", "Execution history"]) {
       await nav.getByRole("tab", { name, exact: true }).click();
       await expect(pause).toHaveCount(0);
       await nav
@@ -3627,7 +3627,6 @@ test("pending requests continue within the selected node", async ({ page }) => {
           title: "Older thread",
         },
         tasks: [],
-        artifacts: [],
         events: [],
         messages: [],
       },
@@ -3708,7 +3707,6 @@ test("an opened older thread survives a fresh state window", async ({
           title: "Older thread",
         },
         tasks: [],
-        artifacts: [],
         events: [],
         messages: [],
       },
@@ -3792,7 +3790,6 @@ test("failed task can be abandoned even when older runs exist", async ({
       json: {
         thread: data.threads[0],
         tasks: [task],
-        artifacts: [],
         events: [],
         messages: [],
       },

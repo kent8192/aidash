@@ -29,7 +29,7 @@ test("the Task list names each silent Node once, with the Tasks it left out", as
       entry(known, "task", 3),
       entry(stranger, "task", 1),
       // Other kinds and other Threads do not belong to this list.
-      entry(known, "artifact", 9),
+      entry(known, "message", 9),
       entry(known, "task", 40, "thread-two"),
     ],
   });
@@ -94,7 +94,7 @@ test("results and conversation warn about their own kinds", async ({
   const { errors } = await setup(page, {
     subject: true,
     unconfirmed: [
-      entry(known, "artifact", 2),
+      entry(known, "message", 2),
       entry(stranger, "message", 5),
       entry(known, "task", 7),
     ],

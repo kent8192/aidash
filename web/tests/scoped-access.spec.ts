@@ -254,7 +254,21 @@ test("subject dashboard completes a conversation and clears expired access", asy
     ).json();
     expect(scoped.human_requests).toHaveLength(0);
     expect(answeredRequests.items[0].answered_by).toBe("alice");
-    expect(scoped.artifacts).toHaveLength(1);
+    const completedTask = scoped.tasks.find(
+      (task: { title: string }) => task.title === id,
+    );
+    const completionThread = await request.get(
+      `/api/threads/${completedTask.thread_id}`,
+      { headers: { authorization: `Bearer ${credential.token}` } },
+    );
+    expect(completionThread.ok()).toBe(true);
+    const snapshot = await completionThread.json();
+    expect(
+      snapshot.messages.filter(
+        (message: { completion?: { task_id: string } }) =>
+          message.completion?.task_id === completedTask.id,
+      ),
+    ).toHaveLength(1);
     await page.goto("/settings");
     await expect(page.getByText(tenant, { exact: true })).toBeVisible();
     await expect(page.getByRole("button", { name: "Peerを追加" })).toHaveCount(

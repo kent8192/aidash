@@ -129,19 +129,6 @@ export function meshScene(now = Date.now()) {
       updated_at: time(i + 1),
     }),
   );
-  const artifacts = ["PRD", "Prototype", "Evaluation Report"].map(
-    (name, i) => ({
-      id: `artifact-${i}`,
-      name,
-      kind: i === 1 ? "code" : "text",
-      content: `Sample ${name} content for local visual verification.`,
-      thread_id: "product-lab",
-      task_id: tasks[i].id,
-      created_by: principal(["researcher", "builder", "reviewer"][i]),
-      idempotency_key: `artifact-${i}`,
-      created_at: time(20 - i * 5),
-    }),
-  );
   const events = Array.from({ length: 18 }, (_, i) => ({
     id: `event-${i}`,
     sequence: i,
@@ -151,7 +138,7 @@ export function meshScene(now = Date.now()) {
       "task.created",
       "task.claimed",
       "execution.started",
-      "artifact.created",
+      "message.created",
       "task.completed",
       "execution.waiting",
     ][i % 6],
@@ -188,14 +175,12 @@ export function meshScene(now = Date.now()) {
       threads,
       tasks,
       runs,
-      artifacts,
       events,
       conversations,
       next_cursors: {
         threads: null,
         tasks: null,
         runs: null,
-        artifacts: null,
         human_requests: null,
         conversations: null,
       },
