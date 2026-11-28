@@ -262,12 +262,13 @@ async fn scratch_save_releases_authority_while_streaming(
 		// step may wait at that entrance, even after the save has settled.
 		let published = async {
 			loop {
-				let revision: i64 =
-					sqlx::query_scalar("SELECT revision FROM core_areas WHERE thread_id = $1")
-						.bind(run.thread_id)
-						.fetch_one(c.f.store.pool.fixture_driver())
-						.await
-						.unwrap();
+				let revision: i64 = sqlx::query_scalar(
+					"SELECT revision FROM core_execution_scopes WHERE thread_id = $1",
+				)
+				.bind(run.thread_id)
+				.fetch_one(c.f.store.pool.fixture_driver())
+				.await
+				.unwrap();
 				if revision == 2 {
 					break;
 				}

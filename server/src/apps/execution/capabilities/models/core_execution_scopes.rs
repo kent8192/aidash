@@ -1,12 +1,12 @@
-//! Persistent core_areas records.
+//! Persistent core_execution_scopes records.
 use reinhardt::db::orm::Json;
 use reinhardt::model;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-#[model(app_label = "execution", table_name = "core_areas")]
+#[model(app_label = "execution", table_name = "core_execution_scopes")]
 #[derive(Serialize, Deserialize)]
-pub struct CoreAreas {
+pub struct CoreExecutionScopes {
 	#[field(primary_key = true)]
 	pub id: uuid::Uuid,
 	#[field(field_type = "text")]

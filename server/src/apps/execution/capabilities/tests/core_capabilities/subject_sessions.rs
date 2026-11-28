@@ -341,7 +341,7 @@ async fn inherited_child_admission_waits_for_deletion_and_rechecks_tombstone(
 			.expr(reinhardt::query::Func::count(
 				Expr::col(Alias::new("id")).into(),
 			))
-			.from(Alias::new("core_areas"))
+			.from(Alias::new("core_execution_scopes"))
 			.and_where(Expr::col(Alias::new("agent_id")).eq("reviewer"))
 			.to_string(PostgresQueryBuilder),
 	)

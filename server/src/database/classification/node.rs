@@ -84,7 +84,7 @@ pub fn ownership(name: &str) -> Result<Ownership> {
 		"nodes" => Audit,
 		"authorization_remote_terminal_receipts" => Recovery,
 		"node_registrations" => Registrations,
-		"core_areas" => Areas,
+		"core_execution_scopes" => Areas,
 		"core_records" => Records,
 		"core_objects" => Objects,
 		"task_dependencies" => CascadeTasks,

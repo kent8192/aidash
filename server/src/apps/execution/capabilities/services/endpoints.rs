@@ -92,7 +92,7 @@ pub(crate) async fn areas(
 			let query_bind_3 = page.cursor.unwrap_or(Uuid::nil());
 			let query_bind_5 = page.thread_id;
 			crate::database::native::query_as(
-				&sessions::select("core_areas")
+				&sessions::select("core_execution_scopes")
 					.and_where(
 						Expr::col(Alias::new("tenant")).eq(Expr::value(query_bind_1.to_owned())),
 					)

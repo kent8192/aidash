@@ -1,7 +1,7 @@
 //! Persistent records for capabilities.
 
-mod core_areas;
-pub use core_areas::CoreAreas;
+mod core_execution_scopes;
+pub use core_execution_scopes::CoreExecutionScopes;
 
 mod core_runs;
 pub use core_runs::CoreRuns;

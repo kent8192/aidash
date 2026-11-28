@@ -133,7 +133,7 @@ pub const TABLES: &[Table] = &[
 	// undecodable activation messages, before any Tenant is known
 	table("execution", "activation_quarantine", DeploymentWide),
 	table("execution", "context_compaction_attempts", TenantOwned),
-	table("execution", "core_areas", TenantOwned),
+	table("execution", "core_execution_scopes", TenantOwned),
 	table("execution", "core_blobs", TenantOwned),
 	table("execution", "core_blob_uploads", TenantOwned),
 	table("execution", "core_blob_references", TenantOwned),

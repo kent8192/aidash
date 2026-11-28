@@ -655,7 +655,7 @@ async fn batched_reads_share_the_working_area_row(
 	sqlx::query(
 		&Query::select()
 			.column(Alias::new("id"))
-			.from(Alias::new("core_areas"))
+			.from(Alias::new("core_execution_scopes"))
 			.and_where(Expr::col(Alias::new("id")).eq(Expr::value(area)))
 			.lock(LockType::Share)
 			.to_string(PostgresQueryBuilder),

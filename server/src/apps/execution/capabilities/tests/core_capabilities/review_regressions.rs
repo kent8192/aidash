@@ -78,7 +78,7 @@ async fn withdrawn_operation_fixture(
 		let query_bind_1 = serde_json::from_value::<Uuid>(area["id"].clone()).unwrap();
 		sqlx::query(
 			&Query::update()
-				.table(Alias::new("core_areas"))
+				.table(Alias::new("core_execution_scopes"))
 				.value(Alias::new("state"), "running")
 				.and_where(Expr::col(Alias::new("id")).eq(Expr::value(query_bind_1.to_owned())))
 				.to_string(PostgresQueryBuilder),
@@ -140,7 +140,7 @@ async fn authority_withdrawal_before_dispatch_keeps_saved_files_usable(
 		sqlx::query_scalar(
 			&Query::select()
 				.column(Alias::new("state"))
-				.from(Alias::new("core_areas"))
+				.from(Alias::new("core_execution_scopes"))
 				.and_where(
 					reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("id"))).eq(
 						SimpleExpr::CustomWithExpr(
@@ -660,7 +660,7 @@ async fn command_cleanup_fixture(
 	let id = Uuid::new_v4();
 	sqlx::query(
 		&Query::insert()
-			.into_table(Alias::new("core_areas"))
+			.into_table(Alias::new("core_execution_scopes"))
 			.columns(
 				[
 					"id",
@@ -1035,7 +1035,7 @@ async fn a_withdrawn_undelivered_operation_has_no_effects_and_is_acknowledged(
 	let area_state: String = sqlx::query_scalar(
 		&Query::select()
 			.column(Alias::new("state"))
-			.from(Alias::new("core_areas"))
+			.from(Alias::new("core_execution_scopes"))
 			.and_where(Expr::col(Alias::new("id")).eq(Expr::value(area)))
 			.to_string(PostgresQueryBuilder),
 	)

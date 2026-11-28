@@ -63,10 +63,10 @@ pub(super) async fn check(
 	let now = database_time(tx).await?;
 	let area_runs = Query::select()
 		.column(Alias::new("run_id"))
-		.from(Alias::new("core_run_areas"))
+		.from(Alias::new("core_run_scopes"))
 		.and_where(Expr::col("tenant").eq(Expr::value(owners.tenant)))
 		.and_where(owners.root(
-			"core_run_areas",
+			"core_run_scopes",
 			"area_id",
 			classification::node::Root::Area,
 		)?)

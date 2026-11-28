@@ -206,4 +206,15 @@ pub(super) fn migration() -> Migration {
 					.with_default(Some("1".into())),
 			),
 		})
+		.add_operation(Operation::RenameTable {
+			old_name: "core_areas".into(),
+			new_name: "core_execution_scopes".into(),
+		})
+		.add_operation(Operation::RunSQL {
+			// Reinhardt has no operation for renaming a view.
+			sql: "ALTER VIEW public.core_run_areas RENAME TO core_run_scopes;".into(),
+			reverse_sql: Some(
+				"ALTER VIEW public.core_run_scopes RENAME TO core_run_areas;".into(),
+			),
+		})
 }

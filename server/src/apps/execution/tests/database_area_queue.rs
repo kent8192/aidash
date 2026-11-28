@@ -42,7 +42,7 @@ impl ScratchRuns {
 		let area = Uuid::new_v4();
 		sqlx::query(
 			&Query::insert()
-				.into_table(Alias::new("core_areas"))
+				.into_table(Alias::new("core_execution_scopes"))
 				.columns(
 					[
 						"id",
@@ -115,7 +115,7 @@ impl ScratchRuns {
 			.unwrap()
 			.id;
 		sqlx::query(
-			"INSERT INTO core_runs (run_id, scope_subject, initialized, tenant) SELECT $1, owner, true, tenant FROM core_areas WHERE id = $2",
+			"INSERT INTO core_runs (run_id, scope_subject, initialized, tenant) SELECT $1, owner, true, tenant FROM core_execution_scopes WHERE id = $2",
 		)
 		.bind(id)
 		.bind(self.area)

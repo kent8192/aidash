@@ -34,7 +34,7 @@ impl Owners<'_> {
 			Run => ("task_executions", "id"),
 			ModelCall => ("model_calls", "id"),
 			Task => ("tasks", "id"),
-			Area => ("core_areas", "id"),
+			Area => ("core_execution_scopes", "id"),
 			Request => ("generation_requests", "id"),
 			Bank => ("memory_banks", "id"),
 			Unit => ("memory_units", "id"),
@@ -112,8 +112,8 @@ impl Owners<'_> {
 					.in_subquery(
 						Query::select()
 							.column(Alias::new("area_id"))
-							.from(Alias::new("core_run_areas"))
-							.and_where(self.root("core_run_areas", "run_id", Root::Run)?)
+							.from(Alias::new("core_run_scopes"))
+							.and_where(self.root("core_run_scopes", "run_id", Root::Run)?)
 							.to_owned(),
 					)
 					.into();

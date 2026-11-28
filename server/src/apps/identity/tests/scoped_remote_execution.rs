@@ -10147,7 +10147,7 @@ async fn node_deletion_retries_delegated_stop_until_receiver_and_home_settle(
 		async fn owned_file(f: &Federation, thread: Uuid) -> Uuid {
 			let area = Uuid::new_v4();
 			let file = Uuid::new_v4();
-			sqlx::query("INSERT INTO core_areas(id,tenant,home_node,agent_id,owner,thread_id) VALUES ($1,'acme',$2,'fixture','alice',$3)")
+			sqlx::query("INSERT INTO core_execution_scopes(id,tenant,home_node,agent_id,owner,thread_id) VALUES ($1,'acme',$2,'fixture','alice',$3)")
                 .bind(area).bind(node_of(f)).bind(thread).execute(f.store.pool.fixture_driver()).await.unwrap();
 			let digest = seed_fixture_blob(f, file).await;
 			sqlx::query("INSERT INTO core_objects(id,tenant,area_id,kind,digest,size) VALUES ($1,'acme',$2,'working',$3,4)")
@@ -11110,7 +11110,7 @@ async fn local_terminal_cancel_preserves_request_and_trust(
 		.thread_id;
 	let area = Uuid::new_v4();
 	let file = Uuid::new_v4();
-	sqlx::query("INSERT INTO core_areas(id,tenant,home_node,agent_id,owner,thread_id) VALUES($1,'acme',$2,'fixture','alice',$3)")
+	sqlx::query("INSERT INTO core_execution_scopes(id,tenant,home_node,agent_id,owner,thread_id) VALUES($1,'acme',$2,'fixture','alice',$3)")
 		.bind(area).bind(receiver.to_string()).bind(receiver_thread).execute(f.store.pool.fixture_driver()).await.unwrap();
 	let digest = seed_fixture_blob(&f, file).await;
 	sqlx::query("INSERT INTO core_objects(id,tenant,area_id,kind,digest,size) VALUES($1,'acme',$2,'working',$3,4)")

@@ -50,7 +50,7 @@ fn area(table: &str, node: &str, address: &str) -> SimpleExpr {
 	Expr::exists(
 		Query::select()
 			.expr(Expr::value(1_i32))
-			.from_as(Alias::new("core_areas"), Alias::new("a"))
+			.from_as(Alias::new("core_execution_scopes"), Alias::new("a"))
 			.and_where(column("a", "id").eq(column(table, "area_id")))
 			.and_where(column("a", "tenant").eq(column(table, "tenant")))
 			.and_where(column("a", "home_node").eq(Expr::value(address)))
@@ -118,7 +118,7 @@ pub(super) fn selectors(
 		.or(Expr::exists(
 			Query::select()
 				.expr(Expr::value(1_i32))
-				.from_as(Alias::new("core_run_areas"), Alias::new("cr"))
+				.from_as(Alias::new("core_run_scopes"), Alias::new("cr"))
 				.and_where(column("cr", "run_id").eq(column("task_executions", "id")))
 				.and_where(column("cr", "tenant").eq(column("task_executions", "tenant")))
 				.and_where(area("cr", node, address))

@@ -594,7 +594,7 @@ async fn the_decision_page_names_the_run(#[future] database: DatabaseFixture) {
 async fn running_targets(fixture: &Fixture) -> (Uuid, Uuid) {
 	let driver = fixture.driver();
 	let area = Uuid::new_v4();
-	sqlx::query("INSERT INTO core_areas (id,tenant,home_node,agent_id,owner,thread_id,state) VALUES ($1,'acme',$2,'fixture','reader',$3,'running')")
+	sqlx::query("INSERT INTO core_execution_scopes (id,tenant,home_node,agent_id,owner,thread_id,state) VALUES ($1,'acme',$2,'fixture','reader',$3,'running')")
 		.bind(area).bind(DEPLOYMENT).bind(fixture.thread)
 		.execute(driver).await.unwrap();
 	let operation = Uuid::new_v4();
@@ -1753,7 +1753,7 @@ async fn a_sweep_pass_that_only_repeats_adds_no_rows_for_a_running_command(
 	.await
 	.unwrap();
 	let (operation, _) = running_targets(&fixture).await;
-	sqlx::query("INSERT INTO core_runs (run_id,tenant,scope_subject,initialized) SELECT $1,'acme',owner,true FROM core_areas WHERE id=(SELECT area_id FROM core_operations WHERE id=$2)")
+	sqlx::query("INSERT INTO core_runs (run_id,tenant,scope_subject,initialized) SELECT $1,'acme',owner,true FROM core_execution_scopes WHERE id=(SELECT area_id FROM core_operations WHERE id=$2)")
 		.bind(fixture.run)
 		.bind(operation)
 		.execute(fixture.driver())

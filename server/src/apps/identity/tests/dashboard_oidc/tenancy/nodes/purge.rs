@@ -45,7 +45,7 @@ async fn request_purge(d: &Deployment, tenant: &str, node: &str) -> Uuid {
 
 async fn object(d: &Deployment, tenant: &str, thread: Uuid, file: Uuid) {
 	let area = Uuid::new_v4();
-	sqlx::query("INSERT INTO core_areas (id,tenant,home_node,agent_id,owner,thread_id) VALUES ($1,$2,'fixture-home','agent','owner',$3)")
+	sqlx::query("INSERT INTO core_execution_scopes (id,tenant,home_node,agent_id,owner,thread_id) VALUES ($1,$2,'fixture-home','agent','owner',$3)")
 		.bind(area).bind(tenant).bind(thread)
 		.execute(d.federation.store.pool.fixture_driver()).await.unwrap();
 	seed_blob(d, tenant, file).await;
@@ -312,18 +312,18 @@ async fn node_purge_erases_owned_files_and_rows_and_preserves_sibling_and_tenant
 	tx.commit().await.unwrap();
 
 	// A present sibling Thread outranks a target Subject on an area.
-	sqlx::query("UPDATE core_areas SET owner='purge-target' WHERE tenant=$1")
+	sqlx::query("UPDATE core_execution_scopes SET owner='purge-target' WHERE tenant=$1")
 		.bind(&tenant)
 		.execute(d.federation.store.pool.fixture_driver())
 		.await
 		.unwrap();
 	let owned_orphan = Uuid::new_v4();
 	object(&d, &tenant, Uuid::new_v4(), owned_orphan).await;
-	sqlx::query("UPDATE core_areas SET owner='purge-target' WHERE tenant=$1 AND thread_id NOT IN (SELECT id FROM threads WHERE tenant=$1)").bind(&tenant).execute(d.federation.store.pool.fixture_driver()).await.unwrap();
+	sqlx::query("UPDATE core_execution_scopes SET owner='purge-target' WHERE tenant=$1 AND thread_id NOT IN (SELECT id FROM threads WHERE tenant=$1)").bind(&tenant).execute(d.federation.store.pool.fixture_driver()).await.unwrap();
 	let user_orphan = Uuid::new_v4();
 	object(&d, &tenant, Uuid::new_v4(), user_orphan).await;
 	sqlx::query(
-		"UPDATE core_areas SET owner=$2 WHERE id=(SELECT area_id FROM core_objects WHERE id=$1)",
+		"UPDATE core_execution_scopes SET owner=$2 WHERE id=(SELECT area_id FROM core_objects WHERE id=$1)",
 	)
 	.bind(user_orphan)
 	.bind(&user)
@@ -1418,7 +1418,7 @@ async fn node_purge_stalls_before_unlink_and_preserves_surviving_reference_and_r
 			} else {
 				Some("fixture-runner")
 			};
-			sqlx::query("INSERT INTO core_operations (id,area_id,run_id,credential_id,tenant,principal,request_key,digest,kind,state,epoch,generation,revision,policy_revision,subjects,input,result,runner_instance) SELECT $1,id,$2,$3,tenant,'purge-target','fixture','fixture','shell',$6,1,1,1,1,'[\"purge-target\"]','{}',$4,$7 FROM core_areas WHERE thread_id=$5").bind(metadata).bind(Uuid::new_v4()).bind(target_credential).bind(result).bind(work[0]).bind(state).bind(runner).execute(d.federation.store.pool.fixture_driver()).await.unwrap();
+			sqlx::query("INSERT INTO core_operations (id,area_id,run_id,credential_id,tenant,principal,request_key,digest,kind,state,epoch,generation,revision,policy_revision,subjects,input,result,runner_instance) SELECT $1,id,$2,$3,tenant,'purge-target','fixture','fixture','shell',$6,1,1,1,1,'[\"purge-target\"]','{}',$4,$7 FROM core_execution_scopes WHERE thread_id=$5").bind(metadata).bind(Uuid::new_v4()).bind(target_credential).bind(result).bind(work[0]).bind(state).bind(runner).execute(d.federation.store.pool.fixture_driver()).await.unwrap();
 			"confirmed command termination"
 		}
 		"atomic_digest" | "atomic_owner" | "atomic_trust" => {
@@ -1473,7 +1473,7 @@ async fn node_purge_stalls_before_unlink_and_preserves_surviving_reference_and_r
 				.to_string();
 			sqlx::query("INSERT INTO tasks (id,tenant,thread_id,title,description,status,revision,created_by) VALUES ($1,$2,$3,'preview','preview','COMPLETED',1,'purge-target')").bind(task).bind(&tenant).bind(work[0]).execute(d.federation.store.pool.fixture_driver()).await.unwrap();
 			sqlx::query("INSERT INTO task_executions (id,tenant,task_id,thread_id,node,home_node,agent_id,agent_version,phase,pending,revision) VALUES ($1,$2,$3,$4,$5,$6,'fixture','1.0.0','COMPLETED',$7,1)").bind(run).bind(&tenant).bind(task).bind(work[0]).bind(&target).bind(&home).bind(&pending).execute(d.federation.store.pool.fixture_driver()).await.unwrap();
-			sqlx::query("INSERT INTO core_live_previews (id,tenant,run_id,port,state,stop_reason,idle_seconds,absolute_seconds,started_at,last_request_at,expires_at,termination_confirmed,created_at,updated_at) SELECT $1,tenant,$2,3000,'stopped','run_authority_revoked',600,3600,clock_timestamp(),clock_timestamp(),clock_timestamp()+interval '1 hour',false,clock_timestamp(),clock_timestamp() FROM core_areas WHERE thread_id=$3").bind(metadata).bind(run).bind(work[0]).execute(d.federation.store.pool.fixture_driver()).await.unwrap();
+			sqlx::query("INSERT INTO core_live_previews (id,tenant,run_id,port,state,stop_reason,idle_seconds,absolute_seconds,started_at,last_request_at,expires_at,termination_confirmed,created_at,updated_at) SELECT $1,tenant,$2,3000,'stopped','run_authority_revoked',600,3600,clock_timestamp(),clock_timestamp(),clock_timestamp()+interval '1 hour',false,clock_timestamp(),clock_timestamp() FROM core_execution_scopes WHERE thread_id=$3").bind(metadata).bind(run).bind(work[0]).execute(d.federation.store.pool.fixture_driver()).await.unwrap();
 			"Live preview termination proof"
 		}
 		"coordinator" => {
@@ -1746,13 +1746,15 @@ async fn cross_node_execution_evidence(
 				.unwrap(),
 			)
 			.to_string();
-		sqlx::query("UPDATE core_areas SET home_node=$2 WHERE tenant=$1 AND thread_id=$3")
-			.bind(tenant)
-			.bind(&home)
-			.bind(thread)
-			.execute(d.federation.store.pool.fixture_driver())
-			.await
-			.unwrap();
+		sqlx::query(
+			"UPDATE core_execution_scopes SET home_node=$2 WHERE tenant=$1 AND thread_id=$3",
+		)
+		.bind(tenant)
+		.bind(&home)
+		.bind(thread)
+		.execute(d.federation.store.pool.fixture_driver())
+		.await
+		.unwrap();
 
 		sqlx::query("INSERT INTO tasks (id,tenant,thread_id,title,description,status,revision,created_by) VALUES ($1,$2,$3,'execution','execution','COMPLETED',1,$4)").bind(task).bind(tenant).bind(thread).bind(subject).execute(d.federation.store.pool.fixture_driver()).await.unwrap();
 		sqlx::query("INSERT INTO task_executions (id,tenant,task_id,thread_id,node,home_node,agent_id,agent_version,phase,pending,revision) VALUES ($1,$2,$3,$4,$5,$6,'fixture','1.0.0','COMPLETED',$7,1)").bind(run).bind(tenant).bind(task).bind(thread).bind(executor).bind(&home).bind(&pending).execute(d.federation.store.pool.fixture_driver()).await.unwrap();
@@ -1763,8 +1765,8 @@ async fn cross_node_execution_evidence(
 		};
 		sqlx::query("INSERT INTO authorization_execution(run_id,tenant,task_id,thread_id,credential_id,root_subject,subject_chain) VALUES ($1,$2,$3,$4,$5,$6,ARRAY[$6,'fixture-agent'])").bind(run).bind(tenant).bind(task).bind(thread).bind(execution_credential).bind(execution_subject).execute(d.federation.store.pool.fixture_driver()).await.unwrap();
 		sqlx::query("INSERT INTO authorization_run_reads(run_id,tenant,thread_id,resource_kind,resource_id) VALUES ($1,$2,$3,'task',$4)").bind(run).bind(tenant).bind(thread).bind(task).execute(d.federation.store.pool.fixture_driver()).await.unwrap();
-		sqlx::query("INSERT INTO core_runs (run_id,tenant,scope_subject,initialized) SELECT $1,$2,owner,true FROM core_areas WHERE tenant=$2 AND thread_id=$3").bind(run).bind(tenant).bind(thread).execute(d.federation.store.pool.fixture_driver()).await.unwrap();
-		sqlx::query("INSERT INTO core_operations (id,tenant,area_id,run_id,credential_id,principal,request_key,digest,kind,state,epoch,generation,revision,policy_revision,subjects,input,result,runner_instance) SELECT $1,$2,id,$3,$4,$5,$1::text,'fixture','shell','uncertain',epoch,generation,1,1,'[]','{}','{\"termination_confirmed\":true,\"runner_acknowledged\":true}','fixture-runner' FROM core_areas WHERE tenant=$2 AND thread_id=$6").bind(operation).bind(tenant).bind(run).bind(credential).bind(subject).bind(thread).execute(d.federation.store.pool.fixture_driver()).await.unwrap();
+		sqlx::query("INSERT INTO core_runs (run_id,tenant,scope_subject,initialized) SELECT $1,$2,owner,true FROM core_execution_scopes WHERE tenant=$2 AND thread_id=$3").bind(run).bind(tenant).bind(thread).execute(d.federation.store.pool.fixture_driver()).await.unwrap();
+		sqlx::query("INSERT INTO core_operations (id,tenant,area_id,run_id,credential_id,principal,request_key,digest,kind,state,epoch,generation,revision,policy_revision,subjects,input,result,runner_instance) SELECT $1,$2,id,$3,$4,$5,$1::text,'fixture','shell','uncertain',epoch,generation,1,1,'[]','{}','{\"termination_confirmed\":true,\"runner_acknowledged\":true}','fixture-runner' FROM core_execution_scopes WHERE tenant=$2 AND thread_id=$6").bind(operation).bind(tenant).bind(run).bind(credential).bind(subject).bind(thread).execute(d.federation.store.pool.fixture_driver()).await.unwrap();
 		sqlx::query("INSERT INTO egress_requests (id,tenant,run_id,via,service,method,path,query_digest,status,sent_bytes,received_bytes,duration_ms,created_at) VALUES ($1,$2,$3,'pod','fixture','GET','/','digest',200,1,1,1,clock_timestamp())").bind(Uuid::new_v4()).bind(tenant).bind(run).execute(d.federation.store.pool.fixture_driver()).await.unwrap();
 		result.push((task, run, operation));
 	}
@@ -1998,7 +2000,7 @@ async fn node_purge_releases_owned_references_and_preserves_shared_blob(
 		let pool = d.federation.store.pool.fixture_driver();
 		let area = Uuid::new_v4();
 		let home = format!("{}/{node}", d.federation.config.deployment);
-		sqlx::query("INSERT INTO core_areas (id,tenant,home_node,agent_id,owner,thread_id) VALUES ($1,$2,$3,'agent','alice',$4)")
+		sqlx::query("INSERT INTO core_execution_scopes (id,tenant,home_node,agent_id,owner,thread_id) VALUES ($1,$2,$3,'agent','alice',$4)")
             .bind(area).bind(tenant).bind(home.to_string()).bind(thread).execute(pool).await.unwrap();
 		let receipt = Uuid::new_v4();
 		sqlx::query("INSERT INTO core_records (id,tenant,owner,area_id,kind,state,data) VALUES ($1,$2,'alice',$3,'transfer_in','ready','{}')")

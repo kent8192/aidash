@@ -9019,7 +9019,7 @@ impl LateFiles {
 	}
 
 	async fn area_revision(&self, rig: &SubnodeRig) -> i64 {
-		sqlx::query_scalar("SELECT revision FROM core_areas WHERE id = $1")
+		sqlx::query_scalar("SELECT revision FROM core_execution_scopes WHERE id = $1")
 			.bind(self.area)
 			.fetch_one(rig.f.store.pool.fixture_driver())
 			.await
@@ -9107,7 +9107,7 @@ async fn hold_area(
 	area: Uuid,
 ) -> (sqlx::Transaction<'static, sqlx::Postgres>, i32) {
 	let mut tx = rig.f.store.pool.fixture_driver().begin().await.unwrap();
-	sqlx::query("SELECT id FROM core_areas WHERE id = $1 FOR UPDATE")
+	sqlx::query("SELECT id FROM core_execution_scopes WHERE id = $1 FOR UPDATE")
 		.bind(area)
 		.fetch_one(&mut *tx)
 		.await

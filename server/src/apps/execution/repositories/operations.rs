@@ -85,7 +85,7 @@ pub(crate) async fn set_area(access: &mut Access, id: Uuid, state: &str, epoch: 
 		let query_bind_3 = epoch;
 		crate::database::native::query(
 			&Query::update()
-				.table(Alias::new("core_areas"))
+				.table(Alias::new("core_execution_scopes"))
 				.value_expr(
 					Alias::new("state"),
 					SimpleExpr::CustomWithExpr(

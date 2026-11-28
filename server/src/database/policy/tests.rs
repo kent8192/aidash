@@ -70,6 +70,7 @@ const RENAMED: &[(&str, &str)] = &[
 	("workspaces", "threads"),
 	("authorization_workspaces", "authorization_threads"),
 	("runs", "task_executions"),
+	("core_areas", "core_execution_scopes"),
 ];
 
 /// Migration directions that wrote Tenant-owned rows before #264 enforced

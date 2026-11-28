@@ -64,7 +64,7 @@ pub(crate) async fn run_area(
 	let area_id: Option<Option<Uuid>> = crate::database::native::query_scalar(
 		&Query::select()
 			.column(Alias::new("area_id"))
-			.from(Alias::new("core_run_areas"))
+			.from(Alias::new("core_run_scopes"))
 			.and_where(Expr::col(Alias::new("run_id")).eq(Expr::value(run)))
 			.to_string(PostgresQueryBuilder),
 	)
@@ -76,7 +76,7 @@ pub(crate) async fn run_area(
 		Some(Some(area_id)) => area_id,
 	};
 	let area = crate::database::native::query_as(
-		&select("core_areas")
+		&select("core_execution_scopes")
 			.and_where(Expr::col(Alias::new("id")).eq(Expr::value(area_id)))
 			.and_where(Expr::col(Alias::new("tenant")).eq(Expr::value(&access.identity.tenant)))
 			.to_string(PostgresQueryBuilder),
@@ -92,7 +92,7 @@ pub(crate) async fn areas(access: &mut Access, ids: &[Uuid]) -> NativeResult<Vec
 		return Ok(Vec::new());
 	}
 	crate::database::native::query_as(
-		&select("core_areas")
+		&select("core_execution_scopes")
 			.and_where(Expr::col(Alias::new("id")).is_in(ids.iter().copied().map(Expr::value)))
 			.and_where(Expr::col(Alias::new("tenant")).eq(Expr::value(&access.identity.tenant)))
 			.to_string(PostgresQueryBuilder),
@@ -113,7 +113,7 @@ async fn ensure_area_row(
 	let new_area_id = Uuid::new_v4();
 	crate::database::native::query(
 		&Query::insert()
-			.into_table(Alias::new("core_areas"))
+			.into_table(Alias::new("core_execution_scopes"))
 			.columns(
 				[
 					"id",
@@ -154,7 +154,7 @@ async fn ensure_area_row(
 
 	locked_area(
 		&mut **access.tx,
-		&select("core_areas")
+		&select("core_execution_scopes")
 			.and_where(
 				Expr::col(Alias::new("tenant")).eq(Expr::value(access.identity.tenant.clone())),
 			)
@@ -171,7 +171,7 @@ async fn ensure_area_row(
 fn area_runs(area: &Area) -> reinhardt::query::SelectStatement {
 	Query::select()
 		.column(("q", "run_id"))
-		.from_as(Alias::new("core_run_areas"), Alias::new("q"))
+		.from_as(Alias::new("core_run_scopes"), Alias::new("q"))
 		.join(
 			reinhardt::query::JoinType::InnerJoin,
 			reinhardt::query::TableRef::table_alias(Alias::new("task_executions"), Alias::new("r")),
@@ -282,7 +282,7 @@ impl SessionScope for Scope<'_> {
 				let query_bind_2 = &access.identity.tenant;
 				locked_area(
 					&mut **access.tx,
-					&select("core_areas")
+					&select("core_execution_scopes")
 						.and_where(
 							reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("id"))).eq(
 								SimpleExpr::CustomWithExpr(
@@ -315,7 +315,7 @@ impl SessionScope for Scope<'_> {
 		crate::database::native::query_scalar::<Option<Uuid>>(
 			&Query::select()
 				.column("area_id")
-				.from("core_run_areas")
+				.from("core_run_scopes")
 				.and_where(Expr::col("run_id").eq(Expr::value(run_id)))
 				.and_where(Expr::col("tenant").eq(self.access.identity.tenant.as_str()))
 				.to_string(PostgresQueryBuilder),
@@ -362,12 +362,12 @@ impl SessionScope for Scope<'_> {
 			let areas: Vec<NativeArea> = {
 				let query_bind_1 = id;
 				crate::database::native::query_as(
-					&select("core_areas")
+					&select("core_execution_scopes")
 						.and_where(
 							Expr::col(Alias::new("id")).in_subquery(
 								Query::select()
 									.column(Alias::new("area_id"))
-									.from(Alias::new("core_run_areas"))
+									.from(Alias::new("core_run_scopes"))
 									.and_where(
 										Expr::col(Alias::new("run_id")).in_subquery(
 											Query::select()
@@ -552,7 +552,7 @@ impl SessionScope for Scope<'_> {
 			let source = crate::database::native::query(
 				&Query::select()
 					.column(Alias::new("id"))
-					.from(Alias::new("core_areas"))
+					.from(Alias::new("core_execution_scopes"))
 					.and_where(Expr::col("id").eq(Expr::value(area.id)))
 					.and_where(Expr::col("tenant").eq(crate::database::scope::tenant_of(
 						"task_executions",

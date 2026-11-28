@@ -332,7 +332,7 @@ async fn thread_run_waiting_behind_deletion_cannot_create_an_area(
 
 	let count_query = Query::select()
 		.expr(Expr::cust("count(*)"))
-		.from(Alias::new("core_areas"))
+		.from(Alias::new("core_execution_scopes"))
 		.and_where(
 			reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("thread_id")))
 				.eq(Expr::cust("$1")),
@@ -877,7 +877,7 @@ async fn cleanup_status_does_not_block_the_worker_while_waiting_for_its_area(
 	let mut worker = c.f.store.pool.fixture_driver().begin().await.unwrap();
 	let lock = Query::select()
 		.column(Alias::new("id"))
-		.from(Alias::new("core_areas"))
+		.from(Alias::new("core_execution_scopes"))
 		.and_where(
 			reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("id"))).eq(Expr::cust("$1")),
 		)
