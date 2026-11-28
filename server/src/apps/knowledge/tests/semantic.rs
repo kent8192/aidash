@@ -902,14 +902,7 @@ async fn a_skipped_thread_read_keeps_the_durable_outage(
 	limited.max_result_tokens = 128;
 	limited.embedding.model = "m".repeat(256);
 	limited.embedding.model_version = "v".repeat(128);
-	configure(
-		&fixture._fixture.application,
-		&fixture.token,
-		run.thread_id,
-		&limited,
-		1,
-	)
-	.await;
+	configure(&fixture.f, &fixture.token, run.thread_id, &limited, 1).await;
 	let calls = fixture.fault.requests();
 	assert!(fixture.worker.worker_once().await.unwrap());
 	let saved = fixture.f.store.run(&TEST_FIXTURE, run.id).await.unwrap();
