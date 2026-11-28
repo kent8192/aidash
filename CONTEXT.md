@@ -599,10 +599,6 @@ _Avoid_: crash (unqualified), poison Run, retries exhausted
 One unchangeable content of one path in a Working Area. Changing the path makes a new File version; a File preview and a correction request point at one.
 _Avoid_: revision (counts a Working Area's publications), file (unqualified when the version matters), snapshot
 
-**Retained version**:
-A File version that something refers to, kept after a later publication replaces it until the last reference goes, its Working Area is cleaned up or its Tenant is deleted. When an HTML File version is referred to, the File versions of the rest of its Working Area at that revision are retained with it.
-_Avoid_: snapshot, history, backup, pinned file
-
 **File preview**:
 The dashboard's display of one exact File version as a document rather than as bytes.
 _Avoid_: preview (unqualified), artifact preview, rendered file
@@ -1011,7 +1007,7 @@ _Avoid_: artifact (an existing record with no versions), output, result (unquali
 
 **Correction Request**:
 A person's request in a Thread to change one Deliverable, naming the exact File versions it concerns. It starts a new Task that records what it corrects; the corrected File versions stay as they were, and nothing the earlier Task did outside Aidash is repeated or approved again without a fresh approval.
-_Avoid_: revision (counts a Working Area's publications), redo, rerun, retry
+_Avoid_: revision, redo, rerun, retry
 
 **Schedule**:
 A recurring trigger, a cron expression in a time zone or a fixed interval, that starts a Task for one Agent of its Tenant with a fixed request, each time as a Run whose delegation chain starts at its Registrant. A tick missed while Aidash was down runs once late, unless it is later than the Schedule allows; a tick that comes while the previous Run is unfinished is skipped. A person registers one directly, or an Agent registers one for the person at the root of its Run's chain; a Run started by a Schedule never registers or changes one. There are no Tenant-owned Schedules.
@@ -1028,10 +1024,6 @@ _Avoid_: Reference Document (an agent's private knowledge, sent with every reque
 **Reference set**:
 All the Reference files one Agent version can read, across every Source it binds. Its limits count all of them together.
 _Avoid_: document set, knowledge
-
-**Reference copy**:
-A Reference file copied into a Working Area. As made, only the file's uploader can download it, and it cannot be shared, not even copied again with the same content. Revoking the file makes the Area holding it unusable; withdrawing the Source's Catalog Approval does not. Once edited, it is the editor's own file.
-_Avoid_: materialized file
 
 **Source**:
 A definition in the Registry that gives the Agent versions binding it something to draw on, such as Workspace retrieval, memory, Skills or Reference files. It is not a Source record, which identifies a candidate Web source.
