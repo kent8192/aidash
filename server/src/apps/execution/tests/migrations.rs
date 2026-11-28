@@ -378,7 +378,7 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 			.collect::<Vec<_>>()
 	};
 	assert_eq!(head("federation"), ["0030_threads"]);
-	assert_eq!(head("registry"), ["0093_registry_kind_state"]);
+	assert_eq!(head("registry"), ["0094_thread_target_kind_state"]);
 	assert_eq!(head("identity"), ["0122_tenant_embedding_settings_guard"]);
 	assert_eq!(head("execution"), ["0163_scope_host_debit_state"]);
 	assert_eq!(head("knowledge"), ["0059_threads_state"]);
@@ -394,7 +394,7 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 			.iter()
 			.filter(|migration| migration.state_only)
 			.count(),
-		139
+		140
 	);
 	let tables = migrations
 		.iter()
