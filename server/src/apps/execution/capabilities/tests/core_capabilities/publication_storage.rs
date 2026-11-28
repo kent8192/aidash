@@ -1,3 +1,4 @@
+use super::reference_set_tests::file;
 use super::*;
 use reinhardt::query::{Alias, Expr, PostgresQueryBuilder, Query};
 
@@ -9,9 +10,7 @@ fn storage_fixture(
 	async move {
 		let c = runtime_fixture.await;
 		let run = admit(&c).await;
-		let (status,patch)=request(&c.app,&c.token,"POST",&path_for_patch(run.id),json!({"idempotency_key":Uuid::new_v4(),"expected_revision":1,"preconditions":{"kept.txt":null},"patch":format!("*** Begin Patch\n*** Add File: kept.txt\n+{}\n*** End Patch","x".repeat(4096))})).await;
-		assert_eq!(status, 200, "{patch}");
-		let (_, area) = request(
+		let (status, area) = request(
 			&c.app,
 			&c.token,
 			"GET",
@@ -19,6 +18,7 @@ fn storage_fixture(
 			Value::Null,
 		)
 		.await;
+		assert_eq!(status, 200, "{area}");
 		(c, run.id, area)
 	}
 }
@@ -204,8 +204,6 @@ async fn stale_and_rejected_receipts_cannot_starve_new_terminal_payload_acknowle
 
 use reinhardt::query::{ExprTrait as _, QueryStatementBuilder as _};
 
-use reinhardt::query::SimpleExpr;
-
 #[rstest::fixture]
 async fn running_storage_fixture(
 	#[future] storage_fixture: (CoreFixture, Uuid, Value),
@@ -279,7 +277,6 @@ async fn a_blocked_upload_does_not_lock_tenant_quota_and_failure_releases_reserv
 	#[future] capability_fixture: CoreFixture,
 ) {
 	let mut c = capability_fixture.await;
-	let run = admit(&c).await;
 	let paused = Arc::new(PausedBlobStore {
 		inner: aidash_integrations::blob_store::LocalBlobStore::new(&c.root).unwrap(),
 		entered: tokio::sync::Notify::new(),
@@ -293,7 +290,14 @@ async fn a_blocked_upload_does_not_lock_tenant_quota_and_failure_releases_reserv
 	let app = c.app.clone();
 	let token = c.token.clone();
 	let task = tokio::spawn(async move {
-		request(&app, &token, "POST", &path_for_patch(run.id), json!({"idempotency_key":Uuid::new_v4(),"expected_revision":1,"preconditions":{"blocked.txt":null},"patch":"*** Begin Patch\n*** Add File: blocked.txt\n+unique blocked bytes\n*** End Patch"})).await
+		request(
+			&app,
+			&token,
+			"POST",
+			"/api/references/batch",
+			json!({"files":[file("blocked.txt", "unique blocked bytes\n")]}),
+		)
+		.await
 	});
 	tokio::time::timeout(
 		std::time::Duration::from_secs(10),

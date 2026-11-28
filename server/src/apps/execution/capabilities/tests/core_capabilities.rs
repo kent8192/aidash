@@ -517,16 +517,17 @@ async fn isolated_shell_survives_worker_restart_and_confirms_descendant_cancella
 	let (status, first) = request(&c.app, &c.token, "POST", &path, input.clone()).await;
 	assert_eq!(status, 200, "{first}");
 	assert_eq!(first["status"], "prepared");
-	let (status, busy) = request(
+	operation_until(&c, run.id, "shell", &first["operation_id"], &["running"]).await;
+	let (status, search) = request(
 		&c.app,
 		&c.token,
 		"POST",
 		&format!("/api/executions/{}/files/search", run.id),
-		json!({"query":"x","mode":"literal","scope":"working"}),
+		json!({"query":"","mode":"path","scope":"scratch"}),
 	)
 	.await;
-	assert_eq!(status, 409, "{busy}");
-	operation_until(&c, run.id, "shell", &first["operation_id"], &["running"]).await;
+	assert_eq!(status, 200, "{search}");
+	assert!(search["matches"].is_array(), "{search}");
 	worker.abort();
 	let _ = worker.await;
 	let worker = tokio::spawn(aidash_server::capabilities::operations::run(
@@ -587,7 +588,7 @@ async fn isolated_shell_survives_worker_restart_and_confirms_descendant_cancella
 #[cfg(feature = "capability-runtime-tests")]
 #[rstest::rstest]
 #[tokio::test]
-async fn isolated_python_preserves_heap_and_requires_reset_acknowledgement(
+async fn isolated_python_keeps_its_heap_across_a_scratch_patch(
 	#[future] runtime_fixture: CoreFixture,
 ) {
 	let c = Box::pin(runtime_fixture).await;
@@ -613,20 +614,29 @@ async fn isolated_python_preserves_heap_and_requires_reset_acknowledgement(
 	let second = operation_until(&c, run.id, "python", &next["operation_id"], &["completed"]).await;
 	assert_eq!(second["session_id"], done["session_id"]);
 	assert!(second["output"].as_str().unwrap().contains("42"));
-	let (status,patched)=request(&c.app,&c.token,"POST",&format!("/api/executions/{}/patch",run.id),json!({"idempotency_key":Uuid::new_v4(),"expected_revision":second["revision"],"patch":"*** Begin Patch\n*** Add File: changed.txt\n+changed outside Python\n*** End Patch","preconditions":{"changed.txt":null}})).await;
+	let patch = format!(
+		"*** Begin Patch\n*** Add File: threads/{}/changed.txt\n+changed outside Python\n*** End Patch",
+		run.thread_id
+	);
+	let (status, patched) = request(
+		&c.app,
+		&c.token,
+		"POST",
+		&format!("/api/executions/{}/patch", run.id),
+		json!({"idempotency_key":Uuid::new_v4(),"patch":patch}),
+	)
+	.await;
 	assert_eq!(status, 200, "{patched}");
-	let mut input = json!({"idempotency_key":Uuid::new_v4(),"code":"print(counter)","expected_revision":patched["revision"],"expected_session_id":second["session_id"]});
-	let (status, reset) = request(&c.app, &c.token, "POST", &path, input.clone()).await;
-	assert_eq!(status, 200, "{reset}");
-	assert_eq!(reset["error"]["code"], "SESSION_RESET");
-	assert_ne!(reset["session_id"], second["session_id"]);
-	input["expected_session_id"] = reset["session_id"].clone();
-	let (status, ack) = request(&c.app, &c.token, "POST", &path, input).await;
-	assert_eq!(status, 200, "{ack}");
-	let failed = operation_until(&c, run.id, "python", &ack["operation_id"], &["failed"]).await;
+	let input = json!({"idempotency_key":Uuid::new_v4(),"code":"print(counter, Path('changed.txt').read_text().strip())","expected_revision":second["revision"],"expected_session_id":second["session_id"]});
+	let (status, after) = request(&c.app, &c.token, "POST", &path, input).await;
+	assert_eq!(status, 200, "{after}");
+	let after = operation_until(&c, run.id, "python", &after["operation_id"], &["completed"]).await;
+	assert_eq!(after["session_id"], second["session_id"]);
 	assert!(
-		failed["error"]["details"]["type"] == "NameError",
-		"{failed}"
+		after["output"]
+			.as_str()
+			.unwrap()
+			.contains("42 changed outside Python")
 	);
 	stop.send(true).unwrap();
 	worker.await.unwrap().unwrap();
@@ -718,10 +728,6 @@ async fn only_the_requester_can_steer_with_an_idempotent_request(
 	assert_eq!(inputs.len(), 1);
 	assert_eq!(inputs[0].content, "Prioritize the current question");
 	c.close().await;
-}
-
-fn path_for_patch(id: Uuid) -> String {
-	format!("/api/executions/{id}/patch")
 }
 
 #[rstest::rstest]
