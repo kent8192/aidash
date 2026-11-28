@@ -329,6 +329,26 @@ async fn history_size() -> usize {
 		.len()
 }
 
+async fn purge_fixture_node(pool: &PgPool, tenant: &str, node: &str) {
+	let mut tx = pool.begin().await.unwrap();
+	// Production purges Drive contents and their parent before the Node.
+	// These schema fixtures only have the empty Drive created with the Node.
+	let drive = sqlx::query("DELETE FROM drives WHERE tenant = $1 AND node = $2 AND head = 0")
+		.bind(tenant)
+		.bind(node)
+		.execute(&mut *tx)
+		.await
+		.unwrap();
+	assert_eq!(drive.rows_affected(), 1);
+	sqlx::query("DELETE FROM nodes WHERE tenant = $1 AND name = $2")
+		.bind(tenant)
+		.bind(node)
+		.execute(&mut *tx)
+		.await
+		.unwrap();
+	tx.commit().await.unwrap();
+}
+
 #[rstest]
 #[tokio::test]
 async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
@@ -4938,11 +4958,7 @@ async fn node_deletion_history_preserves_deadlines_and_permanent_ownership(
 		.execute(&pool)
 		.await
 		.unwrap();
-	sqlx::query("DELETE FROM nodes WHERE tenant='acme' AND name=$1")
-		.bind(&node)
-		.execute(&pool)
-		.await
-		.unwrap();
+	purge_fixture_node(&pool, "acme", &node).await;
 	let retained: i64 =
 		sqlx::query_scalar("SELECT count(*) FROM node_deletions WHERE tenant='acme' AND node=$1")
 			.bind(&node)
@@ -5188,11 +5204,7 @@ async fn node_administration_audit_preserves_permanent_tenant_ownership(
 		.execute(&pool)
 		.await
 		.unwrap();
-	sqlx::query("DELETE FROM nodes WHERE tenant='acme' AND name=$1")
-		.bind(&name)
-		.execute(&pool)
-		.await
-		.unwrap();
+	purge_fixture_node(&pool, "acme", &name).await;
 	let retained: (String, String) =
 		sqlx::query_as("SELECT tenant,node FROM dashboard_administration_history WHERE id=$1")
 			.bind(id)
@@ -5610,11 +5622,7 @@ async fn node_purge_registration_recovery_ownership_roundtrips_without_a_catalog
 			.execute(&pool)
 			.await
 			.unwrap();
-		sqlx::query("DELETE FROM nodes WHERE tenant='event-owner' AND name=$1")
-			.bind(&node)
-			.execute(&pool)
-			.await
-			.unwrap();
+		purge_fixture_node(&pool, "event-owner", &node).await;
 		let retained: (String, String) =
 			sqlx::query_as("SELECT tenant,node FROM events WHERE id=$1")
 				.bind(id)
@@ -6362,11 +6370,7 @@ async fn scope_egress_rows_are_tenant_bound_and_purged_with_the_node(
 	assert!(empty.is_err(), "a tally counts at least one connection");
 	sqlx::query("INSERT INTO egress_scope_host_debits (id, tenant, node, scope_id, day, sent, bytes) VALUES ($1, 'acme', $2, $3, CURRENT_DATE::text, false, 2)")
 		.bind(Uuid::new_v4()).bind(&node).bind(scope).execute(&pool).await.unwrap();
-	sqlx::query("DELETE FROM nodes WHERE tenant = 'acme' AND name = $1")
-		.bind(&node)
-		.execute(&pool)
-		.await
-		.unwrap();
+	purge_fixture_node(&pool, "acme", &node).await;
 	for table in [
 		"egress_scope_state",
 		"egress_scope_daily",
