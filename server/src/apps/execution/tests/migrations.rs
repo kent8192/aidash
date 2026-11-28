@@ -1286,7 +1286,7 @@ async fn preserved_baseline_does_not_generate_table_recreation(
 			.iter()
 			.filter(|migration| migration.state_only)
 			.count(),
-		138
+		140
 	);
 }
 
@@ -5326,7 +5326,10 @@ async fn node_purge_source_lifetime_migrations_round_trip_without_weakening_prov
 	// history just before them.
 	let before_threads = migrations
 		.iter()
-		.filter(|m| !THREAD_MIGRATIONS.contains(&(m.app_label.as_str(), m.name.as_str())))
+		.filter(|migration| {
+			let key = (migration.app_label.as_str(), migration.name.as_str());
+			!THREAD_MIGRATIONS.contains(&key) && !DRIVE_MIGRATIONS.contains(&key)
+		})
 		.cloned()
 		.collect::<Vec<_>>();
 	let mut executor = DatabaseMigrationExecutor::new(fixture.connection.clone());
