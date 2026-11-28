@@ -65,4 +65,3 @@ A live comparison chose this over withdrawing the facts. DeepSeek V4.1 Flash, wi
 - **Withdraw facts one hop away.** Poisoned facts two hops away survived (4 of 5 invoice answers poisoned), and the true facts of the first hop were lost.
 - **Withdraw transitively.** Removes the poison, but also every unrelated fact the same Task executions learned.
 - **Stop Task executions that read the deleted fact.** Built-in Memory failures are tool errors, not stops (above). A notice lets the execution re-check its own work.
-||||||| c933ce490a
