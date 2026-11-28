@@ -1,8 +1,8 @@
 //! Drive-specific passages. The manifest and current authority own visibility.
 use super::repository as db;
-use crate::{Error, Result, store::Store};
+use crate::{Error, Result, apps::identity::repositories::embedding_settings, store::Store};
 use aidash_application::{
-	embedding::{EmbeddingRef, EmbeddingSettingsPort, tenant_embedding},
+	embedding::{EmbeddingRef, tenant_embedding},
 	ports::EmbeddingProvider,
 	provider_access::MaintenancePurpose,
 	tenancy::{DeploymentScopeReason, TenancyScope},
@@ -24,50 +24,6 @@ const MAX_EXTRACT_BYTES: u64 = 32 * 1024 * 1024;
 const MAINTENANCE: TenancyScope =
 	TenancyScope::Deployment(DeploymentScopeReason::SemanticMaintenance);
 
-/// CONTRACT(#1019): identical Worker A application contract. Use Worker A's
-/// EmbeddingSettings adapter once the branches meet; standalone C has no settings table.
-struct Settings<'a>(tokio::sync::Mutex<&'a mut dyn TransactionExecutor>);
-
-#[async_trait::async_trait]
-impl EmbeddingSettingsPort for Settings<'_> {
-	async fn active_embedding(
-		&self,
-		tenant: &str,
-	) -> aidash_application::Result<Option<EmbeddingRef>> {
-		let mut tx = self.0.lock().await;
-		if !settings_table_exists(&mut **tx).await? {
-			return Ok(None);
-		}
-		#[derive(Deserialize)]
-		struct Setting {
-			active: EmbeddingRef,
-		}
-		Ok(
-			db::rows::<Setting>(&mut **tx, &db::select("tenant_embedding_settings", tenant))
-				.await?
-				.pop()
-				.map(|setting| setting.active),
-		)
-	}
-}
-
-async fn settings_table_exists(tx: &mut dyn TransactionExecutor) -> Result<bool> {
-	#[derive(Deserialize)]
-	struct State {
-		available: bool,
-	}
-	let query = Query::select()
-		.expr_as(
-			Expr::cust("to_regclass('public.tenant_embedding_settings') IS NOT NULL"),
-			Alias::new("available"),
-		)
-		.to_owned();
-	Ok(db::rows::<State>(tx, &query)
-		.await?
-		.iter()
-		.any(|state| state.available))
-}
-
 fn embedding_key(reference: &EmbeddingRef) -> String {
 	format!("{}@{}", reference.id, reference.version)
 }
@@ -76,7 +32,11 @@ async fn config(
 	tx: &mut dyn TransactionExecutor,
 	tenant: &str,
 ) -> Result<(String, EmbeddingConfig)> {
-	let reference = tenant_embedding(&Settings(tokio::sync::Mutex::new(tx)), tenant).await?;
+	let reference = tenant_embedding(
+		&embedding_settings::EmbeddingSettings(tokio::sync::Mutex::new(tx)),
+		tenant,
+	)
+	.await?;
 	config_for_reference(tx, tenant, &reference).await
 }
 
@@ -85,19 +45,9 @@ async fn config_for_reference(
 	tenant: &str,
 	reference: &EmbeddingRef,
 ) -> Result<(String, EmbeddingConfig)> {
-	let entry = crate::apps::registry::models::Definition::read_of(
-		tx,
-		tenant,
-		&reference.id,
-		&reference.version,
-	)
-	.await?;
-	if entry.kind != "embedding" {
-		return Err(Error::Invalid("invalid Tenant embedding".into()));
-	}
 	Ok((
 		embedding_key(reference),
-		serde_json::from_value(entry.config)?,
+		embedding_settings::embedding_config(tx, tenant, reference).await?,
 	))
 }
 
@@ -344,9 +294,7 @@ fn entries_for_pending(tenant: &str, key: &str, limit: u64) -> reinhardt::query:
 		.to_owned()
 }
 
-/// CONTRACT(#1019): Worker A's generation coordinator must require this
-/// readiness before promoting its pending embedding for all indexes.
-#[allow(dead_code)]
+/// Whether ready Drive publications have been indexed with the pending Tenant model.
 pub(crate) async fn reembedding_ready(
 	tx: &mut dyn TransactionExecutor,
 	tenant: &str,
@@ -366,9 +314,6 @@ async fn rebuild_pending(store: &Store) -> Result<()> {
 		pending: EmbeddingRef,
 	}
 	let mut tx = store.pool.begin(&MAINTENANCE).await?;
-	if !settings_table_exists(tx.as_mut()).await? {
-		return Ok(());
-	}
 	let query = Query::select()
 		.columns(["tenant", "pending"].map(Alias::new))
 		.from(Alias::new("tenant_embedding_settings"))

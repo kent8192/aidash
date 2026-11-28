@@ -1331,9 +1331,19 @@ impl ExecutionEnvironment for Environment<'_> {
 			.store
 			.outside_versions(&self.run_store.scope, run.task_id)
 			.await?;
-		completion.deliverable.drive_versions = super::deliverables::DriveVersions
+		if run.is_local(self.federation.store.deployment.as_str()) {
+			let tenant = self
+				.run_store
+				.scope
+				.tenant_name()
+				.ok_or(aidash_application::Error::Forbidden)?;
+			completion.deliverable.drive_versions = super::deliverables::DriveVersions {
+				store: &self.federation.store,
+				tenant: tenant.as_str(),
+			}
 			.published_versions(run.task_id)
 			.await?;
+		}
 		if !attachments.is_empty() {
 			let home = self.native_home();
 			let authority = home

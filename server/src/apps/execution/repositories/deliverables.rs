@@ -105,18 +105,7 @@ impl Store {
 	}
 }
 
-pub(crate) struct DriveVersions;
-
-#[async_trait::async_trait]
-impl aidash_application::deliverables::DeliverablePort for DriveVersions {
-	async fn published_versions(
-		&self,
-		_task: Uuid,
-	) -> aidash_application::Result<Vec<aidash_application::deliverables::DriveVersionRef>> {
-		// CONTRACT(#1019): Replace with Worker C's tenant-scoped Drive repository.
-		Ok(Vec::new())
-	}
-}
+pub(crate) use crate::apps::drives::repository::Deliverables as DriveVersions;
 
 pub(crate) struct Attachment {
 	pub path: String,
@@ -168,6 +157,7 @@ pub(crate) async fn stage_attachments(
 				exclude: Vec::new(),
 				include: Vec::new(),
 				max_files: 1,
+				after: None,
 				missing_ok: false,
 			})
 			.await

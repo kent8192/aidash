@@ -5,8 +5,8 @@ use aidash_application::embedding::{
 use aidash_domain::semantic::EmbeddingConfig;
 use reinhardt::db::backends::TransactionExecutor;
 use reinhardt::query::{
-	Alias, Expr, ExprTrait, Func, IntoIden, LockType, OnConflict, PostgresQueryBuilder, Query,
-	QueryStatementBuilder, SimpleExpr,
+	Alias, Expr, ExprTrait, Func, LockType, OnConflict, PostgresQueryBuilder, Query,
+	QueryStatementBuilder,
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -197,26 +197,7 @@ pub(crate) async fn embedding_config(
 	Ok(serde_json::from_value(entry.config)?)
 }
 
-async fn drive_entries_exist(tx: &mut dyn TransactionExecutor) -> Result<bool> {
-	// Worker C creates the Drive tables. Until that migration is present,
-	// this branch has no Drive inventory.
-	let relation = SimpleExpr::FunctionCall(
-		"to_regclass".into_iden(),
-		vec![Expr::value("drive_entries").into()],
-	);
-	Ok(native::query_scalar(
-		&Query::select()
-			.expr(relation.is_not_null())
-			.to_string(PostgresQueryBuilder),
-	)
-	.scalar_one(tx)
-	.await?)
-}
-
 async fn drive_files(tx: &mut dyn TransactionExecutor, tenant: &str) -> Result<i64> {
-	if !drive_entries_exist(tx).await? {
-		return Ok(0);
-	}
 	let sql = Query::select()
 		.expr(Func::count(Expr::col("path").into()))
 		.from(Alias::new("drive_entries"))
@@ -232,41 +213,7 @@ pub(crate) async fn drive_reembedding_ready(
 	tenant: &str,
 	pending: &EmbeddingRef,
 ) -> Result<bool> {
-	if !drive_entries_exist(tx).await? {
-		return Ok(true);
-	}
-	// CONTRACT(#1019): On integration, replace this readiness query with
-	// apps::drives::index::reembedding_ready. Both use Worker's C's persisted
-	// generation key and ignore entries whose first indexing is not yet ready.
-	let entry = |column| Expr::col((Alias::new("drive_entries"), Alias::new(column)));
-	let published = Query::select()
-		.expr(Expr::value(1))
-		.from(Alias::new("drive_index_requests"))
-		.and_where(Expr::col("tenant").eq(tenant))
-		.and_where(Expr::col("drive_id").eq(entry("drive_id")))
-		.and_where(Expr::col("version").eq(entry("added_in_version")))
-		.and_where(Expr::col("state").eq("ready"))
-		.to_owned();
-	let replacement = Query::select()
-		.expr(Expr::value(1))
-		.from(Alias::new("drive_passages"))
-		.and_where(Expr::col("tenant").eq(tenant))
-		.and_where(Expr::col("digest").eq(entry("digest")))
-		.and_where(Expr::col("embedding_key").eq(format!("{}@{}", pending.id, pending.version)))
-		.to_owned();
-	let missing = Query::select()
-		.expr(Expr::value(1))
-		.from(Alias::new("drive_entries"))
-		.and_where(Expr::col("tenant").eq(tenant))
-		.and_where(Expr::col("indexed").eq(true))
-		.and_where(Expr::col("removed_in_version").is_null())
-		.and_where(Expr::exists(published))
-		.and_where(Expr::not_exists(replacement))
-		.to_owned();
-	let sql = Query::select()
-		.expr(Expr::not_exists(missing))
-		.to_string(PostgresQueryBuilder);
-	Ok(native::query_scalar(&sql).scalar_one(tx).await?)
+	crate::apps::drives::index::reembedding_ready(tx, tenant, pending).await
 }
 
 pub(crate) async fn change(

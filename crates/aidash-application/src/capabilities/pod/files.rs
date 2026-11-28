@@ -149,6 +149,7 @@ pub async fn read_snapshot(
 		include: Vec::new(),
 		exclude: Vec::new(),
 		max_files: 1,
+		after: None,
 		missing_ok: false,
 	};
 	let discovered = in_pod!(context, context.runtime.file_manifest(&manifest))?;
