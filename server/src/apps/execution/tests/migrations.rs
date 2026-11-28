@@ -367,11 +367,6 @@ async fn reverse_task_executions(
 		"0161_generation_subnode_cleanup",
 		"0162_scope_host_debits",
 		"0163_scope_host_debit_state",
-		"0180_unorder_runs",
-		"0181_unordered_run_bindings",
-		"0182_unpin_live_previews",
-		"0183_detach_run_area_bindings",
-		"0184_retire_area_holds",
 	] {
 		renamed.push(source.get_migration("execution", name).await.unwrap());
 	}
@@ -379,6 +374,12 @@ async fn reverse_task_executions(
 		.iter()
 		.filter(|(app, name)| *app == "execution" || *name == "0033_completion_settlement_v2")
 		.chain(DRIVE_MIGRATIONS)
+	{
+		renamed.push(source.get_migration(app, name).await.unwrap());
+	}
+	for &(app, name) in SCRATCH_MIGRATIONS
+		.iter()
+		.filter(|(app, _)| *app == "execution")
 	{
 		renamed.push(source.get_migration(app, name).await.unwrap());
 	}
@@ -1289,39 +1290,41 @@ impl MigrationFixture {
 	}
 
 	async fn migrate_excluding(&self, excluded: &[(&str, &str)]) {
-		let mut excluded = excluded.to_vec();
-		// The later feature migrations cannot replay when a fixture excludes
-		// the app heads their SQL and data backfills build on.
-		if excluded.iter().any(|migration| {
-			matches!(
-				migration,
-				("registry", "0082_thread_source_scope") | ("workspaces", "0067_task_duty_start")
-			)
-		}) {
-			excluded.extend_from_slice(REGISTRY_PRUNING_MIGRATIONS);
-		}
-		if excluded.iter().any(|migration| {
-			matches!(
-				migration,
-				("execution", "0163_scope_host_debit_state")
-					| ("identity", "0115_suspension_resume_refusal")
-					| ("identity", "0122_tenant_embedding_settings_guard")
-					| ("workspaces", "0067_task_duty_start")
-					| ("registry", "0094_thread_target_kind_state")
-			)
-		}) {
-			excluded.extend_from_slice(GOAL_MIGRATIONS);
-		}
-		if excluded.contains(&("execution", "0173_authorization_read_model_state"))
-			|| excluded.contains(&("knowledge", "0059_threads_state"))
-		{
-			excluded.extend_from_slice(DRIVE_MIGRATIONS);
-		}
-		if excluded.contains(&("execution", "0179_drive_tool_contract"))
-			|| excluded.contains(&("workspaces", "0071_completion_messages"))
-		{
-			excluded.extend_from_slice(SCRATCH_MIGRATIONS);
-		}
+		let omitted = if excluded.is_empty() {
+			Vec::new()
+		} else {
+			// A historical fixture may omit named migrations across apps.
+			// Keep every descendant out of the staged history until its parents return.
+			let migrations =
+				FilesystemSource::new(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("migrations"))
+					.all_migrations()
+					.await
+					.unwrap();
+			let mut omitted = excluded
+				.iter()
+				.map(|&(app, name)| (app.to_owned(), name.to_owned()))
+				.collect::<BTreeSet<_>>();
+			loop {
+				let before = omitted.len();
+				for migration in &migrations {
+					if migration
+						.dependencies
+						.iter()
+						.any(|key| omitted.contains(key))
+					{
+						omitted.insert((migration.app_label.clone(), migration.name.clone()));
+					}
+				}
+				if omitted.len() == before {
+					break;
+				}
+			}
+			omitted.into_iter().collect()
+		};
+		let excluded = omitted
+			.iter()
+			.map(|(app, name)| (app.as_str(), name.as_str()))
+			.collect::<Vec<_>>();
 		let recorder = DatabaseMigrationRecorder::new(self.connection.clone());
 		let before = recorder
 			.get_applied_migrations_if_present()
@@ -1761,7 +1764,9 @@ async fn budget_notice_delivery_preserves_sent_windows_on_upgrade_and_rollback(
 		sqlx::query_scalar(&notices).fetch_all(&pool).await.unwrap()
 	};
 
-	fixture.migrate_before_goals(&[backfill]).await;
+	fixture
+		.migrate_before_goals(&[backfill, ("identity", "0115_suspension_resume_refusal")])
+		.await;
 	assert_eq!(read_notices().await, vec![Some(sent_at)]);
 	let pending = Query::insert()
 		.into_table(Alias::new("budget_notices"))
@@ -3579,7 +3584,9 @@ async fn agent_plugins_migration_validates_references_and_refuses_rollback_while
 	use aidash_server::apps::registry::{models::Definition, services::states::DefinitionKind};
 	// Arrange
 	let fixture = fresh_database.await;
-	fixture.migrate().await;
+	fixture
+		.migrate_before_goals(REGISTRY_PRUNING_MIGRATIONS)
+		.await;
 	fixture.tenant_root("acme").await;
 	let pool = fixture.connection.clone().into_postgres().unwrap();
 	let digest = format!("sha256:{}", "ab01".repeat(16));
@@ -3778,7 +3785,9 @@ async fn agent_plugin_settings_migration_validates_the_key_and_refuses_rollback_
 	use aidash_server::apps::registry::{models::Definition, services::states::DefinitionKind};
 	// Arrange
 	let fixture = fresh_database.await;
-	fixture.migrate().await;
+	fixture
+		.migrate_before_goals(REGISTRY_PRUNING_MIGRATIONS)
+		.await;
 	fixture.tenant_root("acme").await;
 	let pool = fixture.connection.clone().into_postgres().unwrap();
 	let agent = |settings: serde_json::Value| {
@@ -3995,7 +4004,9 @@ async fn agent_plugin_server_secrets_migration_validates_the_secret_and_refuses_
 	use aidash_server::apps::registry::{models::Definition, services::states::DefinitionKind};
 	// Arrange
 	let fixture = fresh_database.await;
-	fixture.migrate().await;
+	fixture
+		.migrate_before_goals(REGISTRY_PRUNING_MIGRATIONS)
+		.await;
 	fixture.tenant_root("acme").await;
 	let pool = fixture.connection.clone().into_postgres().unwrap();
 	let agent = |settings: serde_json::Value| {

@@ -104,10 +104,10 @@ pub(crate) fn before_threads(
 			policy.actions.insert((*from).to_owned());
 		}
 	}
-	// These grants were part of the stored defaults before the Goal cutover.
+	// Preserve grants that the Goal and Registry cutovers retired.
 	policy
 		.actions
-		.extend(["artifact.create", "artifact.read"].map(str::to_owned));
+		.extend(["artifact.create", "artifact.read", "decision.invoke"].map(str::to_owned));
 	policy
 }
 
