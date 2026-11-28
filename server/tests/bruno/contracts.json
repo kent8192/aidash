@@ -12998,7 +12998,7 @@
                 "type": ["string", "null"]
               }
             },
-            "required": ["system", "item", "version"],
+            "required": ["system", "item", "version", "url"],
             "additionalProperties": false
           },
           "Verdict": {
@@ -13568,7 +13568,7 @@
                 "type": ["string", "null"]
               }
             },
-            "required": ["system", "item", "version"],
+            "required": ["system", "item", "version", "url"],
             "additionalProperties": false
           },
           "Verdict": {
@@ -13905,7 +13905,7 @@
                 "type": ["string", "null"]
               }
             },
-            "required": ["system", "item", "version"],
+            "required": ["system", "item", "version", "url"],
             "additionalProperties": false
           },
           "Verdict": {
@@ -33529,6 +33529,10 @@
               "started_at": {
                 "format": "date-time",
                 "type": "string"
+              },
+              "short_retries_exhausted": {
+                "description": "A semantic or service outage has entered its long retry cadence.",
+                "type": "boolean"
               }
             },
             "required": ["service", "started_at"],
@@ -34323,150 +34327,6 @@
             "enum": ["tool", "skill"],
             "type": "string"
           },
-          "CheckOutcome": {
-            "oneOf": [
-              {
-                "enum": ["passed"],
-                "type": "string"
-              },
-              {
-                "description": "The Check ran and did not pass.",
-                "enum": ["failed"],
-                "type": "string"
-              },
-              {
-                "description": "The Check ran past its timeout.",
-                "enum": ["timed_out"],
-                "type": "string"
-              },
-              {
-                "description": "The Check could not run, or its result is unknown.",
-                "enum": ["unavailable"],
-                "type": "string"
-              },
-              {
-                "description": "Authority or an approval refused the Check.",
-                "enum": ["denied"],
-                "type": "string"
-              }
-            ]
-          },
-          "CheckSubject": {
-            "additionalProperties": false,
-            "description": "What one Check invocation tested. Evidence counts only for an identical subject.",
-            "properties": {
-              "capability_digest": {
-                "description": "Digest of the bound capability definition that ran it.",
-                "type": "string"
-              },
-              "check": {
-                "type": "string"
-              },
-              "check_digest": {
-                "description": "[`Check::digest`] of the definition that ran.",
-                "type": "string"
-              },
-              "content_digest": {
-                "description": "[`content_digest`] of the files the Check saw.",
-                "type": "string"
-              }
-            },
-            "required": [
-              "check",
-              "check_digest",
-              "capability_digest",
-              "content_digest"
-            ],
-            "type": "object"
-          },
-          "CompletionBasis": {
-            "description": "How a Task came to be completed. Only `Verified` means Checks passed.",
-            "enum": ["verified", "not_required", "excepted"],
-            "type": "string"
-          },
-          "CompletionProgress": {
-            "additionalProperties": false,
-            "description": "Run-lifetime Completion Gate state, kept with the Run's context and never\nsent to the model.",
-            "properties": {
-              "attempts": {
-                "default": 0,
-                "description": "Check attempts started by this Run; numbers each attempt's key.",
-                "format": "uint32",
-                "minimum": 0,
-                "type": "integer"
-              },
-              "basis": {
-                "anyOf": [
-                  {
-                    "$ref": "#/components/schemas/CompletionBasis"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "description": "How the Run's Task was completed, once it was."
-              },
-              "evidence": {
-                "items": {
-                  "$ref": "#/components/schemas/VerificationEvidence"
-                },
-                "type": "array"
-              },
-              "input_seq": {
-                "default": 0,
-                "description": "The accepted human input the Repair Allowance belongs to.",
-                "format": "int64",
-                "type": "integer"
-              },
-              "pending": {
-                "anyOf": [
-                  {
-                    "$ref": "#/components/schemas/PendingCheck"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
-              },
-              "repairs": {
-                "default": 0,
-                "format": "uint32",
-                "minimum": 0,
-                "type": "integer"
-              },
-              "review": {
-                "description": "The human request of the Completion Review the Run waits on.",
-                "format": "uuid",
-                "type": ["string", "null"]
-              },
-              "reviews": {
-                "default": 0,
-                "description": "Completion Reviews raised by this Run; numbers each review's request key.",
-                "format": "uint32",
-                "minimum": 0,
-                "type": "integer"
-              },
-              "seconds": {
-                "default": 0,
-                "description": "Check time already spent by this Run.",
-                "format": "uint64",
-                "minimum": 0,
-                "type": "integer"
-              },
-              "start_content": {
-                "description": "Content digest when the Run first executed; `None` until recorded.",
-                "type": ["string", "null"]
-              }
-            },
-            "required": [
-              "input_seq",
-              "repairs",
-              "attempts",
-              "seconds",
-              "reviews"
-            ],
-            "type": "object"
-          },
           "Component": {
             "oneOf": [
               {
@@ -34850,27 +34710,16 @@
               },
               {
                 "additionalProperties": false,
-                "description": "The Completion Gate refused a final answer because a Check did not pass\non the current files. Each one spends the Repair Allowance of the input\nat `through_seq`.",
                 "properties": {
-                  "checks": {
-                    "items": {
-                      "$ref": "#/components/schemas/RepairNote"
-                    },
-                    "type": "array"
-                  },
                   "instruction": {
                     "type": "string"
                   },
                   "kind": {
-                    "enum": ["completion_repair_required"],
+                    "enum": ["goal_feedback"],
                     "type": "string"
-                  },
-                  "through_seq": {
-                    "format": "int64",
-                    "type": "integer"
                   }
                 },
-                "required": ["kind", "checks", "instruction", "through_seq"],
+                "required": ["kind", "instruction"],
                 "type": "object"
               },
               {
@@ -35575,17 +35424,6 @@
                 "minimum": 0,
                 "type": "integer"
               },
-              "completion": {
-                "anyOf": [
-                  {
-                    "$ref": "#/components/schemas/CompletionProgress"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "description": "Completion Gate state with its Verification Evidence, so a person\nanswering a Completion Review sees each Check's exit code and output."
-              },
               "estimate": {
                 "anyOf": [
                   {
@@ -35673,6 +35511,17 @@
                   }
                 ],
                 "description": "The Tenant and Node Instructions the Run pinned at claim (#1010)."
+              },
+              "goal_judging": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/JudgingProgress"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The most recent Goal verdict and the current no-progress count."
               }
             },
             "required": [
@@ -36084,46 +35933,6 @@
               }
             },
             "required": ["key", "index", "replay_safe", "tool", "kind"],
-            "type": "object"
-          },
-          "PendingCheck": {
-            "additionalProperties": false,
-            "description": "A started Check whose operation has not been recorded as evidence yet.",
-            "properties": {
-              "attempt": {
-                "format": "uint32",
-                "minimum": 0,
-                "type": "integer"
-              },
-              "operation_id": {
-                "format": "uuid",
-                "type": "string"
-              },
-              "running_since": {
-                "description": "When the gate first saw the command running. Until then the operation\nis still being dispatched, its sandbox created or its inputs uploaded,\nand its timeout has not begun.",
-                "format": "date-time",
-                "type": ["string", "null"]
-              },
-              "started_at": {
-                "format": "date-time",
-                "type": "string"
-              },
-              "subject": {
-                "$ref": "#/components/schemas/CheckSubject"
-              },
-              "timeout_seconds": {
-                "format": "uint64",
-                "minimum": 0,
-                "type": "integer"
-              }
-            },
-            "required": [
-              "subject",
-              "operation_id",
-              "attempt",
-              "timeout_seconds",
-              "started_at"
-            ],
             "type": "object"
           },
           "PinnedAgentPlugin": {
@@ -36587,27 +36396,6 @@
                 "type": "string"
               }
             ]
-          },
-          "RepairNote": {
-            "additionalProperties": false,
-            "description": "One refused Check, as the model sees it in a repair request.",
-            "properties": {
-              "check": {
-                "type": "string"
-              },
-              "diagnostics": {
-                "type": "string"
-              },
-              "exit_code": {
-                "format": "int64",
-                "type": ["integer", "null"]
-              },
-              "outcome": {
-                "$ref": "#/components/schemas/CheckOutcome"
-              }
-            },
-            "required": ["check", "outcome", "exit_code", "diagnostics"],
-            "type": "object"
           },
           "RequestRecord": {
             "properties": {
@@ -37357,9 +37145,6 @@
                 },
                 "type": "array"
               },
-              "goal": {
-                "type": "string"
-              },
               "resolved": {
                 "description": "Previous constraints or unresolved items explicitly closed by this merge.",
                 "items": {
@@ -37378,10 +37163,13 @@
                   "$ref": "#/components/schemas/VerificationRef"
                 },
                 "type": "array"
+              },
+              "intent": {
+                "type": "string"
               }
             },
             "required": [
-              "goal",
+              "intent",
               "constraints",
               "decisions",
               "unresolved",
@@ -37871,56 +37659,6 @@
             "required": ["id", "title", "abandonable", "handed_over"],
             "type": "object"
           },
-          "VerificationEvidence": {
-            "additionalProperties": false,
-            "description": "The record of one Check's actual invocation against exact content.",
-            "properties": {
-              "attempt": {
-                "format": "uint32",
-                "minimum": 0,
-                "type": "integer"
-              },
-              "diagnostics": {
-                "description": "Bounded tail of the Check's output or the reason it could not run.",
-                "type": "string"
-              },
-              "exit_code": {
-                "format": "int64",
-                "type": ["integer", "null"]
-              },
-              "finished_at": {
-                "format": "date-time",
-                "type": "string"
-              },
-              "operation_id": {
-                "description": "The capability operation that ran; absent when the Check never started.",
-                "format": "uuid",
-                "type": ["string", "null"]
-              },
-              "outcome": {
-                "$ref": "#/components/schemas/CheckOutcome"
-              },
-              "seconds": {
-                "format": "uint64",
-                "minimum": 0,
-                "type": "integer"
-              },
-              "subject": {
-                "$ref": "#/components/schemas/CheckSubject"
-              }
-            },
-            "required": [
-              "subject",
-              "operation_id",
-              "attempt",
-              "outcome",
-              "exit_code",
-              "diagnostics",
-              "seconds",
-              "finished_at"
-            ],
-            "type": "object"
-          },
           "VerificationRef": {
             "additionalProperties": false,
             "properties": {
@@ -38243,6 +37981,10 @@
               "started_at": {
                 "format": "date-time",
                 "type": "string"
+              },
+              "short_retries_exhausted": {
+                "description": "A semantic or service outage has entered its long retry cadence.",
+                "type": "boolean"
               }
             },
             "required": ["service", "started_at"],
@@ -38460,10 +38202,10 @@
           "ModelCallPurpose": {
             "enum": [
               "compaction_summary",
+              "goal_judge",
               "memory_role",
               "workbench_test",
-              "mcp_sampling",
-              "goal_judge"
+              "mcp_sampling"
             ],
             "type": "string"
           },
@@ -38627,6 +38369,84 @@
             "maximum": 255,
             "minimum": 0,
             "type": "integer"
+          },
+          "JudgingProgress": {
+            "properties": {
+              "consecutive_not_yet": {
+                "format": "uint8",
+                "maximum": 255,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "last": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/VerdictRecord"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": ["consecutive_not_yet", "last"],
+            "type": "object"
+          },
+          "Judgment": {
+            "additionalProperties": false,
+            "properties": {
+              "reason": {
+                "type": "string"
+              },
+              "verdict": {
+                "$ref": "#/components/schemas/Verdict"
+              }
+            },
+            "required": ["verdict", "reason"],
+            "type": "object"
+          },
+          "Verdict": {
+            "enum": ["met", "not_yet", "impossible"],
+            "type": "string"
+          },
+          "VerdictRecord": {
+            "properties": {
+              "cost_nanocredits": {
+                "format": "int64",
+                "type": ["integer", "null"]
+              },
+              "goal": {
+                "type": "string"
+              },
+              "judged_at": {
+                "format": "date-time",
+                "type": "string"
+              },
+              "judgment": {
+                "$ref": "#/components/schemas/Judgment"
+              },
+              "model": {
+                "$ref": "#/components/schemas/EntityRef"
+              },
+              "response_epoch": {
+                "format": "int64",
+                "type": "integer"
+              },
+              "run_id": {
+                "format": "uuid",
+                "type": "string"
+              }
+            },
+            "required": [
+              "run_id",
+              "response_epoch",
+              "goal",
+              "judgment",
+              "model",
+              "cost_nanocredits",
+              "judged_at"
+            ],
+            "type": "object"
           }
         },
         "schema": {
@@ -42420,10 +42240,10 @@
           "ModelCallPurpose": {
             "enum": [
               "compaction_summary",
+              "goal_judge",
               "memory_role",
               "workbench_test",
-              "mcp_sampling",
-              "goal_judge"
+              "mcp_sampling"
             ],
             "type": "string"
           },
@@ -46377,7 +46197,7 @@
                     "type": "string"
                   },
                   "verdict": {
-                    "$ref": "#/components/schemas/Verdict"
+                    "$ref": "#/components/schemas/Verdict2"
                   }
                 },
                 "required": ["status", "verdict"],
@@ -46433,7 +46253,7 @@
             ],
             "type": "string"
           },
-          "Verdict": {
+          "Verdict2": {
             "description": "What a pending call is to become: run, or be refused with a reason. The\ncaller refuses with `Blocked(Unavailable)` when no Route gave a verdict.",
             "oneOf": [
               {
@@ -52597,6 +52417,10 @@
               "started_at": {
                 "format": "date-time",
                 "type": "string"
+              },
+              "short_retries_exhausted": {
+                "description": "A semantic or service outage has entered its long retry cadence.",
+                "type": "boolean"
               }
             },
             "required": ["service", "started_at"],
@@ -57056,6 +56880,10 @@
               "started_at": {
                 "format": "date-time",
                 "type": "string"
+              },
+              "short_retries_exhausted": {
+                "description": "A semantic or service outage has entered its long retry cadence.",
+                "type": "boolean"
               }
             },
             "required": ["service", "started_at"],
@@ -57815,6 +57643,7 @@
               "title",
               "mission",
               "procedure",
+              "goal",
               "agent",
               "trigger",
               "approval_mode",
@@ -58234,6 +58063,7 @@
               "title",
               "mission",
               "procedure",
+              "goal",
               "agent",
               "trigger",
               "approval_mode",
@@ -58650,6 +58480,7 @@
               "title",
               "mission",
               "procedure",
+              "goal",
               "agent",
               "trigger",
               "approval_mode",
@@ -59238,6 +59069,7 @@
               "title",
               "mission",
               "procedure",
+              "goal",
               "agent",
               "trigger",
               "approval_mode",
@@ -59782,6 +59614,7 @@
               "title",
               "mission",
               "procedure",
+              "goal",
               "agent",
               "trigger",
               "approval_mode",
@@ -60198,6 +60031,7 @@
               "title",
               "mission",
               "procedure",
+              "goal",
               "agent",
               "trigger",
               "approval_mode",
@@ -60614,6 +60448,7 @@
               "title",
               "mission",
               "procedure",
+              "goal",
               "agent",
               "trigger",
               "approval_mode",
@@ -61030,6 +60865,7 @@
               "title",
               "mission",
               "procedure",
+              "goal",
               "agent",
               "trigger",
               "approval_mode",
@@ -63581,6 +63417,7 @@
               "title",
               "mission",
               "procedure",
+              "goal",
               "agent",
               "trigger",
               "approval_mode",
@@ -64104,6 +63941,7 @@
               "title",
               "mission",
               "procedure",
+              "goal",
               "agent",
               "trigger",
               "approval_mode",
@@ -64562,6 +64400,7 @@
               "title",
               "mission",
               "procedure",
+              "goal",
               "agent",
               "trigger",
               "approval_mode",
@@ -64989,7 +64828,7 @@
                 ]
               }
             },
-            "required": [],
+            "required": ["model"],
             "additionalProperties": false
           },
           "EntityRef": {
@@ -65036,7 +64875,7 @@
                 ]
               }
             },
-            "required": [],
+            "required": ["model"],
             "additionalProperties": false
           },
           "EntityRef": {
