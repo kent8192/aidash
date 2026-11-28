@@ -91,9 +91,7 @@ impl crate::database::native::Decode for Area {
 			epoch: row.try_get("epoch")?,
 			state: row.try_get("state")?,
 			constraints: row.try_get("constraints")?,
-			manifest: row
-				.try_get::<Option<Value>>("manifest")?
-				.ok_or_else(|| crate::Error::Invalid("missing area manifest revision".into()))?,
+			manifest: serde_json::json!([]),
 		})
 	}
 }

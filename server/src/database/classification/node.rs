@@ -204,9 +204,7 @@ pub fn ownership(name: &str) -> Result<Ownership> {
 		// Every Egress request names its Run; the operation it once named is
 		// historical (#738).
 		"egress_requests" => Link("run_id", Run),
-		"core_manifest_revisions" => Link("area_id", Area),
-		// Each reference is a revision of an Area or a receipt of a record.
-		"core_blob_references" => Either("area_id", Area, "record_id", Record),
+		"core_blob_references" => Link("record_id", Record),
 		"message_file_versions" => Link("message_id", Message),
 		"core_previews" => Either("area_id", Area, "live_preview_id", LivePreview),
 		"core_preview_tickets" | "core_preview_sessions" => Link("preview_id", Preview),

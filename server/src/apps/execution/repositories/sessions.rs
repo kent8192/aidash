@@ -33,33 +33,11 @@ impl Scope<'_> {
 pub(crate) fn select(table: &str) -> reinhardt::query::SelectStatement {
 	let mut query = Query::select();
 	query.column(ColumnRef::Asterisk).from(Alias::new(table));
-	if table == "core_areas" {
-		let manifest = Query::select()
-			.column(Alias::new("manifest"))
-			.from(Alias::new("core_manifest_revisions"))
-			.and_where(
-				Expr::col((Alias::new("core_manifest_revisions"), Alias::new("tenant")))
-					.equals((Alias::new("core_areas"), Alias::new("tenant"))),
-			)
-			.and_where(
-				Expr::col((Alias::new("core_manifest_revisions"), Alias::new("area_id")))
-					.equals((Alias::new("core_areas"), Alias::new("id"))),
-			)
-			.and_where(
-				Expr::col((
-					Alias::new("core_manifest_revisions"),
-					Alias::new("revision"),
-				))
-				.equals((Alias::new("core_areas"), Alias::new("revision"))),
-			)
-			.to_owned();
-		query.expr_as(Expr::subquery(manifest), Alias::new("manifest"));
-	}
+
 	query.to_owned()
 }
 
-/// Lock first, then read in a fresh READ COMMITTED snapshot. A subquery in
-/// the locking statement cannot see a revision committed while that lock waits.
+/// Lock first, then read the current session in a fresh READ COMMITTED snapshot.
 pub(crate) async fn locked_area(
 	tx: &mut dyn reinhardt::db::backends::TransactionExecutor,
 	query: &reinhardt::query::SelectStatement,
@@ -173,24 +151,7 @@ async fn ensure_area_row(
 	.bind(&constraints)
 	.execute(&mut **access.tx)
 	.await?;
-	// Only the newly inserted Area has this fresh id. A conflicting
-	// existing Area already owns its current revision.
-	crate::database::native::query(
-		&Query::insert()
-			.into_table(Alias::new("core_manifest_revisions"))
-			.columns(["tenant", "area_id", "revision", "manifest"].map(Alias::new))
-			.from_subquery(
-				Query::select()
-					.columns(["tenant", "id", "revision"].map(Alias::new))
-					.expr(Expr::value(serde_json::json!([])))
-					.from(Alias::new("core_areas"))
-					.and_where(Expr::col(Alias::new("id")).eq(Expr::value(new_area_id)))
-					.to_owned(),
-			)
-			.to_string(PostgresQueryBuilder),
-	)
-	.execute(&mut **access.tx)
-	.await?;
+
 	locked_area(
 		&mut **access.tx,
 		&select("core_areas")

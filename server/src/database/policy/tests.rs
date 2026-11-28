@@ -34,6 +34,7 @@ async fn every_policy_migration_runs_the_rendered_template() {
 /// (#850), with the operation-token External service route (#738), and with
 /// the Research category (#987).
 const RETIRED: &[&str] = &[
+	"core_manifest_revisions",
 	"core_retention_files",
 	"core_retention_holds",
 	"decision_states",
@@ -90,6 +91,11 @@ const IN_DEPLOYMENT_SCOPE: &[&str] = &[
 	"execution.0150_task_executions backward",
 	"execution.0150_task_executions forward",
 	"execution.0153_area_queue_sleep forward",
+	"execution.0181_unordered_run_bindings backward",
+	"execution.0182_unpin_live_previews backward",
+	"execution.0183_detach_run_area_bindings forward",
+	"execution.0183_detach_run_area_bindings backward",
+	"execution.0184_retire_area_holds forward",
 	"execution.0113_content_object_references backward",
 	"execution.0113_content_object_references forward",
 	"identity.0067_scratch_member_policy forward",
@@ -116,6 +122,7 @@ const IN_DEPLOYMENT_SCOPE: &[&str] = &[
 	"workspaces.0049_threads backward",
 	"workspaces.0067_task_duty_start backward",
 	"workspaces.0067_task_duty_start forward",
+	"workspaces.0072_node_scratch_spaces forward",
 ];
 
 #[rstest::rstest]

@@ -124,86 +124,6 @@ async fn fixture_blob(pool: &sqlx::PgPool, root: &std::path::Path, digest: &str,
 	.unwrap();
 }
 
-async fn fixture_revision(pool: &sqlx::PgPool, area: Uuid, revision: i64, files: Value) {
-	use reinhardt::query::{Alias, Expr, IntoValue as _, PostgresQueryBuilder, Query};
-	let mut tx = pool.begin().await.unwrap();
-	sqlx::query(
-		&Query::delete()
-			.from_table(Alias::new("core_manifest_revisions"))
-			.and_where(Expr::col(Alias::new("tenant")).eq("acme"))
-			.and_where(Expr::col(Alias::new("area_id")).eq(Expr::value(area)))
-			.and_where(Expr::col(Alias::new("revision")).eq(revision))
-			.to_string(PostgresQueryBuilder),
-	)
-	.execute(&mut *tx)
-	.await
-	.unwrap();
-	sqlx::query(
-		&Query::insert()
-			.into_table(Alias::new("core_manifest_revisions"))
-			.columns(["tenant", "area_id", "revision", "manifest"].map(Alias::new))
-			.values(vec![
-				"acme".into(),
-				area.into(),
-				revision.into(),
-				files.clone().into_value(),
-			])
-			.unwrap()
-			.to_string(PostgresQueryBuilder),
-	)
-	.execute(&mut *tx)
-	.await
-	.unwrap();
-	for file in files.as_array().unwrap() {
-		let id: Uuid = serde_json::from_value(file["file_id"].clone()).unwrap();
-		let digest = file["digest"].as_str().unwrap();
-		let holder = format!("{area}:{revision}:{id}");
-		sqlx::query(
-			&Query::insert()
-				.into_table(Alias::new("core_blob_references"))
-				.columns(
-					[
-						"id",
-						"tenant",
-						"digest",
-						"holder_kind",
-						"holder_id",
-						"object_id",
-						"area_id",
-						"revision",
-					]
-					.map(Alias::new),
-				)
-				.values(vec![
-					Uuid::new_v4().into(),
-					"acme".into(),
-					digest.into(),
-					"revision".into(),
-					holder.into(),
-					id.into(),
-					area.into(),
-					revision.into(),
-				])
-				.unwrap()
-				.to_string(PostgresQueryBuilder),
-		)
-		.execute(&mut *tx)
-		.await
-		.unwrap();
-	}
-	sqlx::query(
-		&Query::update()
-			.table(Alias::new("core_areas"))
-			.value(Alias::new("revision"), revision)
-			.and_where(Expr::col(Alias::new("id")).eq(Expr::value(area)))
-			.to_string(PostgresQueryBuilder),
-	)
-	.execute(&mut *tx)
-	.await
-	.unwrap();
-	tx.commit().await.unwrap();
-}
-
 #[derive(Clone)]
 struct CoreFixture {
 	_storage: Arc<tempfile::TempDir>,
@@ -1341,128 +1261,6 @@ async fn reusable_grants_require_explicit_scope_and_revocation_withdraws_reuse(
 	assert_eq!(pending["status"], "approval_required");
 	c.close().await;
 }
-#[rstest::rstest]
-#[tokio::test]
-async fn local_shares_are_fixed_recipient_owned_copies(#[future] capability_fixture: CoreFixture) {
-	let c = capability_fixture.await;
-	let sender = admit(&c).await;
-	let mut reader =
-		c.f.registry
-			.get(
-				&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
-				"research",
-				"1.1.0",
-			)
-			.await
-			.unwrap();
-	reader.id = "reader".into();
-	reader.binding_normalization = None;
-	let (status, value) = request(&c.app, &c.token, "POST", "/api/registry", json!(reader)).await;
-	assert_eq!(status, 200, "{value}");
-	let (_, value) = request(
-		&c.app,
-		&c.token,
-		"POST",
-		"/api/authorization/acme/catalog",
-		json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":{"id":"reader","version":"1.1.0"},"expected_revision":0,"enabled":true}),
-	)
-	.await;
-	assert_eq!(value["enabled"], true, "{value}");
-	let mut policy = c.policy.clone();
-	policy["subjects"][aidash_server::domain::qualified_agent(
-		&aidash_domain::nodes::NodeAddress::derived(c.f.config.deployment.as_str(), "acme"),
-		"reader",
-		"1.1.0",
-	)] = json!({"kind":"agent", "node": aidash_domain::nodes::NodeName::derived("acme")});
-	common::replace_policy(&c.f.store, "acme", policy.clone()).await;
-	let (status, task) = request(
-		&c.app,
-		&c.token,
-		"POST",
-		&format!("/api/threads/{}/tasks", sender.thread_id),
-		json!({"title":"Recipient","description":"Read a selected file"}),
-	)
-	.await;
-	assert_eq!(status, 200, "{task}");
-	let (status, value) = request(
-		&c.app,
-		&c.token,
-		"POST",
-		&format!("/api/tasks/{}/delegate", task["id"].as_str().unwrap()),
-		json!({"node_id":c.f.config.deployment,"agent":{"id":"reader","version":"1.1.0"}}),
-	)
-	.await;
-	assert_eq!(status, 200, "{value}");
-	let receiver =
-		c.f.store
-			.runs(&TEST_FIXTURE)
-			.await
-			.unwrap()
-			.into_iter()
-			.find(|r| r.agent_id == "reader")
-			.unwrap();
-	let patch_path = format!("/api/executions/{}/patch", sender.id);
-	let (status,value)=request(&c.app,&c.token,"POST",&patch_path,json!({"idempotency_key":Uuid::new_v4(),"expected_revision":1,"preconditions":{"data.csv":null},"patch":"*** Begin Patch\n*** Add File: data.csv\n+value\n+first\n*** End Patch"})).await;
-	assert_eq!(status, 200, "{value}");
-	let (_, mut area) = request(
-		&c.app,
-		&c.token,
-		"GET",
-		&format!("/api/executions/{}/working-area", sender.id),
-		Value::Null,
-	)
-	.await;
-	// File transfer is byte-opaque: even an image asset can be shared with a
-	// text-only recipient for storage or processing by its tools.
-	area["manifest"][0]["media_type"] = json!("image/svg+xml");
-	fixture_revision(
-		c.f.store.pool.fixture_driver(),
-		area["id"].as_str().unwrap().parse().unwrap(),
-		area["revision"].as_i64().unwrap(),
-		area["manifest"].clone(),
-	)
-	.await;
-	let source = &area["manifest"][0];
-	let input = json!({"idempotency_key":Uuid::new_v4(),"expected_revision":2,"files":[{"file_id":source["file_id"],"expected_digest":source["digest"]}],"recipient":{"node_id":aidash_domain::nodes::NodeAddress::derived(c.f.config.deployment.as_str(), "acme"),"agent_id":"reader","agent_version":"1.1.0","thread_id":task["thread_id"]}});
-	let share_path = format!("/api/executions/{}/files/share", sender.id);
-	let (status, receipt) = request(&c.app, &c.token, "POST", &share_path, input.clone()).await;
-	assert_eq!(status, 200, "{receipt}");
-	assert_eq!(receipt["status"], "completed");
-	assert_eq!(
-		request(&c.app, &c.token, "POST", &share_path, input.clone()).await,
-		(200, receipt.clone())
-	);
-	let file = &receipt["receipt"]["files"][0];
-	assert_ne!(file["file_id"], source["file_id"]);
-	assert_eq!(file["digest"], source["digest"]);
-	assert_eq!(file["media_type"], "image/svg+xml");
-	let (status,value)=request(&c.app,&c.token,"POST",&patch_path,json!({"idempotency_key":Uuid::new_v4(),"expected_revision":2,"preconditions":{"data.csv":source["digest"]},"patch":"*** Begin Patch\n*** Update File: data.csv\n@@\n-first\n+second\n*** End Patch"})).await;
-	assert_eq!(status, 200, "{value}");
-	let read_path = format!("/api/executions/{}/files/read", receiver.id);
-	let (status, read) = request(
-		&c.app,
-		&c.token,
-		"POST",
-		&read_path,
-		json!({"file_id":file["file_id"],"representation":"text"}),
-	)
-	.await;
-	assert_eq!(status, 200, "{read}");
-	assert_eq!(read["content"], "value\nfirst\n");
-	let (status,copy)=request(&c.app,&c.token,"POST",&format!("/api/executions/{}/files/materialize",receiver.id),json!({"idempotency_key":Uuid::new_v4(),"expected_revision":2,"path":"copy.csv","source":{"kind":"file","file_id":file["file_id"],"expected_digest":file["digest"]}})).await;
-	assert_eq!(status, 200, "{copy}");
-	assert_ne!(copy["file"]["file_id"], file["file_id"]);
-	let mut conflict = input;
-	conflict["files"][0]["expected_digest"] = json!("wrong");
-	assert_eq!(
-		request(&c.app, &c.token, "POST", &share_path, conflict)
-			.await
-			.0,
-		409
-	);
-	c.close().await;
-}
-
 #[cfg(feature = "capability-runtime-tests")]
 #[rstest::rstest]
 #[tokio::test]
@@ -1859,9 +1657,6 @@ mod network_tests;
 #[path = "core_capabilities/session_boundaries.rs"]
 mod session_boundary_tests;
 
-#[path = "core_capabilities/content_limits.rs"]
-mod content_limit_tests;
-
 #[path = "core_capabilities/previews.rs"]
 mod preview_tests;
 
@@ -1889,9 +1684,6 @@ mod reference_dispatch_tests;
 #[path = "core_capabilities/publication_storage.rs"]
 mod publication_storage_tests;
 
-#[path = "core_capabilities/reference_reclamation.rs"]
-mod reference_reclamation_tests;
-
 #[path = "core_capabilities/upload_scope.rs"]
 mod upload_scope_tests;
 
@@ -1910,9 +1702,6 @@ mod review_regression_tests;
 use reinhardt::query::{ExprTrait as _, QueryStatementBuilder as _};
 
 use reinhardt::query::SimpleExpr;
-
-#[path = "core_capabilities/media.rs"]
-mod media_tests;
 
 #[rstest::fixture]
 fn provider_endpoint(

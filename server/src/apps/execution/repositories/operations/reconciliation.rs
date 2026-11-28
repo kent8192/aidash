@@ -1,8 +1,8 @@
 //! Owned Access scopes retain authority locks, atomic publication and object guards.
 use super::Operation;
 use crate::apps::execution::capabilities::{
-	serializers::contracts::{Area as NativeArea, FileEntry},
-	services::{operations, service, sessions, skills},
+	serializers::contracts::Area as NativeArea,
+	services::{operations, service, sessions},
 };
 use crate::{
 	Result as NativeResult,
@@ -142,11 +142,6 @@ impl OperationReconciliationRepository for Repository<'_> {
 		.await
 	}
 }
-impl Scope<'_> {
-	fn area(&self) -> &NativeArea {
-		self.area.as_ref().expect("reconciliation scope loaded")
-	}
-}
 #[async_trait]
 impl OperationReconciliationScope for Scope<'_> {
 	fn timeout_ceiling(&self, kind: &str) -> Option<u64> {
@@ -271,24 +266,14 @@ impl OperationReconciliationScope for Scope<'_> {
 			.await
 	}
 	async fn dispatch_files(&mut self, _operation: &Snapshot) -> Result<Vec<MountedFile>> {
-		let area = self.area.as_ref().expect("reconciliation scope loaded");
 		let run = self.run.as_ref().expect("reconciliation scope loaded").id;
-		operations::request_files(&mut self.access, run, area)
+		operations::request_files(&mut self.access, run)
 			.await
 			.map(|files| files.into_iter().map(Into::into).collect())
 			.map_err(Into::into)
 	}
-	async fn upload_files(&mut self, _operation: &Snapshot) -> Result<Vec<MountedFile>> {
-		let result: NativeResult<Vec<FileEntry>> = async {
-			Ok(operations::pod_files(self.area())?
-				.into_iter()
-				.chain(skills::mounted(&mut self.access, self.run.as_ref().unwrap().id).await?)
-				.collect())
-		}
-		.await;
-		result
-			.map(|files| files.into_iter().map(Into::into).collect())
-			.map_err(Into::into)
+	async fn upload_files(&mut self, operation: &Snapshot) -> Result<Vec<MountedFile>> {
+		self.dispatch_files(operation).await
 	}
 	async fn read_chunk(&mut self, file: &MountedFile, offset: u64) -> Result<Vec<u8>> {
 		self.store

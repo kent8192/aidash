@@ -17,11 +17,8 @@ pub(crate) fn pod_files(area: &Area) -> Result<Vec<FileEntry>> {
 pub(in crate::apps::execution) async fn request_files(
 	access: &mut Access,
 	run: Uuid,
-	area: &Area,
 ) -> Result<Vec<FileEntry>> {
-	let mut files = pod_files(area)?;
-	files.extend(super::skills::mounted(access, run).await?);
-	Ok(files)
+	super::skills::mounted(access, run).await
 }
 
 /// Run the complete capability set for callers that own a single lifecycle.

@@ -597,11 +597,6 @@ async fn running_targets(fixture: &Fixture) -> (Uuid, Uuid) {
 	sqlx::query("INSERT INTO core_areas (id,tenant,home_node,agent_id,owner,thread_id,state) VALUES ($1,'acme',$2,'fixture','reader',$3,'running')")
 		.bind(area).bind(DEPLOYMENT).bind(fixture.thread)
 		.execute(driver).await.unwrap();
-	sqlx::query("INSERT INTO core_manifest_revisions (tenant,area_id,revision,manifest) VALUES ('acme',$1,1,'[]')")
-		.bind(area)
-		.execute(driver)
-		.await
-		.unwrap();
 	let operation = Uuid::new_v4();
 	sqlx::query("INSERT INTO core_operations (id,area_id,run_id,tenant,principal,credential_id,subjects,request_key,digest,kind,state,epoch,generation,revision,policy_revision,input,result) VALUES ($1,$2,$3,'acme','reader',$4,$5,$1::text,'digest','shell','prepared',1,1,1,1,'{}','{}')")
 		.bind(operation).bind(area).bind(fixture.run).bind(fixture.identity.credential_id).bind(json!(["reader","helper"]))

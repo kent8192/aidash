@@ -48,14 +48,6 @@ async fn object(d: &Deployment, tenant: &str, thread: Uuid, file: Uuid) {
 	sqlx::query("INSERT INTO core_areas (id,tenant,home_node,agent_id,owner,thread_id) VALUES ($1,$2,'fixture-home','agent','owner',$3)")
 		.bind(area).bind(tenant).bind(thread)
 		.execute(d.federation.store.pool.fixture_driver()).await.unwrap();
-	sqlx::query(
-		"INSERT INTO core_manifest_revisions (tenant,area_id,revision,manifest) VALUES ($1,$2,1,'[]')",
-	)
-	.bind(tenant)
-	.bind(area)
-	.execute(d.federation.store.pool.fixture_driver())
-	.await
-	.unwrap();
 	seed_blob(d, tenant, file).await;
 	sqlx::query(
 		"INSERT INTO core_objects (id,tenant,area_id,kind,digest,size) VALUES ($1,$2,$3,'working',$4,4)",
@@ -1995,7 +1987,7 @@ async fn node_audit_expiry_after_whole_tenant_purge_does_not_starve_live_tenant_
 async fn node_purge_releases_owned_references_and_preserves_shared_blob(
 	#[from(common::runtime)] runtime: common::RuntimeFuture,
 ) {
-	async fn seed_area(
+	async fn seed_receipt(
 		d: &Deployment,
 		root: &std::path::Path,
 		tenant: &str,
@@ -2008,8 +2000,10 @@ async fn node_purge_releases_owned_references_and_preserves_shared_blob(
 		let home = format!("{}/{node}", d.federation.config.deployment);
 		sqlx::query("INSERT INTO core_areas (id,tenant,home_node,agent_id,owner,thread_id) VALUES ($1,$2,$3,'agent','alice',$4)")
             .bind(area).bind(tenant).bind(home.to_string()).bind(thread).execute(pool).await.unwrap();
-		let mut manifest = vec![];
-		for (index, (bytes, id)) in files.iter().enumerate() {
+		let receipt = Uuid::new_v4();
+		sqlx::query("INSERT INTO core_records (id,tenant,owner,area_id,kind,state,data) VALUES ($1,$2,'alice',$3,'transfer_in','ready','{}')")
+			.bind(receipt).bind(tenant).bind(area).execute(pool).await.unwrap();
+		for (bytes, id) in files {
 			let digest = aidash_server::capabilities::objects::digest(bytes);
 			let path = root
 				.join("tenants")
@@ -2028,24 +2022,14 @@ async fn node_purge_releases_owned_references_and_preserves_shared_blob(
                 .bind(tenant).bind(&digest).bind(bytes.len() as i64).execute(pool).await.unwrap();
 			sqlx::query("INSERT INTO core_objects (id,tenant,area_id,kind,digest,size) VALUES ($1,$2,$3,'working',$4,$5)")
                 .bind(id).bind(tenant).bind(area).bind(&digest).bind(bytes.len() as i64).execute(pool).await.unwrap();
-			manifest.push(json!({"file_id":id,"path":format!("{index}.txt"),"digest":digest,"size":bytes.len(),"media_type":"text/plain","scope":"working","provenance":{}}));
 		}
-		sqlx::query(
-			"INSERT INTO core_manifest_revisions (tenant,area_id,revision,manifest) VALUES ($1,$2,1,$3)",
-		)
-		.bind(tenant)
-		.bind(area)
-		.bind(json!(manifest))
-		.execute(pool)
-		.await
-		.unwrap();
 		for (bytes, id) in files {
 			let digest = aidash_server::capabilities::objects::digest(bytes);
-			sqlx::query("INSERT INTO core_blob_references (id,tenant,digest,holder_kind,holder_id,object_id,area_id,revision) VALUES ($1,$2,$3,'revision',$4,$5,$6,1)")
-                .bind(Uuid::new_v4()).bind(tenant).bind(&digest).bind(format!("{area}:1:{id}"))
-                .bind(id).bind(area).execute(pool).await.unwrap();
+			sqlx::query("INSERT INTO core_blob_references (id,tenant,digest,holder_kind,holder_id,object_id,record_id) VALUES ($1,$2,$3,'receipt',$4,$5,$6)")
+                .bind(Uuid::new_v4()).bind(tenant).bind(&digest).bind(format!("{receipt}:{id}"))
+                .bind(id).bind(receipt).execute(pool).await.unwrap();
 		}
-		area
+		receipt
 	}
 	let mut d = Deployment::new(
 		runtime,
@@ -2078,7 +2062,7 @@ async fn node_purge_releases_owned_references_and_preserves_shared_blob(
 	let target_exclusive = Uuid::new_v4();
 	let target_shared = Uuid::new_v4();
 	let sibling_shared = Uuid::new_v4();
-	let target_area = seed_area(
+	let target_receipt = seed_receipt(
 		&d,
 		storage.path(),
 		&tenant,
@@ -2090,7 +2074,7 @@ async fn node_purge_releases_owned_references_and_preserves_shared_blob(
 		],
 	)
 	.await;
-	let sibling_area = seed_area(
+	let sibling_receipt = seed_receipt(
 		&d,
 		storage.path(),
 		&tenant,
@@ -2128,18 +2112,18 @@ async fn node_purge_releases_owned_references_and_preserves_shared_blob(
 	assert!(!path(&exclusive_digest).exists());
 	assert_eq!(tokio::fs::read(path(&shared_digest)).await.unwrap(), shared);
 	let refs: i64 = sqlx::query_scalar(
-		"SELECT count(*) FROM core_blob_references WHERE tenant=$1 AND area_id=$2",
+		"SELECT count(*) FROM core_blob_references WHERE tenant=$1 AND record_id=$2",
 	)
 	.bind(&tenant)
-	.bind(target_area)
+	.bind(target_receipt)
 	.fetch_one(pool)
 	.await
 	.unwrap();
 	let surviving: i64 = sqlx::query_scalar(
-		"SELECT count(*) FROM core_blob_references WHERE tenant=$1 AND area_id=$2 AND object_id=$3",
+		"SELECT count(*) FROM core_blob_references WHERE tenant=$1 AND record_id=$2 AND object_id=$3",
 	)
 	.bind(&tenant)
-	.bind(sibling_area)
+	.bind(sibling_receipt)
 	.bind(sibling_shared)
 	.fetch_one(pool)
 	.await

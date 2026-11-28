@@ -157,7 +157,7 @@ impl OperationAdmissionScope<Operation> for Admission<'_> {
 			.map_err(Into::into)
 	}
 	async fn request_files(&mut self, run: Uuid) -> Result<Vec<MountedFile>> {
-		operations::request_files(self.access, run, self.area)
+		operations::request_files(self.access, run)
 			.await
 			.map(|files| files.into_iter().map(Into::into).collect())
 			.map_err(Into::into)

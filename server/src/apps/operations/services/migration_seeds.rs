@@ -181,6 +181,10 @@ fn assets() -> [(&'static str, String); 41] {
 			crate::apps::execution::services::area_association_backfill::backward(),
 		),
 		(
+			"execution/sql/forward/0184_retire_area_manifests.sql",
+			crate::apps::execution::services::area_manifest_cleanup::forward(),
+		),
+		(
 			"workspaces/sql/forward/0067_task_duty_start.sql",
 			crate::apps::workspaces::services::duty_start_backfill::forward(),
 		),
