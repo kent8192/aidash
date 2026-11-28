@@ -478,14 +478,14 @@ async fn seeding_keeps_the_original_workspace_read_and_adds_a_new_version() {
 		writer.definition(&old.id, &old.version).await.unwrap(),
 		*old
 	);
-	let current = writer.definition(&old.id, "1.2.0").await.unwrap();
+	let previous = writer.definition(&old.id, "1.1.0").await.unwrap();
 	assert!(
 		previous.schema["properties"]["kind"]["enum"]
 			.as_array()
 			.unwrap()
 			.contains(&json!("file"))
 	);
-	let current = writer.definition(&old.id, "1.2.0").await.unwrap();
+	let current = writer.definition(&old.id, "1.3.0").await.unwrap();
 	let kinds = current.schema["properties"]["kind"]["enum"]
 		.as_array()
 		.unwrap();
