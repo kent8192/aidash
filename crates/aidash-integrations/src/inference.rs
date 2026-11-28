@@ -476,6 +476,21 @@ pub fn salted_provider(
 		config.plan_connection.as_deref(),
 	)?;
 	match config.provider.as_str() {
+		// A Keyless endpoint speaks Chat Completions on the same adapter;
+		// `request_body` leaves out what only OpenRouter understands (#1169).
+		aidash_domain::model::OPENAI_COMPATIBLE
+			if config.provider_credential.is_none() && !config.uses_plan_connection() =>
+		{
+			config.request_timeout()?;
+			config.stream_stall_timeout()?;
+			Ok(Arc::new(OpenRouterProvider {
+				clients,
+				config,
+				access,
+				context,
+				cache_salt,
+			}))
+		}
 		"openrouter" if !config.uses_plan_connection() => {
 			config.request_timeout()?;
 			config.stream_stall_timeout()?;
@@ -710,11 +725,17 @@ pub(crate) fn routing_session(
 	}
 }
 
-/// The OpenRouter chat body. A request from an Agent with a Context Policy
+/// The Chat Completions body. A request from an Agent with a Context Policy
 /// sends `transforms: []`, disabling OpenRouter's middle-out compression so
 /// only that policy reduces context; prune-only requests keep their body.
 /// A salted request's Tenant Cache Salt line starts `system`; it never enters
-/// request metadata or accounting.
+/// request metadata or accounting, and a Keyless endpoint gets it too, since it
+/// still separates Tenants on a shared endpoint.
+///
+/// `provider`, `session_id`, `transforms`, `prompt_cache_options` and
+/// `reasoning` go only to OpenRouter. A Keyless (`openai_compatible`) endpoint
+/// receives only Chat Completions fields, with reasoning effort as the
+/// standard `reasoning_effort` (#1169).
 fn request_body(
 	config: &ModelConfig,
 	request: &ModelRequest,
@@ -736,6 +757,12 @@ fn request_body(
 	}
 	body["model"] = json!(config.model_id);
 	body["max_tokens"] = json!(request.max_output_tokens);
+	if !config.is_openrouter() {
+		if let Some(effort) = config.reasoning_effort {
+			body["reasoning_effort"] = json!(effort);
+		}
+		return body;
+	}
 	if request.disable_provider_transforms {
 		body["transforms"] = json!([]);
 	}

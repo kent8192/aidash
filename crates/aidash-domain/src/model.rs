@@ -11,6 +11,9 @@ pub const STREAMING_DEFAULT: bool = true;
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ModelConfig {
+	/// `openrouter` for a Provider Credential, `chatgpt` for a Plan Connection,
+	/// or `openai_compatible` for a Keyless endpoint, which receives only Chat
+	/// Completions fields and nothing that only OpenRouter understands (#1169).
 	pub provider: String,
 	pub model_id: String,
 	pub endpoint: String,
@@ -111,6 +114,10 @@ pub enum CacheMode {
 	/// The provider caches only up to request breakpoints (`cache_control`).
 	Explicit,
 }
+
+/// The provider of a model or embedding definition Aidash calls without a
+/// grant: a Keyless endpoint speaking the OpenAI-compatible API (#1169).
+pub const OPENAI_COMPATIBLE: &str = "openai_compatible";
 
 /// OpenRouter model slug prefixes whose routes accept `cache_control`
 /// breakpoints. A declaration alone never sends them elsewhere (ADR 0019,
@@ -329,6 +336,34 @@ impl ModelConfig {
 		self.plan_connection.is_some()
 	}
 
+	/// Whether requests may carry fields only OpenRouter understands
+	/// (`provider`, `session_id`, `transforms`, `prompt_cache_options`,
+	/// `reasoning`). A Keyless endpoint never receives them (#1169).
+	pub fn is_openrouter(&self) -> bool {
+		self.provider == "openrouter"
+	}
+
+	/// The provider names its grant: `chatgpt` for a Plan Connection,
+	/// `openrouter` for a Provider Credential and `openai_compatible` for a
+	/// Keyless endpoint, which names neither (#1169). Registration checks this;
+	/// the grant's own catalog checks stay in
+	/// [`crate::provider_credentials::validate_grants`].
+	pub fn validate_provider_grant(&self) -> Result<()> {
+		validate_provider_grant(
+			"model",
+			&self.provider,
+			self.provider_credential.is_some(),
+			self.plan_connection.is_some(),
+		)?;
+		if self.provider == OPENAI_COMPATIBLE && self.cache_mode == Some(CacheMode::Explicit) {
+			return Err(Error::Invalid(format!(
+				"model {} is a Keyless endpoint (openai_compatible), which cannot declare explicit prompt caching",
+				self.model_id
+			)));
+		}
+		Ok(())
+	}
+
 	/// The declared wire API is meaningful only for an OpenRouter model served
 	/// by a Provider Credential. Plan Connections already use the Responses API,
 	/// and a Keyless endpoint has no such choice, so neither may declare one.
@@ -403,9 +438,11 @@ impl ModelConfig {
 		Ok(())
 	}
 
-	/// Whether this route may receive `cache_control` breakpoints.
+	/// Whether this route may receive `cache_control` breakpoints. Only an
+	/// OpenRouter route does; a Keyless endpoint never receives them (#1169).
 	pub fn accepts_cache_breakpoints(&self) -> bool {
-		self.cache_mode == Some(CacheMode::Explicit)
+		self.is_openrouter()
+			&& self.cache_mode == Some(CacheMode::Explicit)
 			&& EXPLICIT_CACHE_PREFIXES
 				.iter()
 				.any(|prefix| self.model_id.starts_with(prefix))
@@ -418,7 +455,8 @@ impl ModelConfig {
 	/// these routes. An omitted Cache Mode keeps the bytes of stored definitions
 	/// (ADR 0115).
 	pub fn explicit_cache_only(&self) -> bool {
-		matches!(self.cache_mode, Some(CacheMode::Explicit | CacheMode::None))
+		self.is_openrouter()
+			&& matches!(self.cache_mode, Some(CacheMode::Explicit | CacheMode::None))
 			&& EXPLICIT_ONLY_CACHE_PREFIXES
 				.iter()
 				.any(|prefix| self.model_id.starts_with(prefix))
@@ -687,6 +725,29 @@ impl ModelConfig {
 		self.max_output_tokens
 			.unwrap_or_else(|| (self.context_window / 8).clamp(256, 4096) as u32)
 			.min(self.provider_max_output_tokens.unwrap_or(u32::MAX))
+	}
+}
+
+/// The grant rule shared by model and embedding definitions (#1169): a
+/// Keyless endpoint names `openai_compatible` and no grant, and `openrouter`
+/// is reached only with a Provider Credential. Each definition kind checks its
+/// own provider allowlist separately.
+pub fn validate_provider_grant(
+	kind: &str,
+	provider: &str,
+	provider_credential: bool,
+	plan_connection: bool,
+) -> Result<()> {
+	match provider {
+		OPENAI_COMPATIBLE if provider_credential || plan_connection => {
+			Err(Error::Invalid(format!(
+				"a Keyless {kind} (provider openai_compatible) names neither provider_credential nor plan_connection"
+			)))
+		}
+		"openrouter" if !provider_credential => Err(Error::Invalid(format!(
+			"an openrouter {kind} requires provider_credential; a Keyless endpoint names provider openai_compatible"
+		))),
+		_ => Ok(()),
 	}
 }
 

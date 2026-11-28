@@ -17,6 +17,63 @@ fn openrouter_reasoning_request_shape(#[case] effort: &str, #[case] expected: Va
 	assert_eq!(body["reasoning"], expected);
 }
 
+fn body_for(provider: &str, effort: &str) -> Value {
+	let config: ModelConfig = serde_json::from_value(json!({"provider":provider,"model_id":"openai/gpt-6","endpoint":"https://openrouter.ai/api/v1","context_window":62000,"max_output_tokens":1024,"modalities":["text"],"cost":{},"reasoning_effort":effort,"cache_mode":"none"})).unwrap();
+	let request = ModelRequest {
+		instructions: "Be brief".into(),
+		disable_provider_transforms: true,
+		..Default::default()
+	};
+	request_body(
+		&config,
+		&request,
+		vec!["vendor/route".into()],
+		Some("SALT\n"),
+		Some("session"),
+		Default::default(),
+	)
+}
+
+/// A Keyless endpoint receives only Chat Completions fields; the effort is
+/// passed through unchanged as `reasoning_effort` (#1169).
+#[rstest::rstest]
+#[case("none")]
+#[case("minimal")]
+#[case("xhigh")]
+#[case("max")]
+fn keyless_request_carries_only_chat_completions_fields(#[case] effort: &str) {
+	let body = body_for("openai_compatible", effort);
+	for field in [
+		"provider",
+		"session_id",
+		"transforms",
+		"prompt_cache_options",
+		"reasoning",
+	] {
+		assert!(
+			body.get(field).is_none(),
+			"{field} reached a Keyless endpoint"
+		);
+	}
+	assert_eq!(body["reasoning_effort"], effort);
+	assert_eq!(body["model"], "openai/gpt-6");
+	// The Cache Salt is content, not a field, so it stays.
+	assert_eq!(body["messages"][0]["content"], "SALT\nBe brief");
+	assert!(!body.to_string().contains("cache_control"));
+}
+
+#[test]
+fn openrouter_request_keeps_its_routing_fields() {
+	let body = body_for("openrouter", "high");
+	assert_eq!(body["provider"]["only"], json!(["vendor/route"]));
+	assert_eq!(body["provider"]["require_parameters"], true);
+	assert_eq!(body["session_id"], "session");
+	assert_eq!(body["transforms"], json!([]));
+	assert_eq!(body["prompt_cache_options"], json!({"mode": "explicit"}));
+	assert_eq!(body["reasoning"], json!({"effort": "high"}));
+	assert!(body.get("reasoning_effort").is_none());
+}
+
 /// The adapter's clients with production-like deadlines.
 fn test_clients() -> crate::keyless::Clients {
 	crate::keyless::Clients::new(

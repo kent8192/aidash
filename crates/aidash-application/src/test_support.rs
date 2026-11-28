@@ -197,7 +197,7 @@ fn try_resolve_with_plugins(
 		let mut model_entry = entry(
 			model["id"].as_str().unwrap(),
 			"model",
-			json!({"provider":"openrouter","model_id":"fixture","endpoint":"https://fixture.invalid","context_window":200000,"max_output_tokens":1024,"modalities":["text"],"cost":{}}),
+			json!({"provider":"openai_compatible","model_id":"fixture","endpoint":"https://fixture.invalid","context_window":200000,"max_output_tokens":1024,"modalities":["text"],"cost":{}}),
 		);
 		model_entry.version = model["version"].as_str().unwrap().into();
 		entries.push(model_entry);

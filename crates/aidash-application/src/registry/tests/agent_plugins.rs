@@ -11,7 +11,7 @@ fn scope_with_core() -> Scope {
 	scope.put(definition(
 		"model",
 		"model",
-		json!({"provider":"openrouter","model_id":"fixture","endpoint":"https://fixture.invalid","context_window":200000,"max_output_tokens":1024,"modalities":["text"],"cost":{}}),
+		json!({"provider":"openai_compatible","model_id":"fixture","endpoint":"https://fixture.invalid","context_window":200000,"max_output_tokens":1024,"modalities":["text"],"cost":{}}),
 	));
 	scope.put_builtins(HOME);
 	scope

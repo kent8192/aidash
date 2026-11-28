@@ -37,7 +37,7 @@ fn bundle() -> Value {
 }
 fn model() -> Value {
 	json!({"id":"model", "version":"1.0.0", "kind":"model", "name":{"en":"Model"}, "description":{"en":""},
-        "config":{"provider":"openrouter", "model_id":"fixture", "endpoint":"https://provider.invalid", "context_window":4096, "max_output_tokens":1024, "modalities":["text"], "cost":{}}})
+        "config":{"provider":"openai_compatible", "model_id":"fixture", "endpoint":"https://provider.invalid", "context_window":4096, "max_output_tokens":1024, "modalities":["text"], "cost":{}}})
 }
 fn policy(id: &str, revision: i64, spec: Spec) -> Policy {
 	Policy {

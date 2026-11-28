@@ -131,6 +131,41 @@ async fn openrouter_gemini_sends_approved_dimensions_and_bearer_credentials(
 	assert_eq!(result.tokens, Some(12));
 }
 
+/// A Keyless embedding endpoint receives only the OpenAI embeddings fields:
+/// no OpenRouter `provider` preferences (#1169).
+#[tokio::test]
+async fn keyless_embedding_sends_no_openrouter_fields() {
+	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+	let endpoint = format!("http://{}/v1", listener.local_addr().unwrap());
+	let app = Router::new().route(
+		"/v1/embeddings",
+		post(|Json(body): Json<Value>| async move {
+			assert_eq!(
+				body,
+				json!({"model":"local-embed","input":"text","encoding_format":"float"})
+			);
+			Json(json!({"model":"local-embed","data":[{"index":0,"embedding":[1.0,0.0,0.0]}]}))
+		}),
+	);
+	let _server = Server(tokio::spawn(async move {
+		axum::serve(listener, app).await.unwrap();
+	}));
+	let mut config = configuration(endpoint.clone());
+	config.provider = "openai_compatible".into();
+	config.model = "local-embed".into();
+	config.dimensions = 3;
+	let result = embed(
+		&permitting(&endpoint),
+		&Context::default(),
+		&clients().unwrap(),
+		&config,
+		"text",
+	)
+	.await
+	.unwrap();
+	assert_eq!(result.vector, vec![1.0, 0.0, 0.0]);
+}
+
 #[rstest]
 #[case::wrong_model(json!({"model":"other/model","data":[{"index":0,"embedding":[1.0,0.0]}]}))]
 #[case::wrong_dimensions(json!({"model":"google/gemini-embedding-2","data":[{"index":0,"embedding":[1.0,0.0]}]}))]

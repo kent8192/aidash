@@ -105,6 +105,8 @@ fn default_embedding_inputs() -> std::collections::BTreeSet<EmbeddingInputKind> 
 #[schemars(rename = "SemanticEmbeddingConfig")]
 #[serde(deny_unknown_fields)]
 pub struct EmbeddingConfig {
+	/// `openrouter` with a Provider Credential, or `openai_compatible` for a
+	/// Keyless endpoint (#1169). `openai` is an older Keyless name still read.
 	pub provider: String,
 	pub endpoint: String,
 	/// As for models: a Tenant Provider Credential, or no key (ADR 0006).
@@ -230,8 +232,10 @@ impl EmbeddingConfig {
 			&self.provider,
 			self.provider_credential.as_deref(),
 		)?;
-		if !matches!(self.provider.as_str(), "openai" | "openrouter")
-			|| self.model.trim().is_empty()
+		if !matches!(
+			self.provider.as_str(),
+			"openai" | crate::model::OPENAI_COMPATIBLE | "openrouter"
+		) || self.model.trim().is_empty()
 			|| self.model.len() > 256
 			|| self.model_version.trim().is_empty()
 			|| self.model_version.len() > 128
@@ -243,6 +247,22 @@ impl EmbeddingConfig {
 			));
 		}
 		Ok(())
+	}
+
+	/// A Keyless embedding names `openai_compatible` (or the older `openai`)
+	/// and no Provider Credential; `openrouter` requires one (#1169).
+	pub fn validate_provider_grant(&self) -> crate::Result<()> {
+		crate::model::validate_provider_grant(
+			"embedding",
+			&self.provider,
+			self.provider_credential.is_some(),
+			false,
+		)
+	}
+
+	/// Whether the request may carry OpenRouter-only fields such as `provider`.
+	pub fn is_openrouter(&self) -> bool {
+		self.provider == "openrouter"
 	}
 }
 

@@ -455,7 +455,7 @@ async fn a_delegated_agents_model_is_checked_against_that_agent(
 		crate::test_support::entry(
 			id,
 			"model",
-			json!({"provider":"openrouter","model_id":"fixture","endpoint":"https://fixture.invalid","context_window":200000,"max_output_tokens":1024,"modalities":["text"],"cost":{}}),
+			json!({"provider":"openai_compatible","model_id":"fixture","endpoint":"https://fixture.invalid","context_window":200000,"max_output_tokens":1024,"modalities":["text"],"cost":{}}),
 		)
 	};
 	let mut producer = crate::test_support::agent("producer");

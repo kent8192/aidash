@@ -7,8 +7,17 @@ use aidash_domain::{
 
 const NODE: &str = "aidash://test";
 
+/// An OpenRouter route with its Provider Credential: only such a route takes
+/// cache breakpoints, so the caching rules below need one (#1169).
 fn model_config() -> Value {
-	json!({"provider":"openrouter","model_id":"vendor/model","endpoint":"https://model.example.test","context_window":32768,"max_output_tokens":4096,"modalities":["text"],"cost":{}})
+	json!({"provider":"openrouter","provider_credential":"openrouter","model_id":"vendor/model","endpoint":"https://openrouter.ai/api/v1","context_window":32768,"max_output_tokens":4096,"modalities":["text"],"cost":{}})
+}
+
+/// The Registry validation of a Deployment with a Provider Secret Store, which
+/// the Provider Credential routes of [`model_config`] need.
+#[fixture]
+fn validation() -> DefinitionValidation {
+	super::validation().with_provider_credentials(true)
 }
 
 fn agent_config(version: Option<&str>) -> Value {
@@ -82,13 +91,13 @@ async fn new_agents_can_reference_stored_models_with_retired_fields(
 
 /// Current serializations with no Projection Version selected.
 const LEGACY_AGENT: &str = r#"{"schema_version":1,"model":{"id":"model","version":"1.0.0"},"instructions":"execute","bindings":[],"remove_default":[],"max_steps":64}"#;
-const LEGACY_MODEL: &str = r#"{"provider":"openrouter","model_id":"vendor/model","endpoint":"https://model.example.test","reasoning_effort":null,"context_window":32768,"max_output_tokens":4096,"modalities":["text"],"media_routes":[],"cost":{}}"#;
+const LEGACY_MODEL: &str = r#"{"provider":"openai_compatible","model_id":"vendor/model","endpoint":"https://model.example.test","reasoning_effort":null,"context_window":32768,"max_output_tokens":4096,"modalities":["text"],"media_routes":[],"cost":{}}"#;
 
 #[rstest]
 fn definitions_without_projection_fields_keep_their_bytes_and_resolve_as_native() {
 	// Arrange
 	let agent = agent_config(None);
-	let model = model_config();
+	let model = json!({"provider":"openai_compatible","model_id":"vendor/model","endpoint":"https://model.example.test","context_window":32768,"max_output_tokens":4096,"modalities":["text"],"cost":{}});
 	// Act
 	let agent_bindings: AgentBindings = serde_json::from_value(agent).unwrap();
 	let model_bindings: ModelConfig = serde_json::from_value(model).unwrap();
@@ -334,7 +343,6 @@ async fn replaying_a_model_stored_without_a_cache_mode_is_idempotent() {
 	let validation = validation();
 	let mut config = model_config();
 	config["model_id"] = json!("anthropic/claude-haiku-5.5");
-	config["endpoint"] = json!("https://openrouter.ai/api/v1");
 	let mut scope = scope_with(config.clone());
 	// Act
 	let inserted = register_definition(
@@ -374,7 +382,6 @@ async fn new_models_on_checked_routes_declare_explicit_caching(
 	scope.put_builtins(NODE);
 	let mut config = model_config();
 	config["model_id"] = json!(model_id);
-	config["endpoint"] = json!("https://openrouter.ai/api/v1");
 	if let Some(declared) = declared {
 		config["cache_mode"] = json!(declared);
 	}

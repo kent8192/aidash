@@ -137,7 +137,7 @@ fn world() -> World {
 	let model = entry(
 		"model",
 		"model",
-		json!({"provider":"openrouter","model_id":"fixture",
+		json!({"provider":"openai_compatible","model_id":"fixture",
         "endpoint":"https://provider.example/v1","context_window":4096,
         "max_output_tokens":1024,"modalities":["text"],"cost":{}}),
 	);

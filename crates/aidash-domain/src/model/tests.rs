@@ -440,3 +440,64 @@ fn memory_roles_reason_at_most_low(
 	assert_eq!(role.reasoning_effort, expected);
 	assert_eq!(role.output_token_limit(), 1024);
 }
+
+fn grant_model(provider: &str, credential: bool, cache_mode: Option<&str>) -> ModelConfig {
+	let mut value = json!({
+		"provider": provider,
+		"model_id": "anthropic/claude-sonnet-4.6",
+		"endpoint": "https://openrouter.ai/api/v1",
+		"context_window": 32768,
+		"modalities": ["text"],
+		"cost": {},
+	});
+	if credential {
+		value["provider_credential"] = json!("openrouter");
+	}
+	if let Some(mode) = cache_mode {
+		value["cache_mode"] = json!(mode);
+	}
+	serde_json::from_value(value).unwrap()
+}
+
+/// A Keyless endpoint says so in `provider`; `openrouter` needs its
+/// Provider Credential, and no Keyless route takes cache breakpoints (#1169).
+#[rstest::rstest]
+#[case::keyless("openai_compatible", false, None, None)]
+#[case::byok("openrouter", true, Some("explicit"), None)]
+#[case::keyless_openrouter("openrouter", false, None, Some("requires provider_credential"))]
+#[case::keyless_with_credential("openai_compatible", true, None, Some("names neither"))]
+#[case::keyless_explicit_cache(
+	"openai_compatible",
+	false,
+	Some("explicit"),
+	Some("explicit prompt caching")
+)]
+fn the_provider_names_its_grant(
+	#[case] provider: &str,
+	#[case] credential: bool,
+	#[case] cache_mode: Option<&str>,
+	#[case] refusal: Option<&str>,
+) {
+	let model = grant_model(provider, credential, cache_mode);
+	match refusal {
+		None => model.validate_provider_grant().unwrap(),
+		Some(reason) => assert!(
+			model
+				.validate_provider_grant()
+				.unwrap_err()
+				.to_string()
+				.contains(reason)
+		),
+	}
+}
+
+#[test]
+fn keyless_routes_never_take_cache_breakpoints() {
+	assert!(grant_model("openrouter", true, Some("explicit")).accepts_cache_breakpoints());
+	let keyless = grant_model("openai_compatible", false, Some("explicit"));
+	assert!(!keyless.accepts_cache_breakpoints());
+	assert!(keyless.validate_cache_mode().is_err());
+	let mut gpt = grant_model("openai_compatible", false, Some("none"));
+	gpt.model_id = "openai/gpt-6".into();
+	assert!(!gpt.explicit_cache_only());
+}

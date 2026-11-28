@@ -352,11 +352,15 @@ impl DefinitionValidation {
 					serde_json::from_value(e.config.clone())
 						.map_err(|error| Error::Invalid(error.to_string()))?
 				};
-				// A plan model names `chatgpt`; every other model is an OpenRouter route.
+				// A plan model names `chatgpt`, a Provider Credential model
+				// `openrouter` and a Keyless endpoint `openai_compatible` (#1169).
+				m.validate_provider_grant()?;
 				let provider = if m.uses_plan_connection() {
 					"chatgpt"
-				} else {
+				} else if m.provider_credential.is_some() {
 					"openrouter"
+				} else {
+					aidash_domain::model::OPENAI_COMPATIBLE
 				};
 				if m.provider != provider
 					|| m.model_id.trim().is_empty()
@@ -369,7 +373,7 @@ impl DefinitionValidation {
 					|| !m.modalities.iter().any(|m| m == "text")
 				{
 					return Err(Error::Invalid(
-					"model requires openrouter (or chatgpt with plan_connection), model_id, text modality, context_window >= 2048 and a valid max_output_tokens value"
+					"model requires openrouter with provider_credential, chatgpt with plan_connection or openai_compatible for a Keyless endpoint, model_id, text modality, context_window >= 2048 and a valid max_output_tokens value"
 						.into(),
 				));
 				}
@@ -479,6 +483,7 @@ impl DefinitionValidation {
 		if config.provider_credential.is_some() {
 			aidash_domain::provider_credentials::validate_model_id(&config.model)?;
 		}
+		config.validate_provider_grant()?;
 		self.provider_source(
 			&config.endpoint,
 			&config.provider,

@@ -52,7 +52,7 @@ fn snapshot(
 	let model = crate::test_support::entry(
 		"fixture-model",
 		"model",
-		json!({"provider":"openrouter","model_id":"fixture","endpoint":"https://fixture.invalid","context_window":window,"max_output_tokens":1024,"modalities":["text"],"cost":{}}),
+		json!({"provider":"openai_compatible","model_id":"fixture","endpoint":"https://fixture.invalid","context_window":window,"max_output_tokens":1024,"modalities":["text"],"cost":{}}),
 	);
 	crate::test_support::resolve(NODE, &root, false, vec![tool, skill, model])
 }

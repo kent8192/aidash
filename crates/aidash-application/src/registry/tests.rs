@@ -163,7 +163,7 @@ async fn reference_images_are_embedded_before_the_private_index_is_written(
 ) {
 	let mut scope = Scope::default();
 	scope.put_builtins("aidash://home");
-	scope.put(definition("model", "model", json!({"provider":"openrouter","model_id":"fixture","endpoint":"https://example.test","context_window":131072,"max_output_tokens":1024,"modalities":["text"],"cost":{}})));
+	scope.put(definition("model", "model", json!({"provider":"openai_compatible","model_id":"fixture","endpoint":"https://example.test","context_window":131072,"max_output_tokens":1024,"modalities":["text"],"cost":{}})));
 	scope.put(definition("embed", "embedding", json!({"provider":"openai","endpoint":"https://example.com","model":"embed","model_version":"1.0.0","dimensions":2,"inputs":["text","image"]})));
 	let mut entry = definition(
 		"",
@@ -660,7 +660,7 @@ async fn private_registration_emits_only_after_private_content_is_saved(
 		..Default::default()
 	};
 	scope.put_builtins("aidash://home");
-	scope.put(definition("model", "model", json!({"provider":"openrouter","model_id":"fixture","endpoint":"https://example.test","context_window":131072,"max_output_tokens":1024,"modalities":["text"],"cost":{}})));
+	scope.put(definition("model", "model", json!({"provider":"openai_compatible","model_id":"fixture","endpoint":"https://example.test","context_window":131072,"max_output_tokens":1024,"modalities":["text"],"cost":{}})));
 	let entry = definition(
 		"",
 		"agent",
@@ -728,7 +728,7 @@ async fn private_registration_emits_only_after_private_content_is_saved(
 fn run_media_routes_follow_current_evidence_and_model_modalities() {
 	let now = chrono::Utc::now();
 	let mut model: ModelConfig = serde_json::from_value(json!({
-		"provider":"openrouter", "model_id":"fixture", "endpoint":"https://example.test",
+		"provider":"openai_compatible", "model_id":"fixture", "endpoint":"https://example.test",
 		"context_window":8192, "modalities":["text","image","audio"],
 		"cost":{}, "media_routes":[
 			{"tag":"image", "formats":["image/png"], "source":"test", "verified_at":now - chrono::Duration::hours(1), "expires_at":now + chrono::Duration::hours(1)},
@@ -896,7 +896,7 @@ fn installation_overrides_cannot_clear_a_personal_agent_knowledge_digest() {
 
 #[rstest]
 #[tokio::test]
-async fn dashboard_keyless_model_registration_uses_the_openrouter_adapter_contract(
+async fn dashboard_keyless_model_registration_uses_the_openai_compatible_contract(
 	validation: DefinitionValidation,
 ) {
 	// The browser's wire test checks these public required fields independently.
@@ -919,26 +919,74 @@ async fn dashboard_keyless_model_registration_uses_the_openrouter_adapter_contra
 		config
 	);
 
-	// OpenAI-compatible is a presentation label, not this model adapter's wire name.
-	let mut wrong_adapter = input;
-	wrong_adapter.config["provider"] = json!("openai");
-	let mut refused = Scope::default();
-	let error = register(
-		&mut refused,
-		&validation,
-		wrong_adapter,
-		None,
-		true,
-		"aidash://home",
-	)
-	.await
-	.unwrap_err();
-	assert!(
-		error.to_string().contains("model requires openrouter"),
-		"{error}"
-	);
-	assert!(refused.entries.is_empty());
-	assert!(refused.events.is_empty());
+	// A Keyless endpoint says so in `provider`: neither `openai` nor an
+	// OpenRouter route without its Provider Credential is accepted (#1169).
+	for (provider, reason) in [
+		(
+			"openai",
+			"model requires openrouter with provider_credential",
+		),
+		("openrouter", "requires provider_credential"),
+	] {
+		let mut wrong_adapter = input.clone();
+		wrong_adapter.config["provider"] = json!(provider);
+		let mut refused = Scope::default();
+		let error = register(
+			&mut refused,
+			&validation,
+			wrong_adapter,
+			None,
+			true,
+			"aidash://home",
+		)
+		.await
+		.unwrap_err();
+		assert!(error.to_string().contains(reason), "{error}");
+		assert!(refused.entries.is_empty());
+		assert!(refused.events.is_empty());
+	}
+}
+
+/// A Keyless definition says so in `provider` (#1169): `openai_compatible`
+/// names no grant, `openrouter` needs its Provider Credential, and a Keyless
+/// model declares no explicit prompt caching.
+#[rstest]
+#[case::keyless_model("model", json!({"provider":"openai_compatible"}), None)]
+#[case::keyless_model_named_openrouter("model", json!({"provider":"openrouter"}), Some("requires provider_credential"))]
+#[case::keyless_model_with_credential("model", json!({"provider":"openai_compatible","provider_credential":"openrouter"}), Some("names neither"))]
+#[case::keyless_model_with_plan("model", json!({"provider":"openai_compatible","plan_connection":"chatgpt"}), Some("names neither"))]
+#[case::keyless_model_explicit_cache("model", json!({"provider":"openai_compatible","model_id":"anthropic/claude-fixture","cache_mode":"explicit"}), Some("explicit prompt caching"))]
+#[case::keyless_embedding("embedding", json!({"provider":"openai_compatible"}), None)]
+#[case::older_keyless_embedding("embedding", json!({"provider":"openai"}), None)]
+#[case::keyless_embedding_named_openrouter("embedding", json!({"provider":"openrouter"}), Some("requires provider_credential"))]
+#[case::keyless_embedding_with_credential("embedding", json!({"provider":"openai_compatible","provider_credential":"openrouter"}), Some("names neither"))]
+fn keyless_definitions_name_openai_compatible(
+	#[case] kind: &str,
+	#[case] changes: Value,
+	#[case] refusal: Option<&str>,
+) {
+	let mut config = if kind == "model" {
+		json!({"model_id":"vendor/model","endpoint":"https://model.example.test/v1","context_window":32768,"max_output_tokens":4096,"modalities":["text"],"cost":{}})
+	} else {
+		json!({"endpoint":"https://embedding.example.test/v1","model":"vendor/model","model_version":"1","dimensions":3})
+	};
+	for (key, value) in changes.as_object().unwrap() {
+		config[key] = value.clone();
+	}
+	let entry = definition(kind, kind, config);
+	let validation = validation()
+		.with_provider_credentials(true)
+		.with_plan_connections(true);
+	for local in [false, true] {
+		let result = validation.validate_in(&entry, local);
+		match refusal {
+			None => result.unwrap(),
+			Some(reason) => {
+				let error = result.unwrap_err().to_string();
+				assert!(error.contains(reason), "{error}");
+			}
+		}
+	}
 }
 
 #[rstest]
@@ -1016,12 +1064,13 @@ async fn byok_timeout_is_validated_on_registration_import_and_consumption() {
 		assert!(scope.events.is_empty());
 		assert!(scope.trace.is_empty());
 	}
-	// Direct env configurations keep their existing deadline range.
+	// Keyless configurations keep their existing deadline range.
 	entry
 		.config
 		.as_object_mut()
 		.unwrap()
 		.remove("provider_credential");
+	entry.config["provider"] = json!("openai_compatible");
 	validator.validate_in(&entry, true).unwrap();
 }
 
@@ -1068,12 +1117,13 @@ async fn byok_model_scope_is_validated_before_registration_and_model_import(
 		assert!(scope.trace.is_empty());
 		assert!(scope.events.is_empty());
 	}
-	// Existing direct-env definitions retain their prior model-ID contract.
+	// Keyless definitions retain their prior model-ID contract.
 	entry
 		.config
 		.as_object_mut()
 		.unwrap()
 		.remove("provider_credential");
+	entry.config["provider"] = json!("openai_compatible");
 	validator.validate_in(&entry, true).unwrap();
 }
 
@@ -1150,7 +1200,7 @@ fn openrouter_models_may_declare_their_wire_api(#[case] wire_api: Option<&str>) 
 
 #[rstest]
 #[case::keyless(
-	json!({"provider":"openrouter","model_id":"vendor/model","endpoint":"https://example.test","context_window":32768,"max_output_tokens":4096,"modalities":["text"],"cost":{}}),
+	json!({"provider":"openai_compatible","model_id":"vendor/model","endpoint":"https://example.test","context_window":32768,"max_output_tokens":4096,"modalities":["text"],"cost":{}}),
 	"wire_api"
 )]
 #[case::plan(
