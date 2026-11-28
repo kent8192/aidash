@@ -49,8 +49,21 @@ BEGIN
  RETURN jsonb_set(entry, '{config}', config);
 END $$;
 
+-- PostgreSQL refuses the type rewrite while UPDATE OF triggers name metadata.
+-- The rewrite leaves all projected model, tool, and skill references intact.
+DROP TRIGGER registry_agent_model_refs_sync ON public.registry;
+DROP TRIGGER registry_agent_resource_refs_sync ON public.registry;
+
 ALTER TABLE public.registry ALTER COLUMN metadata TYPE jsonb
  USING public.aidash_pruned_definition_0090(metadata);
+
+CREATE TRIGGER registry_agent_model_refs_sync
+ AFTER INSERT OR UPDATE OF id, version, kind, metadata ON public.registry
+ FOR EACH ROW EXECUTE FUNCTION public.sync_registry_agent_model_refs();
+CREATE TRIGGER registry_agent_resource_refs_sync
+ AFTER INSERT OR UPDATE OF id, version, kind, metadata ON public.registry
+ FOR EACH ROW EXECUTE FUNCTION public.sync_registry_agent_resource_refs();
+
 ALTER TABLE public.registry_requests ALTER COLUMN request TYPE jsonb
  USING public.aidash_pruned_definition_0090(request);
 
