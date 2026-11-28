@@ -33,27 +33,6 @@ crate::native_record!(CitationRow {
 	revision
 });
 
-pub(crate) async fn object_digest(
-	access: &mut Access,
-	tenant: &str,
-	area: Uuid,
-	file: Uuid,
-) -> Result<String> {
-	let digest: Option<String> = crate::database::native::query_scalar(
-		&Query::select()
-			.column(Alias::new("digest"))
-			.from(Alias::new("core_objects"))
-			.and_where(Expr::col(Alias::new("id")).eq(Expr::value(file)))
-			.and_where(Expr::col(Alias::new("tenant")).eq(Expr::value(tenant.to_owned())))
-			.and_where(Expr::col(Alias::new("area_id")).eq(Expr::value(area)))
-			.and_where(Expr::col(Alias::new("kind")).is_in(["working", "superseded_working"]))
-			.to_string(PostgresQueryBuilder),
-	)
-	.scalar_optional(&mut **access.tx)
-	.await?;
-	digest.ok_or_else(|| Error::Conflict("FILE_VERSION_UNAVAILABLE".into()))
-}
-
 /// Working Area file citations have been replaced by attachments and Drive links.
 pub(crate) fn require_supported(citations: &[CitedFileVersion]) -> Result<()> {
 	if !citations.is_empty() {

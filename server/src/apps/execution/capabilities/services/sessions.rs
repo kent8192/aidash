@@ -80,19 +80,6 @@ async fn area_readable(access: &mut Access, run: Uuid) -> Result<bool> {
 		Err(error) => Err(error),
 	}
 }
-pub(crate) async fn authorize_sources(
-	access: &mut Access,
-	thread: Uuid,
-	constraints: &Value,
-) -> Result<()> {
-	application::authorize_sources(
-		&mut crate::bootstrap::session_scope(None, access),
-		thread,
-		constraints,
-	)
-	.await
-	.map_err(Into::into)
-}
 pub(crate) async fn for_run(access: &mut Access, run: &Run) -> Result<Area> {
 	application::for_run(
 		&mut crate::bootstrap::session_scope(None, access),
