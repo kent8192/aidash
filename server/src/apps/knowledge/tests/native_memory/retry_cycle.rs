@@ -304,6 +304,7 @@ async fn manual_retry_renews_only_the_retry_ledger_and_preserves_durable_budgets
 		config: Config {
 			smtp: None,
 			scratch_policy: Default::default(),
+			egress_prices: Default::default(),
 			credential_max_seconds: 90 * 24 * 60 * 60,
 			tenancy: aidash_domain::identity::tenancy::TenancyRules::of(
 				aidash_domain::offering::Offering::SelfHosted,
@@ -330,6 +331,7 @@ async fn manual_retry_renews_only_the_retry_ledger_and_preserves_durable_budgets
 			tier_limits: std::sync::Arc::new(aidash_application::ports::nodes::NoTierLimits),
 			preview: None,
 			dashboard_origin: "http://localhost:3000".into(),
+			transaction_seed_key: [7; 32],
 		},
 		store,
 		client: runtime_controls.client,

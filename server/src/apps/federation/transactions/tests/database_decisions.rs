@@ -13,6 +13,7 @@ fn coordinator() -> AtomicCoordinator {
 	AtomicCoordinator::build()
 		.digest("immutable-manifest")
 		.manifest(json!({"coordinator": "aidash://test", "participants": []}).into())
+		.seed("5e".repeat(32))
 		.decision(None)
 		.visible(false)
 		.complete(false)

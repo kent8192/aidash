@@ -1,5 +1,5 @@
 //! Preconditions and paired obligations for atomic task and execution completion.
-use super::{Mutation, Participant};
+use super::share::{Share, claim};
 use crate::{Error, Result, RunControl, RunMetadata, RunPhase, Task, TaskStatus};
 use uuid::Uuid;
 
@@ -27,12 +27,10 @@ pub fn validate_run(run: &RunMetadata, leased: bool, task: Uuid, revision: i64) 
 	Ok(())
 }
 
-pub fn validate_delegated_completion(participant: &Participant, task: Uuid) -> Result<()> {
-	if !participant
-		.mutations
-		.iter()
-		.any(|mutation| matches!(mutation, Mutation::FinishRun { task_id, .. } if *task_id == task))
-	{
+/// A delegated completion on the Task's home Node needs the executor's Run
+/// finalization for the same Task in the same transaction.
+pub fn validate_delegated_completion(share: &Share, executor: &str, task: Uuid) -> Result<()> {
+	if !share.claims(executor, &claim("finish_run", task)) {
 		return Err(Error::Invalid(
 			"delegated completion requires its participant's execution finalization".into(),
 		));
@@ -40,10 +38,10 @@ pub fn validate_delegated_completion(participant: &Participant, task: Uuid) -> R
 	Ok(())
 }
 
-pub fn validate_home_completion(participant: &Participant, task: Uuid) -> Result<()> {
-	if !participant.mutations.iter().any(
-		|mutation| matches!(mutation, Mutation::CompleteTask { task_id, .. } if *task_id == task),
-	) {
+/// A Run finalization needs its home Node's completion of the same Task in the
+/// same transaction.
+pub fn validate_home_completion(share: &Share, home: &str, task: Uuid) -> Result<()> {
+	if !share.claims(home, &claim("complete_task", task)) {
 		return Err(Error::Invalid(
 			"execution finalization requires the home task's atomic completion".into(),
 		));

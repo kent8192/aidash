@@ -10,7 +10,7 @@ use aidash_domain::registry::EntityRef;
 use aidash_server::{authorization::identity::Actor, federation::Federation, harness::Harness};
 use serde_json::{Value, json};
 use uuid::Uuid;
-#[path = "../../execution/tests/support/legacy.rs"]
+#[path = "../../execution/tests/support/fixtures.rs"]
 mod common;
 
 const OLD: &str = "fixture-agent";

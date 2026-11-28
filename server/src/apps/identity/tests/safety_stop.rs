@@ -4,7 +4,7 @@ use aidash_application::tenancy::TEST_FIXTURE;
 use aidash_server::federation::Federation;
 use serde_json::{Value, json};
 use uuid::Uuid;
-#[path = "../../execution/tests/support/legacy.rs"]
+#[path = "../../execution/tests/support/fixtures.rs"]
 mod common;
 #[path = "../../execution/tests/support/late_subnode.rs"]
 mod late_subnode;

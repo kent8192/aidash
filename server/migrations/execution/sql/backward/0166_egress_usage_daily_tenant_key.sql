@@ -1,0 +1,1 @@
+ALTER TABLE public.egress_usage_daily DROP CONSTRAINT egress_usage_daily_tenant_fkey;

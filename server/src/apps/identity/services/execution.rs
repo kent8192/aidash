@@ -3170,7 +3170,6 @@ impl Guard {
 		store: &Store,
 		messages: &[(i64, Uuid, usize)],
 		model: &crate::registry::ModelConfig,
-		projection: aidash_domain::projection::ProjectionVersion,
 	) -> Result<HumanMediaBatch> {
 		let mut access = self.access.write().await;
 		aidash_application::execution::media::authorized(
@@ -3178,7 +3177,6 @@ impl Guard {
 			self.run.thread_id,
 			messages,
 			model,
-			projection,
 		)
 		.await
 		.map_err(Into::into)
@@ -3318,6 +3316,7 @@ pub async fn details_page(
 	Ok(RunDetails {
 		provider_tool_activity: details.provider_tool_activity,
 		egress_requests: details.egress_requests,
+		egress_waits: details.egress_waits,
 		stints: details.stints,
 		run: details.run,
 		declinable_call: details.declinable_call,

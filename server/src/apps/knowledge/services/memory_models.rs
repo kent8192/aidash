@@ -1,5 +1,7 @@
 //! Run-pinned Agent models and exact Registry roles with durable pre-I/O accounting.
 use super::native_memory::definition;
+use crate::apps::execution::repositories::model_calls;
+use crate::apps::identity::repositories::budgets;
 use crate::apps::knowledge::repositories::{access::Lease, native_memory::bank_id};
 use crate::{Error, Result, database::native, registry::Entry, store::Store};
 use aidash_application::{
@@ -15,6 +17,7 @@ use aidash_domain::{
 };
 use async_trait::async_trait;
 use chrono::{Duration, Utc};
+use reinhardt::db::orm::AtomicTransaction;
 use reinhardt::query::{
 	Alias, Expr, ExprTrait, LockType, OnConflict, Order, PostgresQueryBuilder, Query,
 	QueryStatementBuilder,
@@ -35,7 +38,10 @@ pub(crate) struct Models {
 	pub policy: Policy,
 	pub operation: Uuid,
 	pub digest: String,
+	/// Origin for authority and allowance, including stored evidence.
 	pub run: Option<Uuid>,
+	/// Run whose current Stint is executing this operation.
+	pub(crate) work_run: Option<Uuid>,
 	/// The caller's Retry Cycle (ADR 0057): a native Run's
 	/// `semantic_retry_cycle` or a remote journal record's `cycle`. It is 0
 	/// for work outside a Run, such as engine jobs.
@@ -242,7 +248,7 @@ impl Models {
 		}
 		// A human may request learning from a generated Run. Admission still uses
 		// the caller's lease, but model I/O must also retain that Run's current
-		// execution authority and ancestor budgets, including for Deployment Administrator calls.
+		// execution authority and model allowance, including for Deployment Administrator calls.
 		let mut agent_model = None;
 		let mut agent_entry = None;
 		let mut origin = if let Some(id) = run {
@@ -343,6 +349,7 @@ impl Models {
 			operation,
 			digest,
 			run,
+			work_run: None,
 			cycle: 0,
 			indexing,
 			inference: tokio::sync::Mutex::new(Authorities {
@@ -389,51 +396,36 @@ impl Models {
 		drop(generation);
 		Ok(())
 	}
-	/// What this memory work's model calls are charged to (#1012): its Run's
-	/// chain, or, for background work without a Run, its Tenant and its
-	/// Thread's Node. `None` for a Run this Deployment does not hold.
-	async fn charge(
+	/// Check the Budget and resolve the dispatch metadata before sending.
+	/// A refusal releases the reservation, preserving the operation's retries
+	/// and durable call and token budgets.
+	async fn admit_reserved<T>(
 		&self,
-		tx: &mut dyn reinhardt::db::backends::TransactionExecutor,
-	) -> Result<Option<crate::apps::identity::repositories::budgets::Charge>> {
-		use crate::apps::identity::repositories::budgets;
-		match self.run {
-			Some(run) => budgets::charge_of(tx, run).await,
-			None => budgets::thread_charge(tx, &self.bank.tenant, self.bank.thread)
-				.await
-				.map(Some),
-		}
-	}
-
-	/// Every model call passes the Budgets that cover it, memory roles and
-	/// embeddings included (#1012, ADR 0143): a Hard Limit refuses the call
-	/// before it is sent, as it refuses a Run's own model call.
-	async fn admit_budget(&self) -> Result<()> {
-		use crate::apps::identity::repositories::budgets;
-		let scope = aidash_application::tenancy::TenancyScope::tenant(&self.bank.tenant)?;
-		let gate = self
+		reservation: &Reservation,
+		on_admitted: impl for<'t> AsyncFnOnce(&'t mut AtomicTransaction, budgets::Charge) -> Result<T>,
+	) -> Result<T> {
+		let tenant = &self.bank.tenant;
+		let scope = aidash_application::tenancy::TenancyScope::tenant(tenant)?;
+		let result = self
 			.store
 			.control_pool
 			.atomic(&scope, async |tx| {
-				let Some(charge) = self.charge(tx).await? else {
-					return Ok(aidash_domain::budgets::Gate::Open);
+				let charge = if let Some(run) = self.work_run {
+					budgets::charge_of(tx, run).await?.ok_or(Error::Forbidden)?
+				} else {
+					budgets::thread_charge(tx, tenant, self.bank.thread).await?
 				};
-				Ok(budgets::gate_for(tx, &charge, Utc::now()).await?.0)
+				budgets::admit(budgets::gate_for(tx, &charge, Utc::now()).await?.0)?;
+				on_admitted(tx, charge).await
 			})
-			.await?;
-		budgets::admit(gate)
-	}
-
-	/// Passes the Budgets for a call `prepare` reserved. A refused call was
-	/// never sent, so its reservation goes back whole: the attempt is removed
-	/// and the operation's totals return, and a Budget refusal spends none of
-	/// the operation's retries or call budget (#1012).
-	async fn admit_reserved(&self, reservation: &Reservation) -> Result<()> {
-		let Err(refused) = self.admit_budget().await else {
-			return Ok(());
-		};
-		self.release_reserved(reservation).await?;
-		Err(refused)
+			.await;
+		match result {
+			Ok(admitted) => Ok(admitted),
+			Err(refused) => {
+				self.release_reserved(reservation).await?;
+				Err(refused)
+			}
+		}
 	}
 
 	/// Release the reservation for a call rejected before provider dispatch.
@@ -491,25 +483,6 @@ impl Models {
 			.await?;
 		}
 		tx.commit().await?;
-		Ok(())
-	}
-
-	/// Adds a finished call to the Budget ledger: the cost its provider
-	/// reported, or one unpriced call.
-	async fn record_budget_spend(
-		&self,
-		tx: &mut dyn reinhardt::db::backends::TransactionExecutor,
-		cost: Option<i64>,
-	) -> Result<()> {
-		if let Some(charge) = self.charge(tx).await? {
-			crate::apps::identity::repositories::budgets::record_charge(
-				tx,
-				&charge,
-				cost,
-				Utc::now(),
-			)
-			.await?;
-		}
 		Ok(())
 	}
 
@@ -942,27 +915,25 @@ impl Models {
 		purpose: MaintenancePurpose,
 	) -> Result<Produced<T>> {
 		let config: ModelConfig =
-			ModelConfig::from_stored(self.role(reference, "model")?.config.clone())?;
+			ModelConfig::from_stored(self.role(reference, "model")?.config.clone())?
+				.for_memory_role();
 		let input = instruction
 			.len()
 			.checked_add(serde_json::to_string(&context)?.len())
 			.ok_or_else(|| Error::Invalid("memory input overflow".into()))?;
-		let output = config
-			.max_output_tokens
-			.ok_or_else(|| Error::Invalid("memory role requires an explicit output limit".into()))?
-			as usize;
-		let output = output.min(allowance.tokens.saturating_sub(input));
+		let output =
+			(config.output_token_limit() as usize).min(allowance.tokens.saturating_sub(input));
 		if output == 0 {
 			return Err(Error::Invalid(
 				"memory model input leaves no response allowance".into(),
 			));
 		}
-		let request = ModelRequest {
+		let mut request = ModelRequest {
 			provider_tools: vec![],
 			instructions: instruction.into(),
 			context: ModelContext::native_data(&context),
 			tools: vec![],
-			max_output_tokens: output as u32,
+			max_output_tokens: 0,
 			response_format: None,
 			content_parts: vec![],
 			cache_scope: None,
@@ -974,7 +945,7 @@ impl Models {
 			input_format: InputFormat::for_model(&config),
 			estimate: Default::default(),
 		};
-		request.ensure_fits(config.context_window)?;
+		let output = request.fit_output(config.context_window, output)?;
 		let charge = rate.charge(input as u64, output as u64)?;
 
 		self.require_origins(Some(reference)).await?;
@@ -985,10 +956,12 @@ impl Models {
 			.as_object_mut()
 			.expect("model request serializes as an object")
 			.remove("input_format");
+		let identity = json!({"role":reference,"request":identity});
+		let replay_key = aidash_domain::registry::rules::digest(&identity);
 		let reservation = match self
 			.prepare::<T>(
 				ModelStep::Required,
-				&json!({"role":reference,"request":identity}),
+				&identity,
 				input + output,
 				charge,
 				allowance,
@@ -1000,7 +973,17 @@ impl Models {
 			Prepared::AtCapacity => return Err(model_operation_capacity()),
 			Prepared::SkipOnReplay => unreachable!("required calls always check their own replay"),
 		};
-		self.admit_reserved(&reservation).await?;
+		let (owner, billing) = self
+			.admit_reserved(&reservation, async |tx, charge| {
+				let owner = match self.work_run {
+					Some(run) => model_calls::Attribution::awake(tx, run).await?,
+					None => {
+						model_calls::Attribution::node(charge.tenant.clone(), charge.node.clone())
+					}
+				};
+				Ok((owner, charge))
+			})
+			.await?;
 		let origin = self
 			.reserve_model(reservation.id, input, output as u32)
 			.await?;
@@ -1019,7 +1002,6 @@ impl Models {
 			None
 		};
 
-		use crate::apps::execution::repositories::model_calls;
 		let provider = crate::bootstrap::admitted_model_provider(
 			&self.store,
 			config.clone(),
@@ -1033,14 +1015,6 @@ impl Models {
 			.store
 			.control_pool
 			.atomic(&scope, async |tx| {
-				use crate::apps::identity::repositories::budgets::thread_charge;
-				let owner = match self.run {
-					Some(run) => model_calls::Attribution::for_run(tx, run).await?,
-					None => {
-						let charge = thread_charge(tx, tenant, self.bank.thread).await?;
-						model_calls::Attribution::node(charge.tenant, charge.node)
-					}
-				};
 				model_calls::start_auxiliary(
 					tx,
 					&owner,
@@ -1049,6 +1023,10 @@ impl Models {
 						config: &config,
 						request: &request,
 						purpose: aidash_domain::model_call::Purpose::MemoryRole,
+						replay_key: Some(&replay_key),
+						timeout: std::time::Duration::from_secs(u64::from(
+							self.policy.bounds.max_call_seconds,
+						)),
 					},
 					reservation.id,
 					&reservation.prior_attempts,
@@ -1103,7 +1081,7 @@ impl Models {
 				.await?
 				.rows_affected();
 				if recorded == 1 {
-					self.record_budget_spend(tx, cost).await?;
+					budgets::record_charge(tx, &billing, cost, Utc::now()).await?;
 				}
 				Ok(())
 			})
@@ -1222,7 +1200,9 @@ impl Models {
 			Prepared::AtCapacity => return Err(model_operation_capacity()),
 			Prepared::SkipOnReplay => return Err(Error::SemanticUnavailable),
 		};
-		self.admit_reserved(&reservation).await?;
+		let billing = self
+			.admit_reserved(&reservation, async |_, charge| Ok(charge))
+			.await?;
 		let local = if self.remote.is_none()
 			&& let Some(origin) = self.embedding_origin
 		{
@@ -1281,7 +1261,7 @@ impl Models {
 			.control_pool
 			.atomic(
 				&aidash_application::tenancy::TenancyScope::tenant(&self.bank.tenant)?,
-				async |tx| self.record_budget_spend(tx, None).await,
+				async |tx| budgets::record_charge(tx, &billing, None, Utc::now()).await,
 			)
 			.await?;
 		if let Some(local) = local {

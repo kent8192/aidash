@@ -217,7 +217,6 @@ pub trait ExecutionStore: Send + Sync {
 	async fn calibration_samples(
 		&self,
 		_upstream_model: &str,
-		_projection_version: u8,
 	) -> Result<Vec<aidash_domain::provider::estimate::CalibrationSample>> {
 		Ok(Vec::new())
 	}
@@ -671,7 +670,6 @@ pub trait ExecutionAuthority: Send + Sync {
 		&self,
 		messages: &[(i64, Uuid, usize)],
 		model: &ModelConfig,
-		projection: aidash_domain::projection::ProjectionVersion,
 	) -> Result<HumanMediaBatch>;
 	async fn reserve_inference(
 		&self,

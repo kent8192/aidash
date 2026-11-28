@@ -800,13 +800,12 @@ pub fn choose_inference_media(
 	headroom: usize,
 	human_batch_present: bool,
 	model: &ModelConfig,
-	projection: aidash_domain::projection::ProjectionVersion,
 ) -> (Vec<aidash_domain::provider::ContentPart>, bool) {
 	let mut combined = selected_parts;
 	combined.extend(human_parts.iter().cloned());
 	let defer_selected = human_batch_present
 		&& (!aidash_domain::provider::ModelRequest::media_within_limits(&combined)
-			|| media_request_headroom(headroom, &combined, model, projection).is_err()
+			|| media_request_headroom(headroom, &combined, model).is_err()
 			|| !model.has_current_media_route_for_parts(&combined));
 	(
 		if defer_selected {
@@ -822,9 +821,8 @@ pub fn media_request_headroom(
 	headroom: usize,
 	parts: &[aidash_domain::provider::ContentPart],
 	model: &ModelConfig,
-	projection: aidash_domain::projection::ProjectionVersion,
 ) -> Result<()> {
-	let request = media::run_media_budget_request(model, projection, Vec::new());
+	let request = media::run_media_budget_request(model, Vec::new());
 	request
 		.ensure_fits_with_parts(headroom, parts)
 		.map_err(Into::into)
@@ -874,9 +872,8 @@ pub fn check_model_media_headroom(
 	headroom: usize,
 	parts: Vec<aidash_domain::provider::ContentPart>,
 	model: &ModelConfig,
-	projection: aidash_domain::projection::ProjectionVersion,
 ) -> Result<()> {
-	let request = media::run_media_budget_request(model, projection, parts);
+	let request = media::run_media_budget_request(model, parts);
 	request.validate()?;
 	if !model.has_current_media_route_for_parts(&request.content_parts) {
 		return Err(Error::Invalid(format!(
@@ -999,9 +996,14 @@ impl FrameworkResult {
 					output["status"].as_str(),
 					Some("prepared" | "submitted" | "running" | "cancelling")
 				);
-				let seconds =
-					i64::try_from(input["wait_seconds"].as_u64().unwrap_or(300).min(3600))
-						.expect("bounded wait");
+				let default_wait = if input["background"] == true { 0 } else { 300 };
+				let seconds = i64::try_from(
+					input["wait_seconds"]
+						.as_u64()
+						.unwrap_or(default_wait)
+						.min(3600),
+				)
+				.expect("bounded wait");
 				if active && seconds > 0 {
 					let id =
 						serde_json::from_value(output["operation_id"].clone()).map_err(|_| {

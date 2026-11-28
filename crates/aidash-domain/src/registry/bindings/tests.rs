@@ -641,7 +641,8 @@ fn omitted_rendering_pins_keep_the_definition_bytes() {
 	assert_eq!(config.projection_version, None);
 	assert_eq!(config.harness_contract, None);
 	assert_eq!(
-		config.harness_contract.unwrap_or_default(),
+		crate::registry::execution_contract(config.projection_version, config.harness_contract)
+			.unwrap(),
 		crate::harness_contract::HarnessContract::Structured4
 	);
 	assert_eq!(serde_json::to_value(config).unwrap(), input);

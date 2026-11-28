@@ -8,7 +8,9 @@ use crate::{
 	Error, Result,
 	ports::capabilities::{
 		AcceptedOperation, OperationAdmissionScope,
-		execution_pod::{CommandRequest, CommandResult, ExecutionPodError, ExecutionPodErrorCode},
+		execution_pod::{
+			CommandRequest, CommandResult, ExecutionPodError, ExecutionPodErrorCode, RunStopReason,
+		},
 		pod_operations::{PodContext, PodOperation, PodOperationRepository},
 	},
 };
@@ -32,9 +34,8 @@ pub const PYTHON: &str = "code_interpreter";
 /// Leads a cell's output when its interpreter was started afresh.
 const SESSION_RESET_NOTICE: &str = "[The Python session restarted because the Execution Pod was replaced; earlier variables and imports are gone.]\n";
 
-/// Admit a command or Python cell for the Execution Pod. The Working Area is
-/// neither checked nor held: the command writes the Scratch Space, so
-/// `expected_revision` is accepted but not compared (#745).
+/// Admit a command or Python cell in the Run’s Scratch Space directory.
+/// Timed Background processes use the Deployment’s separate time ceiling.
 pub async fn accept<O: Send>(
 	scope: &mut dyn OperationAdmissionScope<O>,
 	run: &RunMetadata,
@@ -44,8 +45,10 @@ pub async fn accept<O: Send>(
 	scratch_space_id: &str,
 	working_directory: &str,
 ) -> Result<Value> {
-	let limits = scope.limits();
-	let seconds = input.seconds(limits)?;
+	let mut limits = scope.limits();
+	if input.background && kind != SHELL || input.notify_on_exit && !input.background {
+		return Err(Error::Invalid("INVALID_BACKGROUND_OPTIONS".into()));
+	}
 	let mut extra = json!({"runtime": POD_RUNTIME, "scratch_space_id": scratch_space_id, "working_directory": working_directory});
 	if let Some(session_id) = expected_session_id {
 		extra["expected_session_id"] = json!(session_id);
@@ -58,6 +61,20 @@ pub async fn accept<O: Send>(
 		}
 		return scope.result(&previous, 0).await;
 	}
+	if input.background {
+		limits.maximum_seconds = scope.background_maximum_seconds().await?;
+		let requested = input.timeout_seconds.ok_or_else(|| {
+			Error::Invalid("BACKGROUND_TIME_LIMIT_REQUIRED: provide timeout_seconds".into())
+		})?;
+		if requested > limits.maximum_seconds {
+			return Err(Error::Invalid(format!(
+				"{}{}",
+				aidash_domain::capabilities::errors::BACKGROUND_LIMIT_PREFIX,
+				limits.maximum_seconds,
+			)));
+		}
+	}
+	let seconds = input.seconds(limits)?;
 	if !limits.admission {
 		return Err(Error::Conflict("CAPABILITIES_DISABLED".into()));
 	}
@@ -69,6 +86,8 @@ pub async fn accept<O: Send>(
 	let id = scope.operation_id();
 	let mut value = json!({
 		"command": input.command,
+		"background": input.background,
+		"notify_on_exit": input.notify_on_exit,
 		"seconds": seconds,
 		"maximum_seconds": limits.maximum_seconds,
 		"revision": scope.area().revision,
@@ -116,7 +135,8 @@ pub fn command_request(operation: &PodOperation, context: &PodContext) -> Result
 			.as_str()
 			.map(str::to_owned),
 		timeout_seconds: Some(u32::try_from(seconds).unwrap_or(u32::MAX)),
-		background: false,
+		background: operation.input["background"] == true,
+		notify_on_exit: operation.input["notify_on_exit"] == true,
 		proxy_credential: context.credential.clone(),
 	})
 }
@@ -143,6 +163,10 @@ fn error_value(code: &str, message: &str) -> Value {
 	.expect("serializable error")
 }
 
+fn terminal_background_notice(operation: &PodOperation, status: &str) -> bool {
+	operation.input["notify_on_exit"] == true && !matches!(status, "queued" | "running")
+}
+
 /// The state and result a Runner report gives a Pod operation. `now` is
 /// seconds since the epoch, used as the start when the Runner first reports
 /// the command running; the Runner's `CommandResult` has no start time.
@@ -163,6 +187,28 @@ pub fn observe(operation: &PodOperation, reply: &CommandResult, now: f64) -> (St
 	}
 	if let Some(uid) = &reply.pod_uid {
 		object.insert("pod_uid".into(), json!(uid));
+	}
+	if let Some(reason) = &reply.stop_reason {
+		object.insert("stop_reason".into(), json!(reason));
+	}
+	if terminal_background_notice(operation, status) {
+		let mut tail = decode(reply.output_tail.as_deref());
+		if tail.is_empty() {
+			tail = decode(reply.stdout.as_deref());
+			tail.extend(decode(reply.stderr.as_deref()));
+		}
+		let tail = String::from_utf8_lossy(&tail[tail.len().saturating_sub(4096)..]);
+		let tail = &tail[tail.ceil_char_boundary(tail.len().saturating_sub(4096))..];
+		object.insert(
+			"background_exit".into(),
+			json!({
+				"operation_id": operation.id,
+				"status": status,
+				"exit_code": reply.exit_code,
+				"stop_reason": reply.stop_reason,
+				"output_tail": tail,
+			}),
+		);
 	}
 	if let Some(left) = &reply.left_running {
 		object.insert("left_running".into(), json!(left));
@@ -284,7 +330,10 @@ pub fn observe(operation: &PodOperation, reply: &CommandResult, now: f64) -> (St
 	if terminal {
 		// A deadline is shown only while the command runs (#756).
 		object.remove("started_at");
-		object.insert("termination_confirmed".into(), json!(state != "uncertain"));
+		object.insert(
+			"termination_confirmed".into(),
+			json!(state != "uncertain" || reply.stop_reason.is_some()),
+		);
 		object.insert(
 			"effects_may_have_occurred".into(),
 			json!(reply.outcome.as_deref() != Some("not_started")),
@@ -354,7 +403,11 @@ async fn submit(
 	// A withdrawal or cancel may have moved the row since it was read; such a
 	// row is never sent.
 	let current = repository.load(operation.id).await?;
-	if current.state != operation.state || current.result["dispatch_pending"] != true {
+	if current.state != operation.state
+		|| current.result["dispatch_pending"] != true
+		|| current.run_finished
+		|| current.run_cancelled
+	{
 		return Ok(());
 	}
 	let reply = if operation.kind == PYTHON {
@@ -409,9 +462,29 @@ async fn submit(
 pub async fn drive(repository: &dyn PodOperationRepository, id: Uuid) -> Result<()> {
 	let operation = repository.load(id).await?;
 	if !active(&operation.state) {
+		if operation.run_cancelled
+			&& operation.result["left_running"].is_string()
+			&& operation.result["run_stop_confirmed"] != true
+		{
+			let context = repository.context(&operation).await?;
+			context
+				.runtime
+				.stop_run(
+					context.scratch_space_id(),
+					&operation.run_id.to_string(),
+					RunStopReason::RunCancelled,
+				)
+				.await
+				.map_err(tool_error)?;
+			let mut result = operation.result.clone();
+			result["run_stop_confirmed"] = json!(true);
+			repository
+				.save(operation.id, &operation.state, &operation.state, &result)
+				.await?;
+		}
 		return Ok(());
 	}
-	if operation.state == "prepared" && operation.run_finished {
+	if operation.state == "prepared" && (operation.run_finished || operation.run_cancelled) {
 		let mut result = refused(
 			&operation,
 			"RUN_NOT_ACTIVE",
@@ -447,6 +520,17 @@ pub async fn drive(repository: &dyn PodOperationRepository, id: Uuid) -> Result<
 		// Run's processes) or its Scratch Space is gone. Retrying would keep it
 		// active forever, so it ends with an unknown outcome.
 		Err(Error::Forbidden | Error::NotFound(_) | Error::Unauthorized) => {
+			if operation.input["background"] == true
+				&& let Some(reply) = repository.background_after_context_lost(&operation).await?
+			{
+				if !matches!(reply.status.as_str(), "queued" | "running") {
+					let (state, result) = observe(&operation, &reply, now());
+					repository
+						.save(operation.id, &operation.state, &state, &result)
+						.await?;
+				}
+				return Ok(());
+			}
 			let mut result = operation.result.clone();
 			if !result.is_object() {
 				result = json!({});
@@ -501,12 +585,24 @@ pub async fn drive(repository: &dyn PodOperationRepository, id: Uuid) -> Result<
 			};
 			submit(repository, &submitted, &context).await
 		}
-		"submitted" if dispatch_pending && !operation.run_finished => {
+		"submitted" if dispatch_pending && !operation.run_finished && !operation.run_cancelled => {
 			submit(repository, &operation, &context).await
 		}
 		"cancelling" | "submitted" | "running" => {
-			let stopping = operation.state == "cancelling" || operation.run_finished;
-			if stopping && operation.run_finished {
+			let stopping = operation.state == "cancelling"
+				|| operation.run_cancelled
+				|| (operation.run_finished && operation.input["background"] != true);
+			if operation.run_cancelled {
+				context
+					.runtime
+					.stop_run(
+						context.scratch_space_id(),
+						&operation.run_id.to_string(),
+						RunStopReason::RunCancelled,
+					)
+					.await
+					.map_err(tool_error)?;
+			} else if stopping && operation.run_finished && operation.input["background"] != true {
 				// The Run ended: stop all its foreground work, leaving its
 				// Background processes and previews running.
 				context
@@ -517,11 +613,13 @@ pub async fn drive(repository: &dyn PodOperationRepository, id: Uuid) -> Result<
 			} else if stopping {
 				// An explicit cancel stops only this command: a Run may have
 				// several foreground commands running at once.
-				match context
-					.runtime
-					.stop_command(&operation.id.to_string())
-					.await
-				{
+				let operation_id = operation.id.to_string();
+				let stop = if operation.input["background"] == true {
+					context.runtime.stop_background(&operation_id).await
+				} else {
+					context.runtime.stop_command(&operation_id).await
+				};
+				match stop {
 					Ok(_)
 					| Err(ExecutionPodError::Remote {
 						code: ExecutionPodErrorCode::CommandNotFound,

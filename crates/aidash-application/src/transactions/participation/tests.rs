@@ -4,8 +4,8 @@ use crate::ports::transactions::{
 	participation::PendingParticipants,
 };
 use aidash_domain::transactions::{
-	CoordinatorTransition, Isolation, Mutation, Participant as Node,
-	authority::Status,
+	CoordinatorTransition, Isolation, Manifest, Mutation, Participant as Node,
+	authority::{Decision, Status},
 	coordination::{ParticipantOperation, Vote},
 };
 use async_trait::async_trait;
@@ -14,6 +14,15 @@ use rstest::{fixture, rstest};
 use serde_json::json;
 use std::sync::Mutex;
 use uuid::Uuid;
+
+const SEED: &str = "5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e";
+const HOME: &str = "aidash://home/airy-hawk-2lu4as22";
+const PEER: &str = "aidash://peer/airy-hawk-2lu4as22";
+
+/// What the coordinator's own participant receives.
+fn share(manifest: &Manifest) -> Share {
+	manifest.share(SEED, HOME).unwrap()
+}
 
 #[fixture]
 fn manifest() -> Manifest {
@@ -33,12 +42,12 @@ fn manifest() -> Manifest {
 	}
 }
 
-fn row(manifest: &Manifest, phase: &str) -> LocalStatus {
+fn row(share: &Share, phase: &str) -> LocalStatus {
 	LocalStatus {
-		id: manifest.id,
-		coordinator: manifest.coordinator.clone(),
-		digest: manifest.digest().unwrap(),
-		manifest: json!(manifest),
+		id: share.id,
+		coordinator: share.coordinator.clone(),
+		digest: share.digest().unwrap(),
+		manifest: json!(share),
 		phase: phase.into(),
 		updated_at: "2030-01-01T00:00:00Z".parse().unwrap(),
 	}
@@ -63,29 +72,34 @@ struct State {
 	gate_wait: TimeDelta,
 }
 
+/// The state, and the Node an inbound transport admitted, if any.
 #[derive(Clone)]
-struct Adapter(Arc<Mutex<State>>);
+struct Adapter(Arc<Mutex<State>>, Option<&'static str>);
 impl Adapter {
 	fn new(manifest: &Manifest) -> Self {
-		Self(Arc::new(Mutex::new(State {
-			proof: Status {
-				id: manifest.id,
-				digest: manifest.digest().unwrap(),
-				manifest: json!(manifest),
-				decision: None,
-				visible: false,
-				complete: false,
-				last_error: None,
-				created_at: "2030-01-01T00:00:00Z".parse().unwrap(),
-			},
-			persisted: Records::default(),
-			log: vec![],
-			admitted: false,
-			deny_admission: false,
-			failure: None,
-			clock: "2030-01-01T00:00:00Z".parse().unwrap(),
-			gate_wait: TimeDelta::zero(),
-		})))
+		Self(
+			Arc::new(Mutex::new(State {
+				proof: Status {
+					id: manifest.id,
+					digest: manifest.sealed_digest(SEED).unwrap(),
+					manifest: json!(manifest),
+					seed: SEED.into(),
+					decision: None,
+					visible: false,
+					complete: false,
+					last_error: None,
+					created_at: "2030-01-01T00:00:00Z".parse().unwrap(),
+				},
+				persisted: Records::default(),
+				log: vec![],
+				admitted: false,
+				deny_admission: false,
+				failure: None,
+				clock: "2030-01-01T00:00:00Z".parse().unwrap(),
+				gate_wait: TimeDelta::zero(),
+			})),
+			None,
+		)
 	}
 	fn participant(&self) -> Participant {
 		Participant::new(
@@ -115,7 +129,7 @@ impl Adapter {
 	}
 	fn existing(&self, manifest: &Manifest, phase: &str) {
 		let mut state = self.0.lock().unwrap();
-		state.persisted.row = Some(row(manifest, phase));
+		state.persisted.row = Some(row(&share(manifest), phase));
 		state.persisted.gate = Some(manifest.id);
 	}
 }
@@ -151,13 +165,9 @@ impl ParticipantScope for Scope {
 		self.working.gate = None;
 		Ok(())
 	}
-	async fn insert(
-		&mut self,
-		manifest: &Manifest,
-		phase: ParticipantPhase,
-	) -> Result<LocalStatus> {
+	async fn insert(&mut self, share: &Share, phase: ParticipantPhase) -> Result<LocalStatus> {
 		self.adapter.event(format!("insert:{}", phase.as_str()))?;
-		let row = row(manifest, phase.as_str());
+		let row = row(share, phase.as_str());
 		self.working.row = Some(row.clone());
 		Ok(row)
 	}
@@ -171,10 +181,10 @@ impl ParticipantScope for Scope {
 	async fn reservation_history(&mut self, _id: Uuid) -> Result<()> {
 		self.adapter.event("history:RESERVED")
 	}
-	async fn validate_mutations(&mut self, _manifest: &Manifest) -> Result<()> {
+	async fn validate_mutations(&mut self, _share: &Share) -> Result<()> {
 		self.adapter.event("validate_mutations")
 	}
-	async fn apply_mutations(&mut self, _manifest: &Manifest) -> Result<()> {
+	async fn apply_mutations(&mut self, _share: &Share) -> Result<()> {
 		self.adapter.event("apply_mutations")?;
 		self.working.applied += 1;
 		Ok(())
@@ -239,6 +249,9 @@ impl ParticipantRepository for Adapter {
 	fn node_id(&self) -> &str {
 		"aidash://home/airy-hawk-2lu4as22"
 	}
+	fn receiver(&self) -> Option<&str> {
+		self.1
+	}
 	async fn begin(&self) -> Result<Box<dyn ParticipantScope>> {
 		self.event("begin")?;
 		Ok(self.scope(false))
@@ -246,7 +259,7 @@ impl ParticipantRepository for Adapter {
 	async fn admission(
 		&self,
 		_caller: &str,
-		_manifest: &Manifest,
+		_share: &Share,
 	) -> Result<Option<Box<dyn ParticipantScope>>> {
 		self.event("admission")?;
 		let (deny, admitted) = {
@@ -316,7 +329,7 @@ impl CoordinatorRepository for Adapter {
 	async fn recovery_batch(&self, _aborted: bool) -> Result<Box<dyn RecoveryBatch>> {
 		unexpected()
 	}
-	async fn issue_authority(&self, _manifest: &Manifest, _node: &str) -> Result<()> {
+	async fn issue_authority(&self, _state: &Status, _node: &str) -> Result<()> {
 		unexpected()
 	}
 	async fn settle_authority(&self, _id: Uuid, _node: &str, _phase: &str) -> Result<()> {
@@ -331,13 +344,13 @@ impl CoordinatorRepository for Adapter {
 }
 #[async_trait]
 impl ParticipantTransport for Adapter {
-	async fn decision(&self, _manifest: &Manifest) -> Result<Status> {
+	async fn decision(&self, _share: &Share) -> Result<Decision> {
 		self.event("proof")?;
-		Ok(self.0.lock().unwrap().proof.clone())
+		Ok(self.0.lock().unwrap().proof.decision())
 	}
 	async fn send(
 		&self,
-		_manifest: &Manifest,
+		_share: &Share,
 		_node: &str,
 		_operation: ParticipantOperation,
 	) -> Result<LocalStatus> {
@@ -353,7 +366,7 @@ async fn existing_reservation_survives_live_grant_revocation(manifest: Manifest)
 	adapter.0.lock().unwrap().deny_admission = true;
 	let result = adapter
 		.participant()
-		.reserve(&manifest.coordinator, &manifest)
+		.reserve(&manifest.coordinator, &share(&manifest))
 		.await
 		.unwrap();
 	assert_eq!(result.phase, "RESERVED");
@@ -368,7 +381,7 @@ async fn new_reservation_requires_live_admission_after_rolling_back_its_probe(ma
 	assert!(matches!(
 		adapter
 			.participant()
-			.reserve(&manifest.coordinator, &manifest)
+			.reserve(&manifest.coordinator, &share(&manifest))
 			.await,
 		Err(Error::Forbidden)
 	));
@@ -392,7 +405,7 @@ async fn new_reservation_rejects_expired_or_overlong_deadlines(
 	assert!(matches!(
 		adapter
 			.participant()
-			.reserve(&manifest.coordinator, &manifest)
+			.reserve(&manifest.coordinator, &share(&manifest))
 			.await,
 		Err(Error::Invalid(_))
 	));
@@ -409,7 +422,7 @@ async fn new_reservation_rechecks_its_deadline_after_waiting_for_the_gate(manife
 	assert!(matches!(
 		adapter
 			.participant()
-			.reserve(&manifest.coordinator, &manifest)
+			.reserve(&manifest.coordinator, &share(&manifest))
 			.await,
 		Err(Error::Invalid(_))
 	));
@@ -428,7 +441,7 @@ async fn prepare_rechecks_its_deadline_after_waiting_for_the_gate(manifest: Mani
 	adapter.0.lock().unwrap().gate_wait = TimeDelta::hours(2);
 	let result = adapter
 		.participant()
-		.prepare(&manifest.coordinator, &manifest)
+		.prepare(&manifest.coordinator, &share(&manifest))
 		.await
 		.unwrap();
 	assert_eq!(result.phase, "ABORTED");
@@ -451,7 +464,7 @@ async fn abandoned_reserved_participant_releases_gate_and_keeps_abort_tombstone(
 	assert_eq!(adapter.0.lock().unwrap().persisted.gate, None);
 	assert_eq!(
 		participant
-			.reserve(&manifest.coordinator, &manifest)
+			.reserve(&manifest.coordinator, &share(&manifest))
 			.await
 			.unwrap()
 			.phase,
@@ -486,7 +499,7 @@ async fn failed_reservation_never_publishes_a_barrier_or_row(
 		state.failure = Some("participant.reserve.before".into());
 	}
 	assert!(
-		matches!(adapter.participant().reserve(&manifest.coordinator, &manifest).await, Err(Error::External(message)) if message == "participant.reserve.before")
+		matches!(adapter.participant().reserve(&manifest.coordinator, &share(&manifest)).await, Err(Error::External(message)) if message == "participant.reserve.before")
 	);
 	let state = adapter.0.lock().unwrap();
 	assert_eq!(state.persisted.row, None);
@@ -511,7 +524,7 @@ async fn admitted_failure_retains_authority_settlement_before_rollback(
 	assert!(matches!(
 		adapter
 			.participant()
-			.reserve(&manifest.coordinator, &manifest)
+			.reserve(&manifest.coordinator, &share(&manifest))
 			.await,
 		Err(Error::TransactionPending)
 	));
@@ -533,7 +546,7 @@ async fn prepare_validates_without_applying_mutations(manifest: Manifest, #[case
 	}
 	let result = adapter
 		.participant()
-		.prepare(&manifest.coordinator, &manifest)
+		.prepare(&manifest.coordinator, &share(&manifest))
 		.await;
 	let state = adapter.0.lock().unwrap();
 	assert_eq!(state.persisted.applied, 0);
@@ -558,7 +571,7 @@ async fn apply_and_visibility_release_are_separate_idempotent_commits(manifest: 
 	for _ in 0..2 {
 		assert_eq!(
 			participant
-				.finish(&manifest.coordinator, &manifest)
+				.finish(&manifest.coordinator, &share(&manifest))
 				.await
 				.unwrap()
 				.phase,
@@ -574,7 +587,7 @@ async fn apply_and_visibility_release_are_separate_idempotent_commits(manifest: 
 	for _ in 0..2 {
 		assert_eq!(
 			participant
-				.finish(&manifest.coordinator, &manifest)
+				.finish(&manifest.coordinator, &share(&manifest))
 				.await
 				.unwrap()
 				.phase,
@@ -602,7 +615,7 @@ async fn abort_tombstone_prevents_a_delayed_reservation(manifest: Manifest) {
 	let participant = adapter.participant();
 	assert_eq!(
 		participant
-			.finish(&manifest.coordinator, &manifest)
+			.finish(&manifest.coordinator, &share(&manifest))
 			.await
 			.unwrap()
 			.phase,
@@ -611,7 +624,7 @@ async fn abort_tombstone_prevents_a_delayed_reservation(manifest: Manifest) {
 	adapter.0.lock().unwrap().deny_admission = true;
 	assert_eq!(
 		participant
-			.reserve(&manifest.coordinator, &manifest)
+			.reserve(&manifest.coordinator, &share(&manifest))
 			.await
 			.unwrap()
 			.phase,
@@ -630,7 +643,7 @@ async fn durable_commit_cannot_be_aborted(manifest: Manifest, #[case] phase: &st
 	adapter.existing(&manifest, phase);
 	adapter.0.lock().unwrap().proof.decision = Some("ABORT".into());
 	assert!(
-		matches!(adapter.participant().finish(&manifest.coordinator, &manifest).await, Err(Error::Conflict(message)) if message == "commit cannot be aborted")
+		matches!(adapter.participant().finish(&manifest.coordinator, &share(&manifest)).await, Err(Error::Conflict(message)) if message == "commit cannot be aborted")
 	);
 	assert_eq!(
 		adapter
@@ -665,7 +678,7 @@ async fn apply_faults_preserve_the_durable_commit_boundary(
 		state.failure = Some(point.into());
 	}
 	assert!(
-		matches!(adapter.participant().finish(&manifest.coordinator, &manifest).await, Err(Error::External(message)) if message == point)
+		matches!(adapter.participant().finish(&manifest.coordinator, &share(&manifest)).await, Err(Error::External(message)) if message == point)
 	);
 	let state = adapter.0.lock().unwrap();
 	assert_eq!(state.persisted.applied, applied);
@@ -689,7 +702,7 @@ async fn unavailable_or_missing_decision_cannot_release_the_barrier(
 	}
 	let result = adapter
 		.participant()
-		.finish(&manifest.coordinator, &manifest)
+		.finish(&manifest.coordinator, &share(&manifest))
 		.await;
 	if unavailable {
 		assert!(matches!(result, Err(Error::External(message)) if message == "proof"));
@@ -701,13 +714,19 @@ async fn unavailable_or_missing_decision_cannot_release_the_barrier(
 }
 
 #[rstest]
+#[case::coordinators_own_work(None)]
+#[case::inbound(Some(HOME))]
 #[tokio::test]
-async fn sender_must_be_the_named_coordinator_before_any_persistence(manifest: Manifest) {
-	let adapter = Adapter::new(&manifest);
+async fn sender_must_be_the_named_coordinator_before_any_persistence(
+	manifest: Manifest,
+	#[case] receiver: Option<&'static str>,
+) {
+	let mut adapter = Adapter::new(&manifest);
+	adapter.1 = receiver;
 	assert!(matches!(
 		adapter
 			.participant()
-			.reserve("aidash://other/airy-hawk-2lu4as22", &manifest)
+			.reserve("aidash://other/airy-hawk-2lu4as22", &share(&manifest))
 			.await,
 		Err(Error::Forbidden)
 	));
@@ -736,4 +755,76 @@ async fn recovery_rechecks_the_durable_decision_before_finalization(manifest: Ma
 			.phase,
 		"APPLIED"
 	);
+}
+
+/// A participant holds only its own part: a share whose part is another
+/// Node's is refused before any persistence.
+#[rstest]
+#[case::coordinators_own_work(None)]
+#[case::inbound(Some(HOME))]
+#[tokio::test]
+async fn a_share_whose_part_is_for_another_node_is_refused(
+	mut manifest: Manifest,
+	#[case] receiver: Option<&'static str>,
+) {
+	manifest.participants.push(Node {
+		node_id: PEER.into(),
+		mutations: vec![Mutation::ThreadTitle {
+			thread_id: Uuid::from_u128(3),
+			expected_revision: 0,
+			title: "Title".into(),
+		}],
+	});
+	let mut adapter = Adapter::new(&manifest);
+	adapter.1 = receiver;
+	let other = manifest.share(SEED, PEER).unwrap();
+	let participant = adapter.participant();
+	assert!(matches!(
+		participant.reserve(&manifest.coordinator, &other).await,
+		Err(Error::Forbidden)
+	));
+	assert!(matches!(
+		participant.prepare(&manifest.coordinator, &other).await,
+		Err(Error::Forbidden)
+	));
+	assert!(matches!(
+		participant.finish(&manifest.coordinator, &other).await,
+		Err(Error::Forbidden)
+	));
+	assert_eq!(adapter.log(), Vec::<String>::new());
+}
+
+/// A part that does not match its own seal is refused before any persistence.
+#[rstest]
+#[tokio::test]
+async fn a_part_that_does_not_match_its_seal_is_refused(manifest: Manifest) {
+	let adapter = Adapter::new(&manifest);
+	let mut forged = share(&manifest);
+	forged.part.mutations = vec![Mutation::ThreadTitle {
+		thread_id: Uuid::from_u128(5),
+		expected_revision: 0,
+		title: "Other".into(),
+	}];
+	assert!(matches!(
+		adapter
+			.participant()
+			.reserve(&manifest.coordinator, &forged)
+			.await,
+		Err(Error::Domain(aidash_domain::Error::Conflict(_)))
+	));
+	assert_eq!(adapter.log(), Vec::<String>::new());
+}
+
+/// The participant stores its share, never the manifest.
+#[rstest]
+#[tokio::test]
+async fn a_reservation_stores_the_share(manifest: Manifest) {
+	let adapter = Adapter::new(&manifest);
+	let stored = adapter
+		.participant()
+		.reserve(&manifest.coordinator, &share(&manifest))
+		.await
+		.unwrap();
+	assert_eq!(stored.manifest, json!(share(&manifest)));
+	assert_eq!(stored.digest, manifest.sealed_digest(SEED).unwrap());
 }

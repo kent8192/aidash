@@ -533,6 +533,10 @@ _Avoid_: seed or seed data (writing Built-in definitions into every Registry), f
 The one gVisor-isolated Pod of a Scratch Space, from the image its settings name, in which every command, interpreter session, stdio MCP server and Live preview of the Agents using that Scratch Space runs. It keeps running between commands and Runs and stops after going unused for a while, though not while a Background process started with a time limit is still within it; its processes may outlive the Run that started them. It can reach nothing but the Egress gateway, nothing but the Preview gateway reaches it, and no Tenant Secret ever enters it.
 _Avoid_: sandbox (unqualified), runner pod, container, workstation
 
+**Execution Pod base**:
+The digest-pinned image that supplies the loader, Python, bootstrap and guest-root entry used by an Execution Pod. It mounts the Scratch Space at `/work`. The Runner streams the operation helper separately for each exec. A base update may wait up to 24 hours for time-limited Background processes unless a Deployment Administrator applies it immediately.
+_Avoid_: helper image (the operation helper has its own version), execution image (the image that supplies the guest root)
+
 **Background process**:
 A process that an Agent's command leaves running in the Execution Pod after the command returns, whether started on purpose or left behind by a command that finished. One started on purpose has a time limit and keeps its Execution Pod running until it ends or the limit passes; one left behind has no limit and keeps nothing running. It belongs to the Run that started it, is listed with that Run, and its output can be read later. A person or an Agent can stop it, and it stops when that Run is cancelled or its authority to read what it read is revoked, but not when the Run completes.
 _Avoid_: daemon, detached job, orphan process
@@ -598,11 +602,11 @@ _Avoid_: ingress, reverse proxy (unqualified), tunnel
 ### Model-facing context
 
 **Projection Version**:
-The immutable rule for rendering a Context Projection into the bytes of a model request. Native is the only one; Legacy and Ordered were removed, and a definition that names none means Native. An Agent definition names it, it is copied into the Run's Binding snapshot, and it never changes during the Run. It is separate from the State Version, which versions persisted state.
+The immutable rule for rendering a Context Projection into the bytes of a model request. Native is the only active version and is the default when omitted. Historical definitions keep their Legacy or Ordered pins, and admission and dispatch refuse those pins with `projection_retired`. An Agent definition names it, it is copied into the Run's Binding snapshot, and it never changes during the Run. It is separate from the State Version, which versions persisted state.
 _Avoid_: prompt version, layout version, protocol version
 
 **Harness Contract**:
-The versioned text Aidash itself gives every Agent's model about how Aidash works: which content instructs and which is data, what completes a task, and where tool aliases are defined. An Agent definition names it, it is copied into the Run's Binding snapshot, and each version declares the Projection Versions it can be rendered with. Agent definition instructions and Skill bodies are not part of it.
+The versioned text Aidash itself gives every Agent's model about how Aidash works: which content instructs and which is data, what completes a task, and where tool aliases are defined. An Agent definition names it, it is copied into the Run's Binding snapshot, and Native renders the active Structured contracts. Admission and dispatch refuse a retired pin. Agent definition instructions and Skill bodies are not part of it.
 _Avoid_: system prompt, boilerplate, prompt version, base prompt
 
 **Instruction precedence**:
@@ -1083,7 +1087,7 @@ A set of Thread, Task and Run changes on one or more Nodes that a coordinator No
 _Avoid_: distributed transaction (fine in prose), saga, batch
 
 **Transaction Share** (#1107, ADR 0146):
-What one participant of an Atomic Transaction holds: the transaction header, every participant's Seal and only its own changes. A participant never receives another participant's changes.
+What one participant of an Atomic Transaction holds: the transaction header, every participant's Seal and only its own changes. A Task completion in that share carries its Completion Message text. Other participants see the corresponding Claim in the Seal.
 _Avoid_: manifest (the coordinator's whole list), slice
 
 **Seal**:

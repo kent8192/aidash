@@ -72,7 +72,7 @@ async fn new_agents_require_canonical_model_configuration(validation: Definition
 	assert!(
 		error
 			.to_string()
-			.contains("unknown field `projection_versions`"),
+			.contains("projection_versions has been removed"),
 		"{error}"
 	);
 }
@@ -107,7 +107,11 @@ fn definitions_without_projection_fields_keep_their_bytes_and_resolve_as_native(
 		digest(&serde_json::from_str(LEGACY_MODEL).unwrap())
 	);
 	assert_eq!(
-		agent_bindings.harness_contract.unwrap_or_default(),
+		aidash_domain::registry::execution_contract(
+			agent_bindings.projection_version,
+			agent_bindings.harness_contract
+		)
+		.unwrap(),
 		HarnessContract::Structured4
 	);
 }
@@ -258,34 +262,39 @@ async fn registration_accepts_structured_harness_contracts_on_native(
 	let stored: AgentBindings =
 		serde_json::from_value(scope.entries["agent@1.0.0"].config.clone()).unwrap();
 	assert_eq!(
-		stored.harness_contract.unwrap_or_default(),
+		aidash_domain::registry::execution_contract(
+			stored.projection_version,
+			stored.harness_contract
+		)
+		.unwrap(),
 		HarnessContract::Structured3
 	);
 }
 
 /// `structured@1` and `structured@2` lost the #532 comparison and were removed.
 #[rstest]
-#[case::structured1("structured@1")]
-#[case::structured2("structured@2")]
+#[case::structured1("harness_contract", "structured@1", "structured@3, structured@4")]
+#[case::structured2("harness_contract", "structured@2", "structured@3, structured@4")]
+#[case::unknown_harness("harness_contract", "future@1", "structured@3, structured@4")]
+#[case::unknown_projection("projection_version", "future", "native")]
 #[tokio::test]
-async fn registration_rejects_removed_harness_contracts(
+async fn registration_names_the_supported_values_for_removed_or_unknown_pins(
 	validation: DefinitionValidation,
-	#[case] contract: &str,
+	#[case] field: &str,
+	#[case] version: &str,
+	#[case] allowed: &str,
 ) {
 	// Arrange
 	let mut scope = scope_with(model_config());
 	let mut config = agent_config(Some("native"));
-	config["harness_contract"] = json!(contract);
+	config[field] = json!(version);
 	let agent = definition("agent", "agent", config);
 	// Act
 	let error = register_definition(&mut scope, &validation, &agent, NODE)
 		.await
 		.unwrap_err();
-	// Assert: the version no longer decodes.
-	assert!(
-		error.to_string().contains("unknown variant") && error.to_string().contains(contract),
-		"{error:?}"
-	);
+	assert!(matches!(error, Error::Invalid(message)
+		if message.contains(field) && message.contains(version) && message.contains(allowed)));
 	assert!(!scope.entries.contains_key("agent@1.0.0"));
 }
 

@@ -34,12 +34,14 @@ fn manifest(id: Uuid) -> Manifest {
 		}],
 	}
 }
+const SEED: &str = "5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e";
 fn status(id: Uuid) -> Status {
 	let manifest = manifest(id);
 	Status {
 		id,
-		digest: manifest.digest().unwrap(),
+		digest: manifest.sealed_digest(SEED).unwrap(),
 		manifest: json!(manifest),
+		seed: SEED.into(),
 		decision: None,
 		visible: false,
 		complete: false,
@@ -375,7 +377,18 @@ async fn immutable_decision_is_disclosed_only_to_a_named_participant(
 	if rejected {
 		assert!(matches!(result, Err(Error::Forbidden)));
 	} else {
-		assert_eq!(result.unwrap(), status(Uuid::from_u128(1)));
+		// The participant sees the decision bound to the digest, never the
+		// manifest or the seed.
+		let stored = status(Uuid::from_u128(1));
+		assert_eq!(
+			result.unwrap(),
+			Decision {
+				id: stored.id,
+				digest: stored.digest,
+				decision: None,
+				visible: false,
+			}
+		);
 	}
 	assert_eq!(repository.calls(), ["status"]);
 }

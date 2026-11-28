@@ -56,7 +56,7 @@ price, subscription anchor, processor export, invoice or credit model.
 ## Cost, interruption and recovery disclosure
 
 Inference remains BYOK, paid directly to the provider; Aidash's approved meters
-cover execution and storage. Distinguish measured or confirmed usage from cost
+cover execution, storage, and Egress gateway traffic. Distinguish measured or confirmed usage from cost
 estimates and unavailable cost evidence. Retained facts establish neither a
 currency or price nor a final invoice or payment model. Unavailable cost is not
 zero or free, and these facts are not an exact provider invoice or a measure of
@@ -110,3 +110,34 @@ old rows are not assigned guessed digests or historical coverage.
 
 Stripe Sandbox selection and actual Issue 405 runtime acceptance remain separate
 from these model-neutral facts. See [sandbox acceptance](stripe-billing.md).
+
+## Egress gateway traffic
+
+Set `egress_sent_nanocredits_per_gib` and
+`egress_received_nanocredits_per_gib` in `[deployment]` to price a GiB in
+billionths of a US dollar. The defaults are 200,000,000 and 60,000,000
+nanocredits ($0.20 and $0.06). The gateway records forwarded bytes and their
+cost per Tenant and UTC day in `egress_usage_daily`. Replay uses the same
+cumulative checkpoints as the gateway, and unused Host reservations contribute
+zero cost. Stop the old gateway instances before applying migration 0165 so
+their open connections finish under the receipt schema.
+
+Traffic bearing a Run's credential also posts to the Budget ledger for the
+Run's Node, root person and Duty. A Hard Limit reached by this traffic pauses
+the attributed Run. A person can raise the limit and resume, or cancel the
+Run. Soft Limit notifications use the existing SMTP delivery pass. The usage
+facts are input for prepaid Usage Credit. Account credit, purchases, and
+admission based on that credit require a prepaid ledger.
+
+For the two-week observation, retain the `egress_run_hour_sample` and
+`egress_similar_sent_transfer` log events and the associated Prometheus
+samples for 14 days in the Deployment's telemetry backend. Sum `sent_bytes`
+over the first event by `run` and `utc_hour`. The second event identifies a
+completed Host connection whose sent byte count is within one percent of
+another completed connection from the same Run to that host in the previous
+14 days. CONNECT exposes aggregate tunnel bytes, so the comparison uses the
+connection, including its protocol overhead. The gateway also exports
+`aidash_egress_observed_sent_bytes_total`,
+`aidash_egress_observed_transfer_sent_bytes` and
+`aidash_egress_observed_similar_transfers_total`. These metrics carry no Run or
+host labels.

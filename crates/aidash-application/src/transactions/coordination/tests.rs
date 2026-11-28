@@ -26,6 +26,10 @@ fn manifest() -> Manifest {
 	}
 }
 
+const SEED: &str = "5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e";
+const HOME: &str = "aidash://home/airy-hawk-2lu4as22";
+const PEER: &str = "aidash://peer/airy-hawk-2lu4as22";
+
 #[derive(Clone, Copy)]
 enum Failure {
 	Conflict,
@@ -62,6 +66,10 @@ struct State {
 	busy: bool,
 	pause: bool,
 	fail_event: Option<String>,
+	/// Each share the transport sent, with the Node it went to.
+	sent: Vec<(String, Share)>,
+	/// Each share a remote decision was asked for.
+	asked: Vec<Share>,
 }
 
 #[derive(Clone)]
@@ -77,8 +85,9 @@ impl Adapter {
 			state: Arc::new(Mutex::new(State {
 				status: Status {
 					id: manifest.id,
-					digest: manifest.digest().unwrap(),
+					digest: manifest.sealed_digest(SEED).unwrap(),
 					manifest: json!(manifest),
+					seed: SEED.into(),
 					decision: None,
 					visible: false,
 					complete: false,
@@ -97,6 +106,8 @@ impl Adapter {
 				busy: false,
 				pause: false,
 				fail_event: None,
+				sent: vec![],
+				asked: vec![],
 			})),
 			started: Arc::new(Notify::new()),
 			continue_send: Arc::new(Notify::new()),
@@ -261,7 +272,7 @@ impl CoordinatorRepository for Adapter {
 			ids: vec![Uuid::from_u128(99), self.state.lock().unwrap().status.id],
 		}))
 	}
-	async fn issue_authority(&self, _manifest: &Manifest, _node: &str) -> Result<()> {
+	async fn issue_authority(&self, _state: &Status, _node: &str) -> Result<()> {
 		self.event("issue")?;
 		if self.state.lock().unwrap().issue_failure {
 			return Err(Error::Forbidden);
@@ -282,17 +293,24 @@ impl CoordinatorRepository for Adapter {
 
 #[async_trait]
 impl ParticipantTransport for Adapter {
-	async fn decision(&self, _manifest: &Manifest) -> Result<Status> {
+	async fn decision(&self, share: &Share) -> Result<Decision> {
 		self.event("remote.decision")?;
-		Ok(self.state.lock().unwrap().status.clone())
+		let mut state = self.state.lock().unwrap();
+		state.asked.push(share.clone());
+		Ok(state.status.decision())
 	}
 	async fn send(
 		&self,
-		manifest: &Manifest,
+		share: &Share,
 		node: &str,
 		operation: ParticipantOperation,
 	) -> Result<LocalStatus> {
 		self.event(format!("send:{}:{node}", operation.as_str()))?;
+		self.state
+			.lock()
+			.unwrap()
+			.sent
+			.push((node.into(), share.clone()));
 		let pause = self.state.lock().unwrap().pause;
 		if pause {
 			self.started.notify_one();
@@ -303,10 +321,10 @@ impl ParticipantTransport for Adapter {
 			return Err(failure.error());
 		}
 		Ok(state.response.clone().unwrap_or_else(|| LocalStatus {
-			id: manifest.id,
-			coordinator: manifest.coordinator.clone(),
+			id: share.id,
+			coordinator: share.coordinator.clone(),
 			digest: state.status.digest.clone(),
-			manifest: state.status.manifest.clone(),
+			manifest: json!(share),
 			phase: operation.expected_phase(&state.status).into(),
 			updated_at: state.status.created_at,
 		}))
@@ -477,7 +495,7 @@ async fn invalid_acknowledgement_releases_lease_without_settlement(
 			},
 			coordinator: manifest.coordinator.clone(),
 			digest: state.status.digest.clone(),
-			manifest: state.status.manifest.clone(),
+			manifest: json!(manifest.share(SEED, HOME).unwrap()),
 			phase: if changed == "phase" {
 				"COMMITTED"
 			} else {
@@ -621,10 +639,99 @@ async fn decision_lookup_validates_the_same_manifest_for_local_and_remote_source
 		manifest.coordinator = "aidash://peer/airy-hawk-2lu4as22".into();
 	}
 	let adapter = Adapter::new(&manifest);
-	adapter.coordinator().decision(&manifest).await.unwrap();
+	let share = manifest.share(SEED, HOME).unwrap();
+	adapter.coordinator().decision(&share).await.unwrap();
 	adapter.state.lock().unwrap().status.visible = true;
 	assert!(
-		matches!(adapter.coordinator().decision(&manifest).await, Err(Error::Conflict(message)) if message == "coordinator decision does not match participant manifest")
+		matches!(adapter.coordinator().decision(&share).await, Err(Error::Conflict(message)) if message == "coordinator decision does not match participant manifest")
 	);
 	assert_eq!(adapter.log().contains(&"remote.decision".into()), remote);
+}
+
+/// A participant's decision proof is the decision bound to the digest; the
+/// remote coordinator is asked with the participant's own share.
+#[rstest]
+#[tokio::test]
+async fn a_remote_decision_proof_is_a_decision_for_the_participants_share(mut manifest: Manifest) {
+	manifest.coordinator = PEER.into();
+	let adapter = Adapter::new(&manifest);
+	adapter.state.lock().unwrap().status.decision = Some("COMMIT".into());
+	let share = manifest.share(SEED, HOME).unwrap();
+	let proof: Decision = adapter.coordinator().decision(&share).await.unwrap();
+	assert_eq!(
+		proof,
+		Decision {
+			id: manifest.id,
+			digest: manifest.sealed_digest(SEED).unwrap(),
+			decision: Some("COMMIT".into()),
+			visible: false,
+		}
+	);
+	assert_eq!(adapter.state.lock().unwrap().asked, [share]);
+}
+
+/// A decision bound to another digest, such as one sealed with another
+/// seed, is refused.
+#[rstest]
+#[tokio::test]
+async fn a_decision_for_another_seal_is_refused(manifest: Manifest) {
+	let adapter = Adapter::new(&manifest);
+	let share = manifest.share(&"a".repeat(64), HOME).unwrap();
+	assert!(
+		matches!(adapter.coordinator().decision(&share).await, Err(Error::Conflict(message)) if message == "coordinator decision does not match participant manifest")
+	);
+}
+
+/// Each participant receives only its own part; no other participant's
+/// mutations ever reach it (ADR 0146).
+#[rstest]
+#[tokio::test]
+async fn each_participant_receives_only_its_own_share(mut manifest: Manifest) {
+	manifest.participants.push(Participant {
+		node_id: PEER.into(),
+		mutations: vec![Mutation::ThreadTitle {
+			thread_id: Uuid::from_u128(7),
+			expected_revision: 3,
+			title: "Secret".into(),
+		}],
+	});
+	let adapter = Adapter::new(&manifest);
+	adapter.state.lock().unwrap().votes.push(Vote {
+		node_id: PEER.into(),
+		phase: "PENDING".into(),
+	});
+	let coordinator = adapter.coordinator();
+	for _ in 0..6 {
+		coordinator.advance(manifest.id).await.unwrap();
+	}
+	let state = adapter.state.lock().unwrap();
+	let nodes = state
+		.sent
+		.iter()
+		.map(|(node, _)| node.as_str())
+		.collect::<std::collections::BTreeSet<_>>();
+	assert_eq!(nodes, [HOME, PEER].into());
+	for (node, share) in &state.sent {
+		assert_eq!(&share.part.node_id, node);
+		assert_eq!(*share, manifest.share(SEED, node).unwrap());
+		assert_eq!(share.digest().unwrap(), state.status.digest);
+		let own = &manifest.local(node).unwrap().mutations;
+		assert_eq!(&share.part.mutations, own);
+		let encoded = serde_json::to_string(share).unwrap();
+		for other in manifest.participants.iter().filter(|p| &p.node_id != node) {
+			for mutation in &other.mutations {
+				let Mutation::ThreadTitle {
+					thread_id, title, ..
+				} = mutation
+				else {
+					unreachable!()
+				};
+				assert!(
+					!encoded.contains(&thread_id.to_string()),
+					"{node}: {encoded}"
+				);
+				assert!(!encoded.contains(title.as_str()), "{node}: {encoded}");
+			}
+		}
+	}
 }

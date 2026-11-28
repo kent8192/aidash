@@ -3,7 +3,7 @@ use reinhardt::db::migrations::prelude::*;
 
 pub(super) fn migration() -> Migration {
 	Migration::new("0170_goal_judge_calls", "execution")
-		.add_dependency("execution", "0163_scope_host_debit_state")
+		.add_dependency("execution", "0166_scope_connection_debits")
 		.atomic(true)
 		// Reinhardt cannot replace an existing named PostgreSQL check in place.
 		.add_operation(Operation::RunSQL {

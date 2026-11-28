@@ -42,8 +42,7 @@ calls of memory roles (reflection, reranking, extraction, retention) and
 memory embeddings. Memory work outside any Run, such as background
 maintenance, is charged to its Tenant and its Thread's Node; a background job
 the gate refuses waits without using an attempt. Workbench tests charge the
-Tenant and its default Node. A media admission check runs locally without
-provider spend.
+Tenant and its default Node.
 
 Spend is the cost providers report, in credits (one credit is one US dollar on
 OpenRouter). A call without a reported cost, such as an embedding, is counted

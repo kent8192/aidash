@@ -16,13 +16,16 @@ use aidash_server::{
 };
 use common::*;
 use http::Method;
+use reinhardt::query::{
+	Alias, Expr, ExprTrait as _, PostgresQueryBuilder, Query, QueryStatementBuilder as _,
+};
 use reinhardt::test::stub::StubRouter;
 use serde_json::{Value, json};
 use std::sync::{
 	Arc, Mutex,
 	atomic::{AtomicBool, Ordering::SeqCst},
 };
-#[path = "support/legacy.rs"]
+#[path = "support/fixtures.rs"]
 mod common;
 #[path = "support/mcp.rs"]
 mod mcp;
@@ -1287,6 +1290,20 @@ async fn modern_inputs_release_the_lease_resume_serially_and_charge_each_samplin
 	assert_eq!(results(&after).len(), 1);
 	assert_eq!(world.mcp.sessions_issued(), 0);
 
+	// A real Native worker stores the current structured contract in the
+	// database for the Run step and both of its samples.
+	let versions: Vec<(i32, i32)> = sqlx::query_as(
+		&Query::select()
+			.columns(["projection_version", "harness_contract"])
+			.from("inference_usage")
+			.and_where(Expr::col("run_id").eq(Expr::value(world.run.id)))
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_all(world.f.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	assert_eq!(versions, [(3, 5); 3]);
+
 	let provenance: Vec<(uuid::Uuid, Option<uuid::Uuid>, Option<uuid::Uuid>, String)> =
 		sqlx::query_as(
 			"SELECT m.stint_id, a.stint_id, u.stint_id, m.outcome
@@ -1357,6 +1374,134 @@ async fn modern_inputs_release_the_lease_resume_serially_and_charge_each_samplin
 	assert_eq!(world.model.sampling.lock().unwrap().len(), 2);
 	assert_eq!(world.mcp.requests("tools/call").len(), 2);
 	assert_eq!(events(&world, "inference.accepted").await.len(), 3);
+	let pool = world.f.store.pool.fixture_driver();
+	let stint_id = provenance[0].0;
+	let (tenant, agent, version, node, started): (
+		String,
+		String,
+		String,
+		String,
+		chrono::DateTime<chrono::Utc>,
+	) = sqlx::query_as(
+		&Query::select()
+			.columns(["tenant", "agent_id", "agent_version", "node", "started_at"])
+			.from("stints")
+			.and_where(Expr::col("id").eq(Expr::value(stint_id)))
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_one(pool)
+	.await
+	.unwrap();
+
+	// One Stint spans two Model Call pages. Older Stints fill the first Stint
+	// page, so the sampled calls still need their actual owner on both pages.
+	let mut calls = Query::insert();
+	calls.into_table("model_calls").columns(
+		[
+			"id",
+			"tenant",
+			"node",
+			"run_id",
+			"stint_id",
+			"purpose",
+			"model_id",
+			"model_version",
+			"request_digest",
+			"started_at",
+		]
+		.map(Alias::new),
+	);
+	let mut stints = Query::insert();
+	stints.into_table("stints").columns(
+		[
+			"id",
+			"tenant",
+			"run_id",
+			"agent_id",
+			"agent_version",
+			"node",
+			"started_at",
+			"ended_at",
+			"end_reason",
+		]
+		.map(Alias::new),
+	);
+	let digest = format!("sha256:{}", "0".repeat(64));
+	let now = chrono::Utc::now();
+	for _ in 0..101 {
+		calls.values_panic([
+			Expr::value(uuid::Uuid::new_v4()),
+			Expr::value(tenant.clone()),
+			Expr::value(node.clone()),
+			Expr::value(world.run.id),
+			Expr::value(stint_id),
+			Expr::value("mcp_sampling"),
+			Expr::value("fixture"),
+			Expr::value("1"),
+			Expr::value(digest.clone()),
+			Expr::value(now),
+		]);
+		stints.values_panic([
+			Expr::value(uuid::Uuid::new_v4()),
+			Expr::value(tenant.clone()),
+			Expr::value(world.run.id),
+			Expr::value(agent.clone()),
+			Expr::value(version.clone()),
+			Expr::value(node.clone()),
+			Expr::value(started - chrono::TimeDelta::days(1)),
+			Expr::value(started - chrono::TimeDelta::hours(1)),
+			Expr::value("waiting"),
+		]);
+	}
+	sqlx::query(&calls.to_string(PostgresQueryBuilder))
+		.execute(pool)
+		.await
+		.unwrap();
+	sqlx::query(&stints.to_string(PostgresQueryBuilder))
+		.execute(pool)
+		.await
+		.unwrap();
+	let mut seen_stints = std::collections::BTreeSet::new();
+	let mut seen = std::collections::BTreeSet::new();
+	for (offset, expected_calls) in [(0, 100), (100, 3), (200, 0)] {
+		let (status, page) = request(
+			&world.app,
+			&world.token,
+			"GET",
+			&format!("/api/executions/{}?offset={offset}", world.run.id),
+			Value::Null,
+		)
+		.await;
+		assert_eq!(status, 200, "{page}");
+		let stints = page["stints"].as_array().unwrap();
+		let calls: Vec<_> = stints
+			.iter()
+			.flat_map(|stint| {
+				stint["model_calls"]
+					.as_array()
+					.unwrap()
+					.iter()
+					.map(move |call| (stint, call))
+			})
+			.collect();
+		assert_eq!(calls.len(), expected_calls);
+		let retained_owners: std::collections::BTreeSet<_> = calls
+			.iter()
+			.map(|(stint, _)| stint["id"].as_str().unwrap())
+			.collect();
+		for stint in stints {
+			let id = stint["id"].as_str().unwrap();
+			assert!(seen_stints.insert(id.to_owned()) || retained_owners.contains(id));
+		}
+		assert!(stints.len() <= 100 + retained_owners.len());
+		if offset == 0 {
+			assert_eq!(stints.len(), 100 + retained_owners.len());
+		}
+		for (stint, call) in calls {
+			assert_eq!(stint["id"], call["owner"]["stint_id"]);
+			assert!(seen.insert(call["id"].as_str().unwrap().to_owned()));
+		}
+	}
 	let (url, schema, f) = (world.url.clone(), world.schema.clone(), world.f.clone());
 	drop(world);
 	cleanup(f, &url, &schema).await;

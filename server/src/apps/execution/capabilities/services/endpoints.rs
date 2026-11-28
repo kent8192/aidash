@@ -1306,10 +1306,20 @@ pub(crate) async fn preview_limits(
 	actions.record_denial(&f.store.pool).await?;
 	tx.commit().await?;
 	let ceilings = f.store.preview_limits.clone();
+	let ceiling_background_maximum_seconds = f.store.capabilities.0.background_maximum_seconds;
+	let background_maximum_seconds = stored
+		.as_ref()
+		.and_then(|row| row.background_maximum_seconds)
+		.and_then(|seconds| u64::try_from(seconds).ok())
+		.map_or(ceiling_background_maximum_seconds, |seconds| {
+			seconds.min(ceiling_background_maximum_seconds)
+		});
 	let (idle_seconds, absolute_seconds, revision) = stored
 		.map(|row| (row.idle_seconds, row.absolute_seconds, row.revision))
 		.unwrap_or((ceilings.idle_seconds, ceilings.absolute_seconds, 0));
 	Ok(TenantPreviewLimits {
+		background_maximum_seconds,
+		ceiling_background_maximum_seconds,
 		tenant,
 		idle_seconds,
 		absolute_seconds,
@@ -1333,6 +1343,17 @@ pub(crate) async fn set_preview_limits(
 	use reinhardt::db::orm::Model;
 	if input.tenant.is_empty() {
 		return Err(Error::Invalid("tenant is required".into()));
+	}
+	let ceiling_background_maximum_seconds = f.store.capabilities.0.background_maximum_seconds;
+	if input
+		.background_maximum_seconds
+		.is_some_and(|limit| !(1..=ceiling_background_maximum_seconds).contains(&limit))
+	{
+		return Err(Error::Invalid(format!(
+			"{}{}",
+			aidash_domain::capabilities::errors::BACKGROUND_LIMIT_PREFIX,
+			ceiling_background_maximum_seconds,
+		)));
 	}
 	let requested = Limits::new(input.idle_seconds, input.absolute_seconds)?;
 	let ceilings = f.store.preview_limits.clone();
@@ -1360,6 +1381,7 @@ pub(crate) async fn set_preview_limits(
 		.await?;
 	let stored = CorePreviewLimits::objects()
 		.filter(CorePreviewLimits::field_tenant().eq(&input.tenant))
+		.select_for_update()
 		.all_with_executor(&mut *tx)
 		.await
 		.map_err(reinhardt::core::exception::Error::from)?
@@ -1370,10 +1392,19 @@ pub(crate) async fn set_preview_limits(
 	{
 		return Err(Error::Conflict("PREVIEW_LIMITS_REVISION_CHANGED".into()));
 	}
+	let background_override = input
+		.background_maximum_seconds
+		.map(|seconds| seconds as i64)
+		.or_else(|| {
+			stored
+				.as_ref()
+				.and_then(|row| row.background_maximum_seconds)
+		});
 	let revision = stored.as_ref().map_or(1, |row| row.revision + 1);
 	if stored.is_some() {
 		let row = CorePreviewLimits::build()
 			.tenant(input.tenant.clone())
+			.background_maximum_seconds(background_override)
 			.idle_seconds(limits.idle_seconds)
 			.absolute_seconds(limits.absolute_seconds)
 			.revision(revision)
@@ -1386,6 +1417,7 @@ pub(crate) async fn set_preview_limits(
 	} else {
 		let row = CorePreviewLimits::build()
 			.tenant(input.tenant.clone())
+			.background_maximum_seconds(background_override)
 			.idle_seconds(limits.idle_seconds)
 			.absolute_seconds(limits.absolute_seconds)
 			.revision(revision)
@@ -1399,6 +1431,12 @@ pub(crate) async fn set_preview_limits(
 	actions.record_denial(&f.store.pool).await?;
 	tx.commit().await?;
 	Ok(TenantPreviewLimits {
+		background_maximum_seconds: background_override
+			.and_then(|seconds| u64::try_from(seconds).ok())
+			.map_or(ceiling_background_maximum_seconds, |seconds| {
+				seconds.min(ceiling_background_maximum_seconds)
+			}),
+		ceiling_background_maximum_seconds,
 		tenant: input.tenant,
 		idle_seconds: limits.idle_seconds,
 		absolute_seconds: limits.absolute_seconds,

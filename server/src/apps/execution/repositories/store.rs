@@ -470,7 +470,12 @@ impl Store {
 		&self,
 		snapshot: &aidash_domain::registry::bindings::BindingSnapshot,
 	) -> Result<()> {
-		crate::registry::AgentConfig::from_snapshot(snapshot)?;
+		let agent = crate::registry::AgentConfig::from_snapshot(snapshot)?;
+		aidash_domain::registry::execution_contract(
+			agent.projection_version,
+			agent.harness_contract,
+		)
+		.map_err(Error::ProjectionRetired)?;
 		if self.cache_salt.is_none() {
 			return Err(Error::Invalid(
 				"this node has no Cache Salt Key for Native Runs".into(),
@@ -492,30 +497,38 @@ impl Store {
 		pool: sqlx::PgPool,
 		deployment: aidash_domain::nodes::DeploymentId,
 	) -> Result<Self> {
+		Self::from_pool_for_role(pool, deployment, false).await
+	}
+
+	/// Egress shares its pool across all adapters, including Tenant Secrets.
+	pub(crate) async fn from_pool_for_role(
+		pool: sqlx::PgPool,
+		deployment: aidash_domain::nodes::DeploymentId,
+		egress_only: bool,
+	) -> Result<Self> {
 		let tool_slots = aidash_application::ports::execution::ToolSlots::new(tool_parallelism(
 			std::env::var("AIDASH_TOOL_PARALLELISM").ok().as_deref(),
 			pool.options().get_max_connections() as usize,
 		)?);
-		let control_pool = pool
-			.options()
-			.clone()
-			.max_connections(16)
-			.connect_with(pool.connect_options().as_ref().clone())
-			.await?;
-		let restoration_pool = pool
-			.options()
-			.clone()
-			.max_connections(4)
-			.min_connections(0)
-			.idle_timeout(std::time::Duration::from_secs(10))
-			.connect_lazy_with(pool.connect_options().as_ref().clone());
-		let scratch_upload_pool = pool
-			.options()
-			.clone()
-			.max_connections(MAX_WORKER_SLOTS as u32 + 1)
-			.min_connections(0)
-			.idle_timeout(std::time::Duration::from_secs(10))
-			.connect_lazy_with(pool.connect_options().as_ref().clone());
+		let (control_pool, restoration_pool, scratch_upload_pool) = if egress_only {
+			(pool.clone(), pool.clone(), pool.clone())
+		} else {
+			let control = pool
+				.options()
+				.clone()
+				.max_connections(16)
+				.connect_with(pool.connect_options().as_ref().clone())
+				.await?;
+			let lazy = |max| {
+				pool.options()
+					.clone()
+					.max_connections(max)
+					.min_connections(0)
+					.idle_timeout(std::time::Duration::from_secs(10))
+					.connect_lazy_with(pool.connect_options().as_ref().clone())
+			};
+			(control, lazy(4), lazy(MAX_WORKER_SLOTS as u32 + 1))
+		};
 		let memory_recovery = std::env::var_os("AIDASH_MEMORY_RECOVERY_DIR")
 			.map(|directory| {
 				crate::semantic::repositories::recovery::FileRecovery::from_env(
@@ -4696,11 +4709,13 @@ impl Store {
 		outcome: aidash_domain::model_call::Outcome,
 	) -> Result<()> {
 		let mut tx = self.pool.begin(scope).await?.into_executor().await?;
-		if InferenceUsage::complete(tx.as_mut(), run.id, attempt, usage).await? {
-			super::model_calls::finish(
+		if InferenceUsage::complete(tx.as_mut(), run.id, attempt, usage).await?
+			&& let Some(call) = InferenceUsage::model_call(tx.as_mut(), run.id, attempt).await?
+		{
+			super::model_calls::settle(
 				tx.as_mut(),
-				attempt,
-				outcome,
+				call,
+				Some(outcome),
 				super::model_calls::reported(usage),
 			)
 			.await?;

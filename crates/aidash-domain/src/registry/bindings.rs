@@ -227,11 +227,13 @@ pub struct AgentBindings {
 	/// Omitted means Native and is not serialized, so existing definitions,
 	/// their digests and Binding snapshots stay byte-identical.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
-	pub projection_version: Option<crate::projection::ProjectionVersion>,
+	#[schemars(with = "Option<crate::projection::ProjectionVersion>")]
+	pub projection_version: Option<crate::projection::ProjectionPin>,
 	/// Harness Contract this Agent version's Runs render with (#531). Omitted
 	/// means `structured@4` and is not serialized, like `projection_version`.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
-	pub harness_contract: Option<crate::harness_contract::HarnessContract>,
+	#[schemars(with = "Option<crate::harness_contract::HarnessContract>")]
+	pub harness_contract: Option<crate::harness_contract::HarnessContractPin>,
 	/// Prompt-caching opt-in pinned by every Run of this Agent (ADR 0019).
 	/// Omitted means `off` and is not serialized, like `projection_version`.
 	#[serde(default, skip_serializing_if = "Option::is_none")]

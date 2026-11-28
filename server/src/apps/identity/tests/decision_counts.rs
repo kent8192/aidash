@@ -7,7 +7,7 @@ use aidash_application::tenancy::TEST_FIXTURE;
 use aidash_server::harness::Harness;
 use serde_json::{Value, json};
 use uuid::Uuid;
-#[path = "../../execution/tests/support/legacy.rs"]
+#[path = "../../execution/tests/support/fixtures.rs"]
 mod common;
 
 /// The `registry.read` decisions written so far, one count per resource.

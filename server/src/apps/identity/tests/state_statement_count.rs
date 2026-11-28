@@ -1,7 +1,7 @@
 #![allow(clippy::disallowed_methods)] // Fixtures reach the database outside a tenancy scope.
 //! The dashboard read does not add SQL round trips for each Run in its window.
 use serde_json::{Value, json};
-#[path = "../../execution/tests/support/legacy.rs"]
+#[path = "../../execution/tests/support/fixtures.rs"]
 mod common;
 #[path = "../../execution/tests/support/statements.rs"]
 mod statements;

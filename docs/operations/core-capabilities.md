@@ -108,8 +108,9 @@ across restarts; it records operation and volume identities and prevents replay.
 A Runner restart resumes watching normal commands and Python sessions in the same
 Pod, including their saved output. Saved output counts against the Scratch Space
 disk; if the disk is full, the output is marked incomplete. Docker-mode commands
-become interrupted with an unknown outcome; they can still be stopped. A Runner update waits for
-foreground commands, then replaces Pods and stops their background processes.
+become interrupted with an unknown outcome; they can still be stopped.
+Time-limited Background commands can recover a signed terminal result in either
+mode.
 
 Scratch Space patches reserve their idempotency key before dispatch. The Pod
 helper records the result on the Scratch Space PVC. When the server retries a
@@ -117,7 +118,7 @@ pending request, it looks up the original result and rechecks current authority
 before returning it. If the result is missing, the server reports
 `PATCH_RECEIPT_UNAVAILABLE` and leaves the file contents as found.
 
-A trusted, read-only injected helper copies the image filesystem into the PVC
+The Pod base copies the image filesystem into the PVC
 on first start, then runs commands as root in that persisted root. `/scratch`
 contains user files; the copied system tree lives separately on the same PVC.
 Installed packages survive Pod restarts. The Runner receipt reports `image_changed`
@@ -130,23 +131,48 @@ with one command is attributed to its Run; overlapping commands produce an
 metadata-only change, and a sudden Pod loss can lose the latest interval.
 
 The Runner queues foreground commands beyond eight simultaneous commands per
-Pod; background processes have a separate pool of 16. The
-default deadline is ten minutes and the maximum is 60 minutes. Foreground
-commands waiting for a Run may be cancelled; background processes expose their
-starting Run and bounded logs. Commands interrupted by a lost Pod or node have
-an unknown outcome and are never replayed during the retry window. Terminal
-command records are retained for 24 hours and 15 minutes after completion; unsettled
-commands and stops awaiting confirmation are retained. Each Space is limited to
-4096 command records. At the limit, new commands are refused until records can
-expire, while retries of retained commands still return their prior results.
+Pod; Background processes have a separate pool of 16. The foreground
+`maximum_seconds` profile ceiling may be set as high as 86400. The Runner's
+command transport allows a further 180 seconds to collect the outcome.
+
+To start a Background process, pass `background: true` and `timeout_seconds`
+to `shell`. The Deployment's `background_maximum_seconds` defaults to 14400
+and accepts values from 1 to 86400. A Tenant Administrator can set a lower
+`background_maximum_seconds` alongside the Live preview limits at
+`PUT /api/preview-limits/{tenant}`. Omitting this field preserves the current
+setting. The server returns `BACKGROUND_TIME_LIMIT_EXCEEDED` and the effective
+`maximum_seconds` when an Agent exceeds the ceiling.
+
+The supervisor ends a command at its limit even during a Runner outage. The
+Runner checks the Space journal and backs up the stop after 60 seconds. A
+time-limited Background process keeps the Pod running until it ends or its
+time limit elapses. A foreground command's `.left` process does not keep
+the Pod running past 30 idle minutes. Run cancellation and Read Recheck
+revocation stop the Run's processes. Normal completion leaves its Background
+processes running within their limits.
+
+The process list retains terminal entries for seven days and includes
+`stop_reason` when applicable. Reasons are `deadline`, `stopped`,
+`run_cancelled`, `run_authority_revoked`, `pod_idle`, `pod_updated`,
+`pod_reset`, `pod_lost` and `space_purged`. Set `notify_on_exit: true`
+to deliver the exit status, exit code, stop reason and last 4 KiB of output
+as a Task input. A closed Task retains the operation record.
+Unsettled stops are kept while the Runner needs to confirm them. Each Space
+is limited to 4096 command records.
+
 Python interpreters are per Run. Pass the last result's `session_id` as
 `expected_session_id` when a cell depends on that interpreter's state. If that
 interpreter has ended or its Pod was replaced, the Runner refuses the cell with
 `SESSION_RESET`. Omit the expected ID on a new operation to rebuild state and
 use the returned ID for subsequent cells.
-The Pod stops after 30 minutes without a command or Live preview viewer;
-background processes alone do not extend its life. Preview and MCP integration
-with the application remains for wave 2.
+The Runner streams the helper code on each exec. The Pod base has a read-only
+loader, runtime and startup code. Compatible Runner updates leave running
+supervisors in place, and new commands receive the new code. The protocol
+accepts the current and previous major versions and any minor version within
+them. Replacing the base waits for time-limited Background processes for up
+to 24 hours. Set `execution.pods.baseApplyImmediately: true` in Helm or
+`base_apply_immediately: true` in the Runner's Execution Pod configuration
+for an urgent base update.
 
 Admission gates user-image startup on a node guard which binds the Pod UID and
 sandbox to host cgroup CPU, memory and pids limits. It independently checks
@@ -169,8 +195,8 @@ packets; Docker-mode admission also runs raw packet negative controls.
 
 In Docker mode, guest root can leave the chroot and modify PVC bookkeeping;
 the change log and reset are best-effort. Command results use the controller
-exec stream rather than trusting the PVC result files. A nonce-framed result
-distinguishes command exit codes from transport failures.
+exec stream. For time-limited Background work, the supervisor also signs its
+saved terminal result so it can be read after a Runner restart.
 
 Docker mode requires a separate gVisor RuntimeClass with `net-raw` enabled and
 is restricted to nodes labeled and tainted for that Tenant. User processes retain
@@ -182,7 +208,8 @@ to guest root. A fork bomb can exhaust resources on the Tenant-dedicated nodes;
 it does not acquire resources reserved for another Tenant's nodes.
 
 To enable the v2 controller in Helm, configure `execution.pods.enabled`, a
-trusted digest-pinned `helperImage`, `storageClassName`, and the private IP
+trusted digest-pinned `helperImage` built from the `pod-base` target of
+`runner/control.Dockerfile`, `storageClassName`, and the private IP
 `proxy.endpoint`, `proxy.namespace` and `proxy.podSelector`. Set `allowDocker`
 only after provisioning the separate Docker RuntimeClass and Tenant-dedicated
 nodes. The controller performs a disposable admission test before serving v2
@@ -561,13 +588,9 @@ The outbound broker enforces configured HTTPS origins, public DNS/IP checks,
 per-hop scope and bounded responses. Code in an Execution Pod reaches the
 outside only through its proxy to the Egress gateway; Runner `shell` and `verify`
 operations have no network. The Scratch Space proxy integration is described in
-[Tenant Secrets and sandbox egress](../tenant-secrets.md#scratch-space-proxy-integration). The `egress`
-profile accepts `proxy_tenant_tunnels` (default 256) and
-`proxy_global_tunnels` (default 1024) for each gateway instance. The Tenant
-value must be at least 32, one Scratch Space's own limit, and strictly less than
-the global value. Helm deployments
-set these with `execution.egress.proxyTenantTunnels` and
-`execution.egress.proxyGlobalTunnels`.
+[Tenant Secrets and sandbox egress](../tenant-secrets.md#scratch-space-proxy-integration).
+See [Operating the Egress gateway](egress.md) for process startup, monitoring,
+and dedicated outbound addresses.
 
 An approval binds the original requester, invocation, targets and current policy;
 upper-policy denial cannot be approved away. Authenticated services belong in

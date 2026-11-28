@@ -36,6 +36,7 @@ fn view(process: &CommandResult) -> Value {
 		"operation_id": process.operation_id,
 		"status": process.status,
 		"exit_code": process.exit_code,
+		"stop_reason": process.stop_reason,
 	})
 }
 

@@ -179,6 +179,12 @@ async fn inspect_in(
 			aidash_domain::federation::execution::Refusal::ExecutorMismatch,
 		));
 	}
+	let pinned_agent = aidash_domain::registry::AgentConfig::from_snapshot(&snapshot)?;
+	aidash_domain::registry::execution_contract(
+		pinned_agent.projection_version,
+		pinned_agent.harness_contract,
+	)
+	.map_err(Error::ProjectionRetired)?;
 	// A delegated agent's own dependencies are restricted to that agent.
 	let delegated = snapshot.delegated_users()?;
 	for pinned in &snapshot.definitions {

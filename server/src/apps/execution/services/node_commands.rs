@@ -11,6 +11,7 @@ enum Role {
 	Server,
 	Worker,
 	PreviewGateway,
+	EgressGateway,
 }
 struct RunNode(Role);
 
@@ -23,6 +24,10 @@ impl CapabilityCommand for RunNode {
 			Role::Worker => (
 				"worker",
 				"Run background workers without a management HTTP listener",
+			),
+			Role::EgressGateway => (
+				"egress-gateway",
+				"Run the Egress gateway apart from the API server",
 			),
 			Role::PreviewGateway => (
 				"preview-gateway",
@@ -49,6 +54,7 @@ impl CapabilityCommand for RunNode {
 				Role::Serve => bootstrap::serve(settings, true).await,
 				Role::Server => bootstrap::serve(settings, false).await,
 				Role::PreviewGateway => bootstrap::preview_gateway(settings).await,
+				Role::EgressGateway => bootstrap::egress_gateway(settings).await,
 			}
 		}
 		.await
@@ -101,6 +107,7 @@ pub fn commands() -> Vec<Box<dyn CapabilityCommand>> {
 		Box::new(RunNode(Role::Server)),
 		Box::new(RunNode(Role::Worker)),
 		Box::new(RunNode(Role::PreviewGateway)),
+		Box::new(RunNode(Role::EgressGateway)),
 		Box::new(OpenApi),
 		Box::new(CapabilityProfile),
 		Box::new(crate::activation::services::provision::ProvisionActivation),

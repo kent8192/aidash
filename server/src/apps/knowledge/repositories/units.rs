@@ -336,17 +336,31 @@ pub(crate) fn sources_in_reader<'a>(
 						from_seq,
 						through_seq,
 					} => {
-						let run: aidash_domain::Run = crate::database::query_as(
-							&Query::select()
-								.column(ColumnRef::Asterisk)
-								.from(Alias::new("task_executions"))
-								.and_where(Expr::col("id").eq(Expr::value(run_id)))
-								.lock(LockType::Share)
-								.to_string(PostgresQueryBuilder),
-						)
-						.fetch_optional(&mut **lease.tx())
-						.await?
-						.ok_or_else(|| Error::Conflict("memory Journal Run removed".into()))?;
+						let reader =
+							reader.or_else(|| lease.access().and_then(|access| access.read_run));
+						// Only the row's existence matters here, not its other columns: a
+						// state change during the check only widens who may read the Run's
+						// facts. `FOR KEY SHARE` keeps the row from being removed without
+						// blocking the Run's own updates (lease renewal, step saves); `FOR
+						// SHARE` queued those behind memory work that was waiting on the Run,
+						// and the Run hung (#1121). The reading Run holds its own lease, so
+						// its row is not locked at all: its Context Journal fence and its
+						// lease renewal run on other connections while this check waits.
+						let mut select = Query::select();
+						select
+							.column(ColumnRef::Asterisk)
+							.from(Alias::new("task_executions"))
+							.and_where(Expr::col("id").eq(Expr::value(run_id)));
+						if reader != Some(run_id) {
+							select.lock(LockType::KeyShare);
+						}
+						let run: aidash_domain::Run =
+							crate::database::query_as(&select.to_string(PostgresQueryBuilder))
+								.fetch_optional(&mut **lease.tx())
+								.await?
+								.ok_or_else(|| {
+									Error::Conflict("memory Journal Run removed".into())
+								})?;
 						if run.thread_id != thread {
 							return Err(Error::Forbidden);
 						}
@@ -363,8 +377,6 @@ pub(crate) fn sources_in_reader<'a>(
 								| aidash_domain::run_state::RunState::Failed(_)
 								| aidash_domain::run_state::RunState::Cancelled(_)
 						);
-						let reader =
-							reader.or_else(|| lease.access().and_then(|access| access.read_run));
 						if !run_memory_visible(reader, run_id, terminal) {
 							return Err(Error::Forbidden);
 						}

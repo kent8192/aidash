@@ -175,7 +175,8 @@ pub async fn inspect_in(
 	Ok(RunDetails {
 		provider_tool_activity: scope.provider_tool_activity(id, offset).await?,
 		egress_requests: scope.egress_requests(id, offset).await?,
-		stints: scope.stints(id).await?,
+		egress_waits: scope.egress_waits(&run.metadata, offset).await?,
+		stints: scope.stints(id, offset).await?,
 		run,
 		declinable_call,
 		invocations,

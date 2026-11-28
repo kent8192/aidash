@@ -450,7 +450,7 @@ async fn transaction_targets_must_belong_to_the_exact_participant_node(
 		&f,
 		None,
 		&manifest.coordinator,
-		&manifest,
+		&common::share(&f, &manifest, &manifest.coordinator).await,
 	)
 	.await;
 	assert!(

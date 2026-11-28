@@ -36,12 +36,42 @@ pub struct Binding {
 pub struct Status {
 	pub id: Uuid,
 	pub digest: String,
+	/// The submitted manifest, which only the coordinator holds.
 	pub manifest: serde_json::Value,
+	/// The coordinator's per-transaction secret that seals every part
+	/// (ADR 0146). It never leaves the coordinator's Deployment.
+	pub seed: String,
 	pub decision: Option<String>,
 	pub visible: bool,
 	pub complete: bool,
 	pub last_error: Option<String>,
 	pub created_at: chrono::DateTime<chrono::Utc>,
+}
+
+/// The coordinator's decision as a participant may see it: bound to the
+/// transaction digest, without the manifest or any part.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Decision {
+	pub id: Uuid,
+	pub digest: String,
+	pub decision: Option<String>,
+	pub visible: bool,
+}
+
+impl Status {
+	pub fn decision(&self) -> Decision {
+		Decision {
+			id: self.id,
+			digest: self.digest.clone(),
+			decision: self.decision.clone(),
+			visible: self.visible,
+		}
+	}
+
+	/// What the participant at `node` receives.
+	pub fn share(&self, node: &str) -> crate::Result<super::share::Share> {
+		serde_json::from_value::<super::Manifest>(self.manifest.clone())?.share(&self.seed, node)
+	}
 }
 
 impl From<&ExecutionPrincipal> for Origin {

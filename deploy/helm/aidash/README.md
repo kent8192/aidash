@@ -254,6 +254,14 @@ kubectl -n "$NS" delete job md-activity
 If any of these fail while the exempt Pods work, the policy is the suspect: delete
 `<release>-aidash-metadata-egress` and retry to confirm, then widen it.
 
+## Egress gateway
+
+Set `execution.egress.enabled` and reserve a Service IP in
+`execution.egress.clusterIP`. The chart runs the gateway as a Deployment with
+its own memory limit, autoscaler and database pool. Read
+[Operating the Egress gateway](../../../docs/operations/egress.md) for upgrade
+instructions and Egress IP group settings.
+
 ## Previews
 
 Previews (ADR 0068) are off until `preview.enabled` is true. Set `preview.domain`
@@ -296,7 +304,7 @@ by default. `execution.sandboxImage` must contain an immutable digest. Build it
 with `runner/Dockerfile`. Build the trusted image with:
 
 ```sh
-docker buildx build -f runner/control.Dockerfile -t your-registry/aidash-runner:0.1.0 runner
+docker buildx build -f runner/control.Dockerfile -t your-registry/aidash-runner:0.1.0 runner\ndocker buildx build -f runner/control.Dockerfile --target pod-base -t your-registry/aidash-pod-base:0.1.0 runner
 ```
 
 Set **separate** `execution.runner.image`, `execution.guard.image` and

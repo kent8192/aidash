@@ -1,18 +1,17 @@
 //! Immutable transaction manifests and monotonic coordinator decisions.
-use crate::{Error, nodes::NodeAddress};
+use crate::{Error, Result, nodes::NodeAddress};
 use chrono::{DateTime, Utc};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use uuid::Uuid;
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[schemars(rename = "TransactionIsolation")]
 #[serde(rename_all = "snake_case")]
 pub enum Isolation {
 	Serializable,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[schemars(rename = "TransactionMutation")]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Mutation {
@@ -52,6 +51,11 @@ pub struct Manifest {
 	pub deadline: DateTime<Utc>,
 	pub participants: Vec<Participant>,
 }
+/// The most bytes a manifest, and each participant's share of it, may take
+/// as JSON. A share repeats the header and every seal, so a manifest within
+/// this bound can still produce a share beyond it; admission checks both.
+pub const MAX_JSON_BYTES: usize = 524_288;
+
 #[derive(Debug, thiserror::Error)]
 #[error("forbidden")]
 pub struct MissingParticipant;
@@ -60,104 +64,27 @@ impl Manifest {
 	where
 		E: From<Error> + From<serde_json::Error>,
 	{
-		NodeAddress::parse(&self.coordinator)?;
-		if self.id.is_nil() || self.participants.is_empty() || self.participants.len() > 16 {
+		if self.id.is_nil() {
 			return Err(
 				Error::Invalid("transaction requires an ID and 1..16 participants".into()).into(),
 			);
 		}
-		// A Deployment takes part with one Node, so a Deployment-level answer to
-		// "does this transaction run here" names exactly one Node.
-		let mut hosts = std::collections::BTreeMap::new();
-		for node in std::iter::once(&self.coordinator).chain(
-			self.participants
-				.iter()
-				.map(|participant| &participant.node_id),
-		) {
-			if hosts
-				.insert(crate::nodes::deployment_of(node), node)
-				.is_some_and(|other| other != node)
-			{
-				return Err(Error::Invalid(
-					"a transaction names at most one Node of each Deployment".into(),
-				)
-				.into());
-			}
-		}
-		let mut previous: Option<&str> = None;
-		let mut count = 0;
-		for participant in &self.participants {
-			NodeAddress::parse(&participant.node_id)?;
-			if previous.is_some_and(|p| p >= participant.node_id.as_str())
-				|| participant.mutations.len() > 64
-			{
-				return Err(Error::Invalid("participants must be unique, sorted by node ID, with at most 64 mutations each".into()).into());
-			}
-			previous = Some(&participant.node_id);
-			let mut keys = std::collections::BTreeSet::new();
-			for mutation in &participant.mutations {
-				let key = match mutation {
-					Mutation::ThreadTitle {
-						thread_id,
-						expected_revision,
-						title,
-					} => {
-						if *expected_revision < 0 || title.trim().is_empty() {
-							return Err(Error::Invalid(
-								"thread mutation requires a revision and a title".into(),
-							)
-							.into());
-						}
-						format!("thread:{thread_id}")
-					}
-					Mutation::CompleteTask {
-						task_id,
-						expected_revision,
-						text,
-					} => {
-						if *expected_revision < 0 {
-							return Err(
-								Error::Invalid("task revision must be nonnegative".into()).into()
-							);
-						}
-						crate::nonempty(text, "Completion Message")?;
-						format!("task:{task_id}")
-					}
-					Mutation::FinishRun {
-						run_id,
-						expected_revision,
-						..
-					} => {
-						if *expected_revision < 0 {
-							return Err(
-								Error::Invalid("run revision must be nonnegative".into()).into()
-							);
-						}
-						format!("run:{run_id}")
-					}
-				};
-				if !keys.insert(key) {
-					return Err(Error::Invalid(
-						"a resource can be mutated only once per manifest".into(),
-					)
-					.into());
-				}
-			}
-			count += participant.mutations.len();
-		}
-		if count == 0
-			|| !self
+		validate_nodes(
+			&self.coordinator,
+			&self
 				.participants
 				.iter()
-				.any(|p| p.node_id == self.coordinator)
-			|| serde_json::to_vec(self)?.len() > 524_288
-		{
+				.map(|participant| participant.node_id.as_str())
+				.collect::<Vec<_>>(),
+		)?;
+		let mut count = 0;
+		for participant in &self.participants {
+			count += validate_mutations(&participant.mutations)?;
+		}
+		if count == 0 || serde_json::to_vec(self)?.len() > MAX_JSON_BYTES {
 			return Err(Error::Invalid("transaction needs mutations, its coordinator as a participant, and a manifest within 512 KiB".into()).into());
 		}
 		Ok(())
-	}
-	pub fn digest(&self) -> std::result::Result<String, serde_json::Error> {
-		Ok(format!("{:x}", Sha256::digest(serde_json::to_vec(self)?)))
 	}
 	/// The participant that is exactly the Node at `address`. Another Node of
 	/// the same Deployment, such as another Tenant's, is never the same
@@ -169,6 +96,97 @@ impl Manifest {
 			.ok_or(MissingParticipant)
 	}
 }
+/// The coordinator and the ordered participant Nodes of one transaction.
+/// A Deployment takes part with one Node, so a Deployment-level answer to
+/// "does this transaction run here" names exactly one Node.
+pub(crate) fn validate_nodes(coordinator: &str, nodes: &[&str]) -> Result<()> {
+	NodeAddress::parse(coordinator)?;
+	if nodes.is_empty() || nodes.len() > 16 {
+		return Err(Error::Invalid(
+			"transaction requires an ID and 1..16 participants".into(),
+		));
+	}
+	let mut hosts = std::collections::BTreeMap::new();
+	for node in std::iter::once(&coordinator).chain(nodes) {
+		if hosts
+			.insert(crate::nodes::deployment_of(node), *node)
+			.is_some_and(|other| other != *node)
+		{
+			return Err(Error::Invalid(
+				"a transaction names at most one Node of each Deployment".into(),
+			));
+		}
+	}
+	let mut previous: Option<&str> = None;
+	for node in nodes {
+		NodeAddress::parse(node)?;
+		if previous.is_some_and(|p| p >= *node) {
+			return Err(Error::Invalid(
+				"participants must be unique, sorted by node ID, with at most 64 mutations each"
+					.into(),
+			));
+		}
+		previous = Some(node);
+	}
+	if !nodes.contains(&coordinator) {
+		return Err(Error::Invalid("transaction needs mutations, its coordinator as a participant, and a manifest within 512 KiB".into()));
+	}
+	Ok(())
+}
+
+/// One participant's mutations; returns how many there are.
+pub(crate) fn validate_mutations(mutations: &[Mutation]) -> Result<usize> {
+	if mutations.len() > 64 {
+		return Err(Error::Invalid(
+			"participants must be unique, sorted by node ID, with at most 64 mutations each".into(),
+		));
+	}
+	let mut keys = std::collections::BTreeSet::new();
+	for mutation in mutations {
+		let key = match mutation {
+			Mutation::ThreadTitle {
+				thread_id,
+				expected_revision,
+				title,
+			} => {
+				if *expected_revision < 0 || title.trim().is_empty() {
+					return Err(Error::Invalid(
+						"thread mutation requires a revision and a title".into(),
+					));
+				}
+				format!("thread:{thread_id}")
+			}
+			Mutation::CompleteTask {
+				task_id,
+				expected_revision,
+				text,
+			} => {
+				if *expected_revision < 0 {
+					return Err(Error::Invalid("task revision must be nonnegative".into()));
+				}
+				crate::nonempty(text, "Completion Message")?;
+				format!("task:{task_id}")
+			}
+			Mutation::FinishRun {
+				run_id,
+				expected_revision,
+				..
+			} => {
+				if *expected_revision < 0 {
+					return Err(Error::Invalid("run revision must be nonnegative".into()));
+				}
+				format!("run:{run_id}")
+			}
+		};
+		if !keys.insert(key) {
+			return Err(Error::Invalid(
+				"a resource can be mutated only once per manifest".into(),
+			));
+		}
+	}
+	Ok(mutations.len())
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CoordinatorDecision {
 	Commit,
@@ -240,3 +258,4 @@ pub mod authority;
 pub mod coordination;
 pub mod management;
 pub mod mutation;
+pub mod share;

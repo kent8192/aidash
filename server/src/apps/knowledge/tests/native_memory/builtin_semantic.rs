@@ -638,6 +638,12 @@ async fn builtin_memory_uses_thread_index_embedding_in_reflection_replay(
 	// A failed dispatched embedding still counts toward the durable budget.
 	config["policy"]["bounds"]["max_model_calls"] = json!(4 + usize::from(fail_embedding));
 	config["policy"]["bounds"]["max_model_tokens"] = json!(65536);
+	// A replay waits as Pending until the last attempt's call deadline passes,
+	// so backdate the attempts by more than the policy's own deadline.
+	let past_deadline = config["policy"]["bounds"]["max_call_seconds"]
+		.as_i64()
+		.unwrap()
+		+ 60;
 	let (bank, provider, id, actor) =
 		bank_with_thread_embedding(&store, &registry, thread, config).await;
 	fixture
@@ -681,8 +687,9 @@ async fn builtin_memory_uses_thread_index_embedding_in_reflection_replay(
 		assert_eq!(projection_state(&store, id).await.as_deref(), Some("READY"));
 	}
 	let calls_before_retry = fixture.state.embedding_calls.load(Ordering::SeqCst);
-	sqlx::query("UPDATE memory_model_attempts SET created_at = now() - interval '1 minute' WHERE operation_id = $1")
+	sqlx::query("UPDATE memory_model_attempts SET created_at = now() - make_interval(secs => $2) WHERE operation_id = $1")
 		.bind(operation.operation_id)
+		.bind(past_deadline as f64)
 		.execute(store.pool.fixture_driver())
 		.await
 		.unwrap();

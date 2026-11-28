@@ -1,5 +1,17 @@
 # Aidash native migration history
 
+`federation/0031_transaction_parts` (after `federation/0030_threads`) adds the
+`text NOT NULL` column `seed` to `atomic_coordinators`: the coordinator's
+per-transaction secret that seals every participant's part (ADR 0146, #1107).
+It first discards every atomic transaction journal (`atomic_*` rows, and the
+gate's transaction), because the former journals hold whole manifests and no
+seed. Aidash is undeployed, and new cross-Deployment submissions were refused
+while that shape was current. Changing rows has no Reinhardt operation, so the
+gate update and the deletes are Reinhardt Query output from
+`federation::services::transaction_journal_reset`, checked by
+`migrationseeds`; they are irreversible. `0032_transaction_parts_state`
+records the model state.
+
 `federation/0028_run_only_tool_answers` (after `federation/0027_federation_tool_lists_state`)
 adds the nullable `jsonb` column `run_tool_allowance` to `authorization_remote_admissions` (the
 tools the receiving Node's people allowed for one Run only) and `tool_request_additions` to
@@ -69,6 +81,13 @@ parameters alongside each committed charge. Existing daily counters need no
 backfill. Receipts follow their scope through Node and Tenant purge. Forced
 Tenant row security uses SQL assets because Reinhardt cannot express policies.
 `execution/0163_scope_host_debit_state` registers the receipt model state.
+`execution/0166_scope_connection_debits` replaces the receipts with two
+cumulative counters on each connection, adds External service request
+checkpoints, and creates Tenant-owned daily usage facts. Stop old gateway
+instances before applying it so their reservations settle under the old schema.
+Reversal recreates the empty receipt table and restores its database-only
+constraints, index, and forced Tenant policy. Reinhardt cannot express the
+row-level policy, so the migration uses SQL assets.
 
 `execution/0170_goal_judge_calls` through `0173_authorization_read_model_state`
 add Goal judgment and Outside Versions and retire the Completion Gate. The
@@ -1078,6 +1097,13 @@ those three changes. `execution/0156_model_call_state` records the optional
 Run relation and Model Call ID in the Usage Record model state. Rollback
 requires background Usage Records to be cleared before restoring the
 required Run relation.
+
+`execution/0164_model_call_recovery` follows `execution/0163_scope_host_debit_state`.
+It adds retry keys for logical Model Calls, recovery deadlines for auxiliary
+Inference Attempts and a marker to consume late provider reports once. A partial
+unique index scopes summary and MCP sampling retry keys to a Tenant, Run and
+purpose. This migration uses typed database-only operations. The existing
+purpose constraint already excludes local media validation.
 
 `execution/0157_stdio_session_recheck` adds a nullable stdio session registration and its partial index to Task executions. `execution/0160_stdio_session_model_state` records the column in the ORM migration state. The registration keeps a potentially live session in Read Recheck across a server restart and is cleared after the Runner confirms termination. The migration leaves existing rows null. Roll out the matching Runner helper image so the standard Execution Pod replacement ends stdio sessions from before registration was available.
 `execution/0161_generation_subnode_cleanup` adds the database-only

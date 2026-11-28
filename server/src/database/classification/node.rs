@@ -80,7 +80,6 @@ pub fn ownership(name: &str) -> Result<Ownership> {
 		| "scratch_spaces"
 		| "egress_scope_state"
 		| "egress_scope_daily"
-		| "egress_scope_host_debits"
 		| "egress_scope_connections"
 		| "egress_scope_events"
 		| "egress_scope_refusals" => Node("node"),
@@ -301,6 +300,7 @@ pub fn ownership(name: &str) -> Result<Ownership> {
 		| "budgets"
 		| "budget_notices"
 		| "budget_spend"
+		| "egress_usage_daily"
 		| "budget_lineage"
 		| "agent_knowledge"
 		| "agent_plugin_copies"

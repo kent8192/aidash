@@ -1,5 +1,5 @@
 #![allow(clippy::disallowed_methods)] // Fixtures reach the database outside a tenancy scope.
-#[path = "../../tests/support/legacy.rs"]
+#[path = "../../tests/support/fixtures.rs"]
 mod common;
 #[path = "../../tests/support/late_subnode.rs"]
 mod late_subnode;
@@ -462,7 +462,6 @@ async fn runtime_fixture(
 	c
 }
 
-#[cfg(feature = "capability-runtime-tests")]
 async fn operation_until(
 	c: &CoreFixture,
 	run: Uuid,

@@ -37,6 +37,7 @@ pub struct Profile {
 	pub processes: u32,
 	pub operation_seconds: u64,
 	pub maximum_seconds: u64,
+	pub background_maximum_seconds: u64,
 	pub idle_seconds: u64,
 	pub recovery_seconds: u64,
 	pub grant_seconds: u64,
@@ -90,17 +91,16 @@ pub struct EgressSettings {
 	#[serde(default)]
 	pub pod_selector: std::collections::BTreeMap<String, String>,
 	pub listen: std::net::SocketAddr,
-	#[serde(default = "default_proxy_global_tunnels")]
-	pub proxy_global_tunnels: usize,
-	#[serde(default = "default_proxy_tenant_tunnels")]
-	pub proxy_tenant_tunnels: usize,
+	#[serde(default = "default_egress_in_process")]
+	pub in_process: bool,
+	#[serde(default)]
+	pub memory_limit_bytes: Option<u64>,
+	#[serde(default)]
+	pub tenant_groups: std::collections::HashMap<String, String>,
 	#[serde(default)]
 	pub limits: aidash_domain::egress::Limits,
 }
 
-fn default_proxy_global_tunnels() -> usize {
-	1024
-}
-fn default_proxy_tenant_tunnels() -> usize {
-	256
+fn default_egress_in_process() -> bool {
+	true
 }

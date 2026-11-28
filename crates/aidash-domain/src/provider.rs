@@ -355,7 +355,6 @@ impl ModelRequest {
 	/// provider-side media token allowance.
 	pub fn content_parts_reservation(
 		parts: &[ContentPart],
-		_version: crate::projection::ProjectionVersion,
 		input_format: InputFormat,
 	) -> Result<usize> {
 		if parts.is_empty() {
@@ -603,6 +602,29 @@ impl ModelRequest {
 	pub fn ensure_fits(&self, window: usize) -> Result<()> {
 		self.ensure_fits_with_parts(window, &self.content_parts)
 	}
+	/// Reserve at most `cap` output tokens and at most what the context
+	/// window leaves after the request's input and framing, under the same
+	/// estimate [`Self::ensure_fits`] checks. A model whose output limit is
+	/// close to its context window would otherwise reserve the whole window
+	/// for output and be refused before any provider I/O (#1122). The result
+	/// depends only on the request, the window and the cap, so a caller's
+	/// replay key stays stable. Returns the reservation, or an error when the
+	/// input alone leaves no room for a response.
+	pub fn fit_output(&mut self, window: usize, cap: usize) -> Result<usize> {
+		self.max_output_tokens = 0;
+		// Surface an oversized or malformed input with the estimator's own error.
+		self.ensure_fits(window)?;
+		let room = window.saturating_sub(self.estimated_total_tokens());
+		let output = cap.min(room).min(u32::MAX as usize);
+		if output == 0 {
+			return Err(Error::Invalid(
+				"model input leaves no room for a response in the context window".into(),
+			));
+		}
+		self.max_output_tokens = output as u32;
+		self.ensure_fits(window)?;
+		Ok(output)
+	}
 	pub fn ensure_fits_with_parts(&self, window: usize, parts: &[ContentPart]) -> Result<()> {
 		let bytes = self.checked_byte_estimate(parts, &self.estimate)?;
 		Self::check_estimate(window, self.max_output_tokens, self.estimate.tokens(&bytes))
@@ -682,3 +704,5 @@ pub mod progress;
 mod admission_tests;
 #[cfg(test)]
 mod cache_breakpoint_tests;
+#[cfg(test)]
+mod fit_output_tests;

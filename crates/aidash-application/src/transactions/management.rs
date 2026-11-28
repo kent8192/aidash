@@ -2,7 +2,12 @@
 use crate::{Error, Result, ports::transactions::management::ManagementRepository};
 use aidash_domain::{
 	identity::execution::ExecutionPrincipal,
-	transactions::{Manifest, authority::Status, coordination::LocalStatus, management::Details},
+	transactions::{
+		Manifest,
+		authority::{Decision, Status},
+		coordination::LocalStatus,
+		management::Details,
+	},
 };
 use futures_util::{StreamExt, stream};
 use uuid::Uuid;
@@ -98,7 +103,7 @@ pub async fn decision(
 	repository: &dyn ManagementRepository,
 	caller: Option<&str>,
 	id: Uuid,
-) -> Result<Status> {
+) -> Result<Decision> {
 	let state = repository.status(id).await?;
 	let manifest: Manifest = serde_json::from_value(state.manifest.clone())?;
 	if !manifest
@@ -108,7 +113,8 @@ pub async fn decision(
 	{
 		return Err(Error::Forbidden);
 	}
-	Ok(state)
+	// A participant sees the decision bound to the digest, never the manifest.
+	Ok(state.decision())
 }
 
 #[cfg(test)]

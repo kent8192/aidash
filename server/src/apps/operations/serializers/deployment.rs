@@ -63,6 +63,12 @@ pub struct DeploymentSettings {
 	pub scratch_daily_sent_bytes: u64,
 	#[setting(default = "1099511627776")]
 	pub scratch_daily_received_bytes: u64,
+	/// USD nanocredits per GiB sent through the Egress gateway.
+	#[setting(default = "200000000")]
+	pub egress_sent_nanocredits_per_gib: u32,
+	/// USD nanocredits per GiB received through the Egress gateway.
+	#[setting(default = "60000000")]
+	pub egress_received_nanocredits_per_gib: u32,
 	/// Whether every Tenant on this Offering may enable Docker.
 	#[setting(default = "false")]
 	pub scratch_docker_allowed: bool,
@@ -178,11 +184,11 @@ impl SettingsValidation for DeploymentSettings {
 		if !(536870912000..=1099511627776).contains(&self.scratch_capacity_bytes)
 			|| self.scratch_cpu_millis < 8000
 			|| self.scratch_memory_bytes < 34359738368
-			|| self.scratch_daily_sent_bytes < 107374182400
-			|| self.scratch_daily_received_bytes < 107374182400
+			|| self.scratch_daily_sent_bytes == 0
+			|| self.scratch_daily_received_bytes == 0
 		{
 			return Err(ValidationError::Constraint(
-				"scratch ceilings must accommodate defaults and capacity must not exceed 1 TiB"
+				"scratch ceilings must accommodate resource defaults and daily ceilings must be positive"
 					.into(),
 			));
 		}
@@ -273,8 +279,10 @@ mod tests {
 			.is_err()
 		);
 		assert!(check(&settings(json!({"scratch_cpu_millis": 1000}))).is_err());
-		assert!(check(&settings(json!({"scratch_daily_sent_bytes": 1}))).is_err());
-		assert!(check(&settings(json!({"scratch_daily_received_bytes": 1}))).is_err());
+		check(&settings(json!({"scratch_daily_sent_bytes": 1}))).unwrap();
+		assert!(check(&settings(json!({"scratch_daily_sent_bytes": 0}))).is_err());
+		check(&settings(json!({"scratch_daily_received_bytes": 1}))).unwrap();
+		assert!(check(&settings(json!({"scratch_daily_received_bytes": 0}))).is_err());
 		assert!(
 			check(&settings(
 				json!({"scratch_tenant_hosts": {"example": ["*", "example.com"]}})

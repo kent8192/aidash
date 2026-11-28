@@ -24,6 +24,7 @@ variable "cluster" {
     location       = string
     workload_pool  = string
     node_locations = optional(list(string))
+    subnetwork     = optional(string)
     // Zones whose pool stays at zero nodes until the first zone is lost.
     standby_zones = optional(list(string), [])
   })

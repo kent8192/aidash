@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 
 pub struct MigrationSeeds;
 
-fn assets() -> [(&'static str, String); 45] {
+fn assets() -> [(&'static str, String); 46] {
 	use crate::apps::{
 		federation::services::migration_seed as federation,
 		marketplace::services::migration_seed as marketplace,
@@ -101,6 +101,10 @@ fn assets() -> [(&'static str, String); 45] {
 			crate::apps::identity::services::data_protection_backfill::backward(),
 		),
 		(
+			"federation/sql/forward/0031_transaction_parts.sql",
+			crate::apps::federation::services::transaction_journal_reset::forward(),
+		),
+		(
 			"identity/sql/forward/0085_remove_research_approvals.sql",
 			crate::apps::identity::services::research_approval_cleanup::forward(),
 		),
@@ -169,11 +173,11 @@ fn assets() -> [(&'static str, String); 45] {
 			crate::apps::execution::services::goal_backfill::execution(),
 		),
 		(
-			"federation/sql/forward/0032_retire_artifact_reads.sql",
+			"federation/sql/forward/0033_retire_artifact_reads.sql",
 			crate::apps::execution::services::goal_backfill::federated_reads(),
 		),
 		(
-			"federation/sql/forward/0033_completion_settlement_v2.sql",
+			"federation/sql/forward/0034_completion_settlement_v2.sql",
 			crate::apps::execution::services::goal_backfill::federation_settlement(),
 		),
 		(
@@ -364,6 +368,13 @@ mod tests {
 				"identity",
 				"0085_remove_research_approvals",
 				"0085_remove_research_approvals",
+				false,
+			),
+			// The journal reset of #1107 before the coordinator seed column.
+			(
+				"federation",
+				"0031_transaction_parts",
+				"0031_transaction_parts",
 				false,
 			),
 			(

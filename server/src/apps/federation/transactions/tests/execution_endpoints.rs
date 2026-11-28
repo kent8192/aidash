@@ -205,7 +205,7 @@ async fn prepared_completion_rolls_back_outputs_and_commit_retains_source_revoca
 				&app.runtime,
 				None,
 				node(&app.runtime).await.as_str(),
-				&manifest
+				&share_for(&app.runtime, &manifest, &node(&app.runtime).await).await
 			)
 			.await
 			.unwrap()
@@ -302,4 +302,18 @@ async fn prepared_completion_rolls_back_outputs_and_commit_retains_source_revoca
 	// A Deployment Administrator holds no Tenant content authority (#484).
 	let refused = assert_json(app.deployment_administrator.get(&path).await.unwrap(), 403);
 	assert!(refused.get("messages").is_none(), "{refused}");
+}
+
+/// What the participant at `node` receives (ADR 0146): sealed with the seed
+/// the coordinator stored, or with a fixed seed when none admitted it.
+async fn share_for(
+	coordinator: &aidash_server::federation::Federation,
+	manifest: &aidash_server::transactions::Manifest,
+	node: &str,
+) -> aidash_server::transactions::Share {
+	let seed = aidash_server::transactions::coordinator::status(coordinator, manifest.id)
+		.await
+		.map(|status| status.seed)
+		.unwrap_or_else(|_| "5e".repeat(32));
+	manifest.share(&seed, node).unwrap()
 }

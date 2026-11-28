@@ -1443,13 +1443,15 @@ async fn node_purge_stalls_before_unlink_and_preserves_surviving_reference_and_r
 			}))
 			.unwrap();
 			manifest.validate::<aidash_server::Error>().unwrap();
+			// A participant keeps only its own share (ADR 0146).
+			let share = manifest.share(&"5e".repeat(32), &local).unwrap();
 			let digest = if blocker == "atomic_digest" {
 				"corrupt".to_owned()
 			} else {
-				manifest.digest().unwrap()
+				share.digest().unwrap()
 			};
 			sqlx::query("INSERT INTO atomic_participants(id,coordinator,digest,manifest,phase) VALUES ($1,$2,$3,$4,'COMMITTED')")
-				.bind(metadata).bind(&manifest.coordinator).bind(digest).bind(json!(manifest))
+				.bind(metadata).bind(&manifest.coordinator).bind(digest).bind(json!(share))
 				.execute(d.federation.store.pool.fixture_driver()).await.unwrap();
 			"recovery registration dependency"
 		}
@@ -1477,7 +1479,7 @@ async fn node_purge_stalls_before_unlink_and_preserves_surviving_reference_and_r
 			"Live preview termination proof"
 		}
 		"coordinator" => {
-			sqlx::query("INSERT INTO atomic_coordinators (id,digest,manifest,complete) VALUES ($1,'fixture','{}',false)").bind(metadata).execute(d.federation.store.pool.fixture_driver()).await.unwrap();
+			sqlx::query("INSERT INTO atomic_coordinators (id,digest,manifest,seed,complete) VALUES ($1,'fixture','{}','fixture',false)").bind(metadata).execute(d.federation.store.pool.fixture_driver()).await.unwrap();
 			"incomplete atomic recovery"
 		}
 		"participant" | "gate" => {

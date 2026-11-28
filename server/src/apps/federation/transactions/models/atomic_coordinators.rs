@@ -16,6 +16,10 @@ pub struct AtomicCoordinator {
 	pub digest: String,
 	#[field]
 	pub manifest: Json<Value>,
+	/// The coordinator's per-transaction secret that seals every part
+	/// (ADR 0146).
+	#[field(field_type = "text")]
+	pub seed: String,
 	#[field(field_type = "text", max_length = 64, null = true)]
 	pub decision: Option<AtomicCoordinatorDecision>,
 	#[field(default = false)]

@@ -1,6 +1,6 @@
 //! PostgreSQL proof for Connection owner scopes and resource-bound human answers.
 #![allow(clippy::disallowed_methods)] // Disposable fixture access only.
-#[path = "../../execution/tests/support/legacy.rs"]
+#[path = "../../execution/tests/support/fixtures.rs"]
 mod common;
 use aidash_application::{
 	oauth_connections::{Owner, Repository},

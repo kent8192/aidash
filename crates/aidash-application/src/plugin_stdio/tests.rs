@@ -96,6 +96,8 @@ impl ExecutionPodRuntime for Pod {
 			pod_uid: None,
 			session_id: None,
 			left_running: None,
+			stop_reason: None,
+			output_tail: None,
 			session_replaced: None,
 		})
 	}
@@ -114,7 +116,12 @@ impl ExecutionPodRuntime for Pod {
 	async fn python_start(&self, _: &PythonStartRequest) -> PodResult<PythonSession> {
 		unimplemented!()
 	}
-	async fn stop_run(&self, _: &str, _: &str) -> PodResult<Vec<String>> {
+	async fn stop_run(
+		&self,
+		_: &str,
+		_: &str,
+		_: crate::ports::capabilities::execution_pod::RunStopReason,
+	) -> PodResult<Vec<String>> {
 		unimplemented!()
 	}
 	async fn background_log(&self, _: &LogRequest) -> PodResult<LogChunk> {

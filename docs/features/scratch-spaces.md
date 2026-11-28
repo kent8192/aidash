@@ -4,7 +4,7 @@ Every Node has a persistent default Scratch Space. Threads, Duties and Subnodes 
 
 A person can create a named Scratch Space in the same Node and select it when opening a Thread. Members and the creator can use it. The creator may clear or delete it. The Thread keeps its selection and shows the space to people with access.
 
-The default space starts with 8 CPU, 32 GiB memory, 500 GiB capacity and 32 foreground command slots. Named spaces start with 4 CPU, 16 GiB memory, 100 GiB capacity and 8 slots. Both start with daily egress budgets of 100 GiB each for sent and received traffic. At use time, resource ceilings cap those settings, and the Tenant's current host allowlist narrows the space's allowed hosts.
+The default space starts with 8 CPU, 32 GiB memory, 500 GiB capacity and 32 foreground command slots. Named spaces start with 4 CPU, 16 GiB memory, 100 GiB capacity and 8 slots. Sent and received daily traffic allowances are optional and start unset. Set an allowance in GiB to limit that direction, or clear it to remove the daily check. At use time, resource ceilings cap those settings, and the Tenant's current host allowlist narrows the space's allowed hosts.
 
 A space may choose a digest-pinned execution image approved for the Tenant and share approved External services through the Egress gateway. Docker requires permission from the Deployment operator and a Node dedicated to that Tenant.
 

@@ -20,6 +20,8 @@ use reinhardt::query::{
 };
 use uuid::Uuid;
 
+const BACKGROUND_EXIT_PREFIX: &str = "background_exit:";
+
 impl RunInput {
 	pub(crate) async fn for_run(
 		tx: &mut dyn TransactionExecutor,
@@ -35,7 +37,8 @@ impl RunInput {
 			.map(|record| {
 				let is_data = record
 					.idempotency_key
-					.starts_with(aidash_domain::run_input::SUBNODE_RESULT_PREFIX);
+					.starts_with(aidash_domain::run_input::SUBNODE_RESULT_PREFIX)
+					|| record.idempotency_key.starts_with(BACKGROUND_EXIT_PREFIX);
 				InputContract {
 					seq: record.seq,
 					sender: record.sender,
@@ -204,6 +207,55 @@ impl RunInput {
 		}
 		Ok(false)
 	}
+	/// Commit an authenticated Background result as an input. The run_inputs
+	/// trigger schedules activation, and the operation update shares this transaction.
+	pub(crate) async fn admit_background_exit(
+		tx: &mut dyn TransactionExecutor,
+		node: &str,
+		run_id: Uuid,
+		operation: Uuid,
+		notice: &serde_json::Value,
+	) -> Result<()> {
+		let run = match Self::locked_run(tx, run_id).await {
+			Ok(run) => run,
+			Err(Error::NotFound(_)) => return Ok(()),
+			Err(error) => return Err(error),
+		};
+		if closing(&run) {
+			return Ok(());
+		}
+		let task = Task::objects()
+			.filter(Task::field_id().eq(run.task_id))
+			.all_with_executor(tx)
+			.await
+			.map_err(FrameworkError::from)?
+			.pop();
+		if task.is_none() && run.is_local(node)
+			|| task.is_some_and(|task| {
+				matches!(
+					task.status,
+					TaskStatus::Completed
+						| TaskStatus::Failed
+						| TaskStatus::Cancelled
+						| TaskStatus::Abandoned
+				)
+			}) {
+			return Ok(());
+		}
+		// The controller bounds the notice before it reaches the ledger. Like
+		// other execution results, it uses the normal context assembly limits.
+		Self::admit(
+			tx,
+			node,
+			run_id,
+			"aidash:background",
+			&notice.to_string(),
+			&format!("{BACKGROUND_EXIT_PREFIX}{operation}"),
+			usize::MAX,
+		)
+		.await
+	}
+
 	pub(crate) async fn admit(
 		tx: &mut dyn TransactionExecutor,
 		node: &str,

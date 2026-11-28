@@ -4,7 +4,7 @@ use common::upstream_fixtures;
 use reinhardt::ServerRouter as Router;
 use reinhardt::test::fixtures::server::TestServerGuard;
 use upstream_fixtures::reply;
-#[path = "support/legacy.rs"]
+#[path = "support/fixtures.rs"]
 mod common;
 #[path = "worker_activation/review.rs"]
 mod review;
@@ -1579,6 +1579,7 @@ async fn child_runtime(
 		config: aidash_server::config::Config {
 			smtp: None,
 			scratch_policy: Default::default(),
+			egress_prices: Default::default(),
 			credential_max_seconds: 90 * 24 * 60 * 60,
 			deployment: aidash_domain::nodes::DeploymentId::parse(node).unwrap(),
 			endpoint: "http://127.0.0.1:8080".into(),
@@ -1605,6 +1606,7 @@ async fn child_runtime(
 			tier_limits: std::sync::Arc::new(aidash_application::ports::nodes::NoTierLimits),
 			preview: None,
 			dashboard_origin: "http://localhost:3000".into(),
+			transaction_seed_key: [7; 32],
 		},
 		client: reinhardt_http_client,
 		notify: Arc::new(tokio::sync::Notify::new()),

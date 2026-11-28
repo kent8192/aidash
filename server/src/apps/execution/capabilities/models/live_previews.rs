@@ -44,6 +44,7 @@ pub struct CoreLivePreviews {
 pub struct CorePreviewLimits {
 	#[field(primary_key = true, field_type = "text")]
 	pub tenant: String,
+	pub background_maximum_seconds: Option<i64>,
 	pub idle_seconds: i64,
 	pub absolute_seconds: i64,
 	pub revision: i64,

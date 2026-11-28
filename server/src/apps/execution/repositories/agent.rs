@@ -285,11 +285,14 @@ impl ExecutionStore for RunStore {
 	async fn calibration_samples(
 		&self,
 		upstream_model: &str,
-		projection_version: u8,
 	) -> Result<Vec<aidash_domain::provider::estimate::CalibrationSample>> {
-		Store::calibration_samples(&self.store, upstream_model, projection_version)
-			.await
-			.map_err(Into::into)
+		Store::calibration_samples(
+			&self.store,
+			upstream_model,
+			aidash_domain::projection::ProjectionVersion::Native.number(),
+		)
+		.await
+		.map_err(Into::into)
 	}
 	async fn save_run(&self, run: &Run, token: Uuid, event: &str) -> Result<()> {
 		Store::save_run(&self.store, &self.scope, run, token, event)
@@ -967,10 +970,9 @@ impl ExecutionAuthority for Authority<'_> {
 		&self,
 		messages: &[(i64, Uuid, usize)],
 		model: &ModelConfig,
-		projection: aidash_domain::projection::ProjectionVersion,
 	) -> Result<HumanMediaBatch> {
 		self.guard
-			.human_message_media(&self.federation.store, messages, model, projection)
+			.human_message_media(&self.federation.store, messages, model)
 			.await
 			.map_err(Into::into)
 	}
@@ -1312,7 +1314,11 @@ impl ExecutionEnvironment for Environment<'_> {
 			conversation_memory: config.conversation_memory,
 			context_policy: None,
 			tool_parallelism: usize::from(aidash_domain::registry::bindings::MAX_TOOL_PARALLELISM),
-			harness_contract: config.harness_contract.unwrap_or_default(),
+			harness_contract: aidash_domain::registry::execution_contract(
+				config.projection_version,
+				config.harness_contract,
+			)
+			.map_err(aidash_application::Error::ProjectionRetired)?,
 			prompt_cache: config.prompt_cache.unwrap_or_default(),
 		})
 	}

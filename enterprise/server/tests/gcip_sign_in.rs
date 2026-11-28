@@ -4,7 +4,7 @@
 
 //! Signed token and fake tenant Admin API acceptance through the production router.
 #![allow(clippy::disallowed_methods)] // Fixtures reach the database outside a tenancy scope.
-#[path = "../../../server/src/apps/execution/tests/support/legacy.rs"]
+#[path = "../../../server/src/apps/execution/tests/support/fixtures.rs"]
 mod common;
 use aidash_enterprise_server::gcip::{Gcip, GcipConfig};
 use aidash_gcp::gcip::{AccessToken, AccountLookup, Services, TokenVerifier};

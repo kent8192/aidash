@@ -41,6 +41,30 @@ impl std::fmt::Display for ProjectionVersion {
 	}
 }
 
+/// A definition can still carry a retired pin in its immutable JSON.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum ProjectionPin {
+	Active(ProjectionVersion),
+	Retired(RetiredProjection),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RetiredProjection {
+	Legacy,
+	Ordered,
+}
+
+impl std::fmt::Display for RetiredProjection {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		f.write_str(match self {
+			Self::Legacy => "legacy",
+			Self::Ordered => "ordered",
+		})
+	}
+}
+
 /// An Agent definition's prompt-caching opt-in, pinned with the Run's Binding
 /// snapshot (ADR 0019). Omitted means `off`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

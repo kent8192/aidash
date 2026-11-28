@@ -340,15 +340,31 @@ data:
   execution-pods.json: |-
     {{- $helper := required "execution.pods.helperImage must be digest pinned" $e.pods.helperImage -}}
     {{- if not (regexMatch "@sha256:[0-9a-f]{64}$" $helper) -}}{{ fail "execution.pods.helperImage must be digest pinned" }}{{- end -}}
-    {{- $proxy := required "execution.pods.proxy.endpoint is required" $e.pods.proxy.endpoint -}}
-    {{- $proxyNamespace := required "execution.pods.proxy.namespace is required" $e.pods.proxy.namespace -}}
-    {{- $proxySelector := required "execution.pods.proxy.podSelector is required" $e.pods.proxy.podSelector -}}
+    {{- $proxy := $e.pods.proxy.endpoint -}}
+    {{- $proxyNamespace := $e.pods.proxy.namespace -}}
+    {{- $proxySelector := $e.pods.proxy.podSelector -}}
+    {{- $tenantProxies := dict -}}
+    {{- if $e.egress.enabled -}}
+      {{- $proxy = printf "http://%s:%d" $e.egress.clusterIP (int $e.egress.port) -}}
+      {{- $proxyNamespace = .Release.Namespace -}}
+      {{- $proxySelector = include "aidash.egressSelector" . | fromJson -}}
+      {{- range $name, $group := $e.egress.ipGroups -}}
+        {{- range $tenant := $group.tenants -}}
+          {{- $_ := set $tenantProxies $tenant (printf "http://%s:%d" $group.clusterIP (int $e.egress.port)) -}}
+        {{- end -}}
+      {{- end -}}
+    {{- end -}}
+    {{- $_ := required "execution.pods.proxy.endpoint is required" $proxy -}}
+    {{- $_ := required "execution.pods.proxy.namespace is required" $proxyNamespace -}}
+    {{- $_ := required "execution.pods.proxy.podSelector is required" $proxySelector -}}
     {{- $pods := dict "enabled" true "helper_image" $helper "allow_docker" $e.pods.allowDocker
+          "base_apply_immediately" $e.pods.baseApplyImmediately
           "docker_runtime_class" $dockerRuntime "admission_capacity_bytes" (int64 $e.pods.admissionCapacityBytes)
           "metadata_server_absent" $e.pods.metadataServerAbsent
           "max_command_slots" (int $e.pods.maxCommandSlots) "max_cpu" (int $e.pods.maxCpu) "max_memory_bytes" (int64 $e.pods.maxMemoryBytes)
           "max_capacity_bytes" (int64 $e.pods.maxCapacityBytes) "proxy_endpoint" $proxy
           "proxy_namespace" $proxyNamespace "proxy_selector" $proxySelector -}}
+    {{- if $tenantProxies -}}{{- $_ := set $pods "tenant_proxy_endpoints" $tenantProxies -}}{{- end -}}
     {{- if $e.pods.storageClassName -}}{{- $_ := set $pods "storage_class" $e.pods.storageClassName -}}{{- end -}}
     {{- toJson $pods | nindent 4 }}
   {{- end }}

@@ -10,7 +10,7 @@ use std::sync::{
 use tokio::sync::Notify;
 
 use upstream_fixtures::{async_upstream, reply};
-#[path = "../../tests/support/legacy.rs"]
+#[path = "../../tests/support/fixtures.rs"]
 mod common;
 #[path = "../../tests/support/late_subnode.rs"]
 mod late_subnode;

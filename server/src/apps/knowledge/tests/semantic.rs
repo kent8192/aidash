@@ -4,7 +4,7 @@ use common::upstream_fixtures as upstream;
 use reinhardt::ServerRouter as Router;
 use rstest::fixture;
 use upstream::reply;
-#[path = "../../execution/tests/support/legacy.rs"]
+#[path = "../../execution/tests/support/fixtures.rs"]
 mod common;
 use aidash_server::semantic::{self, ConfigureIndex, EmbeddingConfig, IndexSpec, VectorConfig};
 

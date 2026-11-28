@@ -36,6 +36,8 @@ impl From<Shell> for ShellRequest {
 			idempotency_key: input.idempotency_key,
 			command: input.command,
 			timeout_seconds: input.timeout_seconds,
+			background: input.background,
+			notify_on_exit: input.notify_on_exit,
 			expected_revision: input.expected_revision,
 		}
 	}
@@ -89,6 +91,21 @@ impl OperationAdmissionScope<Operation> for Admission<'_> {
 			operation_seconds: p.operation_seconds,
 			maximum_seconds: p.maximum_seconds,
 		}
+	}
+	async fn background_maximum_seconds(&mut self) -> Result<u64> {
+		use crate::apps::execution::capabilities::models::CorePreviewLimits;
+		use reinhardt::db::orm::Model as _;
+		let ceiling = self.store.capabilities.0.background_maximum_seconds;
+		let lowered = CorePreviewLimits::objects()
+			.filter(CorePreviewLimits::field_tenant().eq(&self.access.identity.tenant))
+			.all_with_executor(&mut **self.access.tx)
+			.await
+			.map_err(reinhardt::core::exception::Error::from)
+			.map_err(Error::from)?
+			.pop()
+			.and_then(|row| row.background_maximum_seconds)
+			.and_then(|seconds| u64::try_from(seconds).ok());
+		Ok(lowered.map_or(ceiling, |seconds| ceiling.min(seconds)))
 	}
 	fn area(&self) -> AreaSnapshot {
 		AreaSnapshot {
@@ -367,6 +384,8 @@ impl From<ShellRequest> for Shell {
 			idempotency_key: v.idempotency_key,
 			command: v.command,
 			timeout_seconds: v.timeout_seconds,
+			background: v.background,
+			notify_on_exit: v.notify_on_exit,
 			wait_seconds: None,
 			expected_revision: v.expected_revision,
 		}

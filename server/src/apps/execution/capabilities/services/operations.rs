@@ -92,6 +92,8 @@ pub(crate) async fn prepare_pod(
 				idempotency_key: python.idempotency_key,
 				command: python.code,
 				timeout_seconds: python.timeout_seconds,
+				background: false,
+				notify_on_exit: false,
 				expected_revision: python.expected_revision,
 			},
 			python.expected_session_id,

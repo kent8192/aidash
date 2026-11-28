@@ -67,6 +67,26 @@ impl std::fmt::Display for HarnessContract {
 	}
 }
 
+/// The contract pin as written in a stored definition.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum HarnessContractPin {
+	Active(HarnessContract),
+	Retired(RetiredHarnessContract),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RetiredHarnessContract {
+	#[serde(rename = "legacy@1")]
+	V1,
+}
+
+impl std::fmt::Display for RetiredHarnessContract {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		f.write_str("legacy@1")
+	}
+}
+
 /// The system text of one request. This is the only composition: budgeting
 /// and dispatch both call it, so measured and sent text cannot drift.
 ///

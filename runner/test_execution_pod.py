@@ -1,4 +1,5 @@
 """Contracts for stable, opaque Scratch Space resource identities."""
+import sys
 import unittest
 
 from control import scratch_resource_name
@@ -112,7 +113,8 @@ class SystemTreeTest(unittest.TestCase):
     def test_image_change_is_reported_until_reset_applies_it(self):
         import tempfile
         from pathlib import Path
-        from execution_pod import initialize_system_root, system_image_changed
+        from execution_pod import system_image_changed
+        from pod_base import initialize_system_root
         image_a, image_b = 'image@sha256:' + 'a' * 64, 'image@sha256:' + 'b' * 64
         with tempfile.TemporaryDirectory() as directory:
             image, store = Path(directory) / 'image', Path(directory) / 'store'
@@ -132,7 +134,8 @@ class SystemTreeTest(unittest.TestCase):
         import tempfile
         from pathlib import Path
         from unittest.mock import patch
-        from execution_pod import initialize_system_root, system_image_changed
+        from execution_pod import system_image_changed
+        from pod_base import initialize_system_root
         image_id = 'image@sha256:' + 'a' * 64
         with tempfile.TemporaryDirectory() as directory:
             image, store = Path(directory) / 'image', Path(directory) / 'store'
@@ -156,7 +159,7 @@ class SystemTreeTest(unittest.TestCase):
     def test_initial_copy_reuses_system_and_reset_recopies_image(self):
         import tempfile
         from pathlib import Path
-        from execution_pod import initialize_system_root
+        from pod_base import initialize_system_root
 
         with tempfile.TemporaryDirectory() as directory:
             base = Path(directory)
@@ -237,7 +240,7 @@ class FullDiskRegressionTest(unittest.TestCase):
         import shutil
         from pathlib import Path
         from unittest.mock import patch
-        from execution_pod import initialize_system_root
+        from pod_base import initialize_system_root
         with tempfile.TemporaryDirectory() as directory:
             image, store = Path(directory) / 'image', Path(directory) / 'store'
             image.mkdir()
@@ -277,7 +280,7 @@ class ImageEnvironmentRegressionTest(unittest.TestCase):
         import tempfile
         from pathlib import Path
         from unittest.mock import patch
-        from sandbox_v2 import chroot_command, save_image_environment
+        from pod_base import chroot_command, save_image_environment
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / 'rootfs'
             root.mkdir()
@@ -288,7 +291,7 @@ class ImageEnvironmentRegressionTest(unittest.TestCase):
                          ('HTTP_PROXY', 'HTTPS_PROXY', 'http_proxy', 'https_proxy')}
             proxy_env.update({'NO_PROXY': 'localhost,127.0.0.1,::1,proxy',
                               'no_proxy': 'localhost,127.0.0.1,::1,proxy'})
-            with patch('sandbox_v2.enter_user_root'), patch('os.execvpe') as execute, \
+            with patch('pod_base.enter_user_root'), patch('os.execvpe') as execute, \
                  patch.dict('os.environ', dict(proxy_env, AIDASH_PROCESS_LIMIT='128'), clear=True):
                 chroot_command(str(root), '.', ['/bin/sh'], False)
             env = execute.call_args.args[2]
@@ -300,6 +303,17 @@ class ImageEnvironmentRegressionTest(unittest.TestCase):
 
 
 class PodProxyUrlTest(unittest.TestCase):
+    def test_tenant_credentials_choose_dedicated_or_shared_proxy(self):
+        from execution_pod import tenant_proxy_endpoint
+        config = {'proxy_endpoint': 'http://10.0.0.8:8950',
+                  'tenant_proxy_endpoints': {'acme': 'http://10.0.0.9:8950'}}
+        self.assertEqual(tenant_proxy_endpoint(config, 'aidash-run-v1.space.YWNtZQ.run.sig'),
+                         'http://10.0.0.9:8950')
+        self.assertEqual(tenant_proxy_endpoint(config, 'aidash-run-v1.space.b3RoZXI.run.sig'),
+                         'http://10.0.0.8:8950')
+        with self.assertRaisesRegex(ValueError, 'invalid Tenant identity'):
+            tenant_proxy_endpoint(config, 'aidash-run-v1.space.!!!!.run.sig')
+
     def test_a_credential_travels_in_the_proxy_url(self):
         from execution_pod import pod_proxy_url
         self.assertEqual(pod_proxy_url('http://10.0.0.8:8888', 'aidash-scope-v1.a-b_c'),
@@ -337,7 +351,7 @@ class StartupStorageRegressionTest(unittest.TestCase):
     def test_stale_staging_is_removed_before_reusing_existing_root(self):
         import tempfile
         from pathlib import Path
-        from execution_pod import initialize_system_root
+        from pod_base import initialize_system_root
         with tempfile.TemporaryDirectory() as directory:
             image, store = Path(directory) / 'image', Path(directory) / 'store'
             image.mkdir()
@@ -390,7 +404,8 @@ class ProcessCapabilityTest(unittest.TestCase):
         effective = int(next(line.split()[1] for line in status.splitlines() if line.startswith('CapEff:')), 16)
         if not effective & (1 << 8):
             self.skipTest('CAP_SETPCAP is required to exercise bounding-set reduction')
-        result = subprocess.run([sys.executable, 'sandbox_v2.py', 'normal', '/bin/cat', '/proc/self/status'],
+        result = subprocess.run([sys.executable, str(Path(__file__).with_name('sandbox_v2.py')),
+                                 'normal', '/bin/cat', '/proc/self/status'],
                                 capture_output=True, text=True, check=True)
         fields = dict(line.split(':', 1) for line in result.stdout.splitlines() if ':' in line)
         blocked = sum(1 << cap for cap in (12, 13, 18, 21))
@@ -478,7 +493,7 @@ class PodManifestTest(unittest.TestCase):
         import os
         import tempfile
         from pathlib import Path
-        from execution_pod import initialize_system_root
+        from pod_base import initialize_system_root
 
         with tempfile.TemporaryDirectory() as directory:
             base = Path(directory)
@@ -647,6 +662,8 @@ class ExecutionPodControllerTest(unittest.TestCase):
         operation = 'e6ded09d-f783-4ce8-98e9-dbfca68884f1'
         controller._command_path(operation).write_text(json.dumps({'operation_id': operation,
             'scratch_space_id': 'id', 'run_id': 'run', 'status': 'running'}))
+        # Reopen the journal through the controller startup index.
+        controller.journal_index = None
         pod['status'] = {'phase': 'Failed'}
         controller._terminate_recorded_pod = Mock(side_effect=ExecutionPodError('termination_unconfirmed', 'guard unavailable'))
         with self.assertRaises(ExecutionPodError) as failure:
@@ -773,8 +790,9 @@ class ExecutionRequestTest(unittest.TestCase):
     def test_default_and_maximum_timeouts_are_enforced(self):
         from execution_pod import execution_timeout
         self.assertEqual(execution_timeout({}), 600)
-        self.assertEqual(execution_timeout({'timeout_seconds': 3600}), 3600)
-        for value in (0, 3601, True, '10'):
+        for seconds in (1, 7000, 86400):
+            self.assertEqual(execution_timeout({'timeout_seconds': seconds}), seconds)
+        for value in (0, 86401, True, '10'):
             with self.subTest(value=value), self.assertRaises(ValueError):
                 execution_timeout({'timeout_seconds': value})
 
@@ -1864,12 +1882,12 @@ class LeadReviewRegressionTest(unittest.TestCase):
             controller._command_path(self.op).write_text(json.dumps({'operation_id': self.op, 'scratch_space_id': 's',
                 'run_id': 'r', 'pod': 'pod', 'pod_uid': 'uid', 'background': False, 'docker_enabled': True,
                 'status': 'interrupted', 'terminal_at': time.time()}))
-            with patch('time.sleep'):
-                self.assertEqual(controller._stop_command(self.op)['status'], 'stopping')
-            self.assertEqual(len(attempts), 2)
             other = 'e6ded09d-f783-4ce8-98e9-dbfca68884f2'
             controller._command_path(other).write_text(json.dumps({'operation_id': other, 'scratch_space_id': 's',
                 'run_id': 'r', 'background': False, 'status': 'running'}))
+            with patch('time.sleep'):
+                self.assertEqual(controller._stop_command(self.op)['status'], 'stopping')
+            self.assertEqual(len(attempts), 2)
             def stop(op):
                 if op == self.op:
                     raise RuntimeError('cannot stop')
@@ -2133,6 +2151,16 @@ class LeadReviewRegressionTest(unittest.TestCase):
             self.assertNotIn('last_command_at', json.loads(purged.read_text()))
 
 class DockerFramingRegressionTest(unittest.TestCase):
+    def test_transport_timeout_includes_the_helper_upload(self):
+        import os
+        from execution_pod import drain_process
+
+        transport = drain_process(
+            [sys.executable, '-c', 'import time; time.sleep(1)'],
+            os.environ, 16, .1, input_prefix=b'x' * 1048576,
+        )
+        self.assertTrue(transport['transport_timed_out'])
+
     def test_framed_result_survives_bounded_output_and_preserves_exit_code(self):
         import json
         import os
@@ -2283,6 +2311,7 @@ class CommandJournalTest(unittest.TestCase):
                 self.assertEqual(result['stdout'], 'aGkK')
                 controller.submit_command(request)
                 self.assertEqual(transport.call_count, 1)
+            controller.queues['scratch'].close()
 
     def test_changelog_is_read_in_bounded_chunks(self):
         import base64
@@ -2610,7 +2639,7 @@ class RecoveryRegressionTest(unittest.TestCase):
             controller._mark_space_unconfirmed('first')
             controller._mark_space_unconfirmed('second')
             calls = []
-            def stop(space):
+            def stop(space, *, reason):
                 calls.append(space)
                 if len(calls) == 1:
                     raise RuntimeError('node unavailable')
@@ -2918,6 +2947,176 @@ class IdlePodTest(unittest.TestCase):
             self.assertEqual(len(backend.deleted), 1)
 
 
+
+class LongRunningBackgroundTest(unittest.TestCase):
+    def setUp(self):
+        import tempfile
+        from pathlib import Path
+        from execution_pod import ExecutionPodController
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.root = Path(self.directory.name)
+        self.now = 100
+        self.replies = {}
+        self.signals = []
+        self.deletions = []
+        self.pod = {'metadata': {'uid': 'original', 'annotations': {'aidash.run/helper-protocol': '2.0.0'}},
+                    'spec': {'containers': [{'name': 'execution', 'image': 'original-base'}]},
+                    'status': {'phase': 'Running'}}
+        self.controller = ExecutionPodController(self, {'helper_image': 'original-base'}, admitted=True)
+
+    def kube(self, args, data=None, **kwargs):
+        import json
+        from types import SimpleNamespace
+        if args[0] == 'get':
+            return SimpleNamespace(returncode=0, stdout=json.dumps(self.pod).encode() if self.pod else b'')
+        if args[0] == 'delete':
+            self.deletions.append(args[2])
+            self.pod = None
+        if 'result' in args:
+            result = self.replies.get(args[-1])
+            return SimpleNamespace(returncode=int(result is None), stdout=json.dumps(result).encode())
+        if 'claim' in args:
+            return SimpleNamespace(returncode=0, stdout=b'{"created":false}')
+        if 'running' in args:
+            return SimpleNamespace(returncode=0, stdout=b'{"running":true}')
+        if 'stop' in args:
+            self.signals.append(args[-1])
+        if 'output' in args:
+            return SimpleNamespace(returncode=0, stdout=b'{"data":"","eof":true,"next_offset":0}')
+        return SimpleNamespace(returncode=0, stdout=b'')
+
+    def record(self, number, *, seconds=None, protocol='2.0.0'):
+        import json
+        import uuid
+        operation = str(uuid.UUID(int=number))
+        self.controller._command_path(operation).write_text(json.dumps({
+            'operation_id': operation, 'scratch_space_id': 'space', 'pod_uid': 'original',
+            'pod': 'pod', 'run_id': 'run', 'docker_enabled': True, 'background': True,
+            'status': 'running', 'accepted_at': self.now, 'running_at': self.now,
+            'time_limited': seconds is not None, 'kind': 'shell' if seconds else 'left',
+            'timeout_seconds': seconds, 'helper_protocol': protocol, 'result_proof_key': 'test-key',
+        }))
+        return operation
+
+    def completed(self, operation, result):
+        from sandbox_v2 import sign_result
+        receipt = dict(result, operation_id=operation, run_id='run')
+        self.replies[operation] = dict(receipt, auth=sign_result(receipt, b'test-key'))
+
+    def terminate_execution_pod(self, guard):
+        self.assertEqual(guard['pod_uid'], 'original')
+        return {'termination_confirmed': True}
+
+    def restart(self):
+        import json
+        from unittest.mock import patch
+        from execution_pod import ExecutionPodController
+        self.controller.touch_space('space', now=self.now)
+        path = self.root / 'execution-v2-spaces' / (scratch_resource_name('space') + '.json')
+        space = json.loads(path.read_text())
+        space['guard'] = {'pod_uid': 'original', 'terminated': False}
+        path.write_text(json.dumps(space))
+        self.controller = ExecutionPodController(self, self.controller.config, admitted=True)
+        with patch('time.time', return_value=self.now):
+            self.controller.recover_commands()
+
+    def observe(self, now):
+        from unittest.mock import patch
+        self.now = now
+        with patch('time.time', return_value=now):
+            self.controller.stop_idle(now=now)
+            return {item['operation_id']: item for item in self.controller.background_processes('space')['processes']}
+
+    def test_different_deadlines_keep_pod_through_runner_restart(self):
+        short = self.record(1, seconds=3600)
+        long = self.record(2, seconds=9000)
+        self.restart()
+        self.assertEqual(self.observe(1901)[long]['status'], 'running')
+        self.assertFalse(self.deletions)
+        self.completed(short, {'status': 'timed_out'})
+        self.assertEqual(self.observe(3701)[short]['stop_reason'], 'deadline')
+        self.assertFalse(self.deletions)
+        self.completed(long, {'status': 'completed', 'exit_code': 0})
+        self.assertEqual(self.observe(9099)[long]['exit_code'], 0)
+        self.assertEqual(len(self.deletions), 1)
+
+    def test_backup_stop_and_idle_left_retention(self):
+        timed = self.record(1, seconds=3600)
+        left = self.record(2)
+        self.restart()
+        self.observe(3759)
+        self.assertEqual(self.signals, [])
+        self.observe(3760)
+        self.assertEqual(self.signals, [timed])
+        self.completed(timed, {'status': 'stopped', 'exit_code': -9})
+        rows = self.observe(3761)
+        self.assertEqual((rows[timed]['status'], rows[timed]['stop_reason']), ('timed_out', 'deadline'))
+        self.assertEqual(rows[left]['stop_reason'], 'pod_idle')
+        self.assertIn(left, self.observe(3761 + 7 * 86400 - 1))
+        self.assertNotIn(left, self.observe(3761 + 7 * 86400 + 1))
+
+    def test_new_base_waits_but_an_urgent_base_update_retires_the_pod(self):
+        operation = self.record(1, seconds=9000)
+        self.restart()
+        self.controller.config['helper_image'] = 'next-base'
+        self.observe(2000)
+        self.assertFalse(self.deletions)
+        self.controller.config['base_apply_immediately'] = True
+        self.assertEqual(self.observe(2001)[operation]['stop_reason'], 'pod_updated')
+        self.assertEqual(len(self.deletions), 1)
+
+    def test_base_update_deferral_is_capped_across_runner_restarts(self):
+        first = self.record(1, seconds=9000)
+        self.restart()
+        self.controller.config['helper_image'] = 'next-base'
+        self.observe(2000)
+        self.assertFalse(self.deletions)
+        self.now = 9000
+        later = self.record(2, seconds=86400)
+        self.completed(first, {'status': 'completed', 'exit_code': 0})
+        self.restart()
+        self.observe(2000 + 86400 - 1)
+        self.assertFalse(self.deletions)
+        self.assertEqual(self.observe(2000 + 86400)[later]['stop_reason'], 'pod_updated')
+        self.assertEqual(len(self.deletions), 1)
+
+    def test_incompatible_protocol_retires_the_pod_even_during_work(self):
+        operation = self.record(1, seconds=9000, protocol='0.9.0')
+        self.restart()
+        self.assertEqual(self.observe(101)[operation]['stop_reason'], 'pod_updated')
+
+    def test_runner_recovers_previous_major_and_minor_results_on_the_same_base(self):
+        import json
+        from pathlib import Path
+        fixtures = json.loads(Path(__file__).with_name('fixtures')
+                              .joinpath('helper-protocol-receipts.json').read_text())
+        operations = [self.record(n, seconds=7200, protocol=fixture['version'])
+                      for n, fixture in enumerate(fixtures, 1)]
+        self.restart()
+        self.observe(1900)
+        self.assertFalse(self.deletions)
+        for operation, fixture in zip(operations, fixtures):
+            self.completed(operation, fixture['result'])
+        rows = self.observe(2000)
+        for operation in operations:
+            self.assertEqual((rows[operation]['status'], rows[operation]['exit_code']), ('completed', 7))
+
+    @unittest.skipUnless(sys.platform == 'linux', 'requires Linux prctl')
+    def test_stream_launches_helper_without_a_mounted_program(self):
+        import json
+        import subprocess
+        from execution_pod import helper_command
+        from helper_protocol import HELPER_PROTOCOL
+        from helper_transport import prepare_helper_exec
+        command, bundle = prepare_helper_exec(['exec', 'pod', '-c', 'execution', '--'] +
+                                              helper_command('protocol'))
+        launch = command[command.index('-I'):]
+        reply = subprocess.run([sys.executable, *launch], input=bundle,
+                               check=True, capture_output=True, timeout=5)
+        self.assertEqual(json.loads(reply.stdout)['version'], HELPER_PROTOCOL)
+
+
 class HelperUpdateTest(unittest.TestCase):
     def test_ensure_and_submit_refuse_old_helper_image(self):
         import tempfile
@@ -2958,7 +3157,7 @@ class HelperUpdateTest(unittest.TestCase):
             controller.stop.assert_not_called()
             controller.foreground_jobs['s'] = 0
             controller.stop_idle(now=103)
-            controller.stop.assert_called_once_with('s')
+            controller.stop.assert_called_once_with('s', reason='pod_updated')
 
     def test_failed_update_stop_is_retried(self):
         import tempfile
@@ -3292,7 +3491,7 @@ class BootstrapReadinessRegressionTest(unittest.TestCase):
         import tempfile
         from pathlib import Path
         from unittest.mock import patch
-        import sandbox_v2
+        import pod_base
         with tempfile.TemporaryDirectory() as directory:
             marker = str(Path(directory) / 'ready')
             tracker = str(Path(directory) / 'tracker')
@@ -3301,28 +3500,28 @@ class BootstrapReadinessRegressionTest(unittest.TestCase):
             output.mkdir()
             (output / 'old.stdout').write_text('old')
             def mount(_docker):
-                self.assertFalse(sandbox_v2.bootstrap_ready())
+                self.assertFalse(pod_base.bootstrap_ready())
                 self.assertTrue(Path(tracker).exists())
-            with patch.object(sandbox_v2, 'BOOTSTRAP_READY_PATH', marker, create=True), \
-                 patch.object(sandbox_v2, 'BOOTSTRAP_TRACKER_PATH', tracker, create=True), \
-                 patch.object(sandbox_v2, 'OUTPUT_DIRECTORY', str(Path(directory) / 'output')), \
+            with patch.object(pod_base, 'BOOTSTRAP_READY_PATH', marker, create=True), \
+                 patch.object(pod_base, 'BOOTSTRAP_TRACKER_PATH', tracker, create=True), \
+                 patch.object(pod_base, 'OUTPUT_DIRECTORY', str(Path(directory) / 'output')), \
                  patch.dict('os.environ', {'AIDASH_POD_UID': 'pod-uid', 'AIDASH_PROCESS_LIMIT': '128'}), \
-                 patch('resource.setrlimit'), patch.object(sandbox_v2, 'mount_rootfs', side_effect=mount), \
+                 patch('resource.setrlimit'), patch.object(pod_base, 'mount_rootfs', side_effect=mount), \
                  patch('signal.pause', side_effect=InterruptedError):
                 with self.assertRaises(InterruptedError):
-                    sandbox_v2.bootstrap()
-                self.assertTrue(sandbox_v2.bootstrap_ready())
+                    pod_base.bootstrap()
+                self.assertTrue(pod_base.bootstrap_ready())
                 self.assertFalse(Path(tracker).exists())
                 self.assertEqual(list(output.iterdir()), [])
                 with patch.dict('os.environ', {'AIDASH_POD_UID': 'other'}):
-                    self.assertFalse(sandbox_v2.bootstrap_ready())
+                    self.assertFalse(pod_base.bootstrap_ready())
 
     def test_bootstrap_continues_when_output_directory_cannot_be_created(self):
         import errno
         import tempfile
         from pathlib import Path
         from unittest.mock import patch
-        import sandbox_v2
+        import pod_base
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / 'output'
             original_mkdir = Path.mkdir
@@ -3330,24 +3529,24 @@ class BootstrapReadinessRegressionTest(unittest.TestCase):
                 if path == output:
                     raise OSError(errno.ENOSPC, 'full')
                 return original_mkdir(path, *args, **kwargs)
-            with patch.object(sandbox_v2, 'BOOTSTRAP_READY_PATH', str(Path(directory) / 'ready')), \
-                 patch.object(sandbox_v2, 'BOOTSTRAP_TRACKER_PATH', str(Path(directory) / 'tracker')), \
-                 patch.object(sandbox_v2, 'OUTPUT_DIRECTORY', str(output)), \
+            with patch.object(pod_base, 'BOOTSTRAP_READY_PATH', str(Path(directory) / 'ready')), \
+                 patch.object(pod_base, 'BOOTSTRAP_TRACKER_PATH', str(Path(directory) / 'tracker')), \
+                 patch.object(pod_base, 'OUTPUT_DIRECTORY', str(output)), \
                  patch.dict('os.environ', {'AIDASH_POD_UID': 'uid', 'AIDASH_PROCESS_LIMIT': '128'}), \
-                 patch('resource.setrlimit'), patch.object(sandbox_v2, 'mount_rootfs'), \
+                 patch('resource.setrlimit'), patch.object(pod_base, 'mount_rootfs'), \
                  patch.object(Path, 'mkdir', mkdir), patch('signal.pause', side_effect=InterruptedError):
                 with self.assertRaises(InterruptedError):
-                    sandbox_v2.bootstrap()
-                self.assertTrue(sandbox_v2.bootstrap_ready())
+                    pod_base.bootstrap()
+                self.assertTrue(pod_base.bootstrap_ready())
 
     def test_execution_container_readiness_uses_bootstrap_handshake(self):
-        from execution_pod import execution_manifests, helper_command
+        from execution_pod import execution_manifests, base_command
         settings = {'scratch_space_id': 's', 'image': 'image@sha256:' + 'a' * 64, 'cpu': 2,
                     'memory_bytes': 2 << 30, 'capacity_bytes': 2 << 30, 'docker_enabled': False}
         config = {'runtime_class': 'gvisor', 'helper_image': 'helper@sha256:' + 'b' * 64, 'namespace': 'sandbox'}
         _, pod = execution_manifests(settings, config)
         probe = pod['spec']['containers'][0]['readinessProbe']
-        self.assertEqual(probe['exec']['command'], helper_command('ready'))
+        self.assertEqual(probe['exec']['command'], base_command('ready'))
 
 
 class GuardV2IdentityTest(unittest.TestCase):
@@ -3561,7 +3760,7 @@ class TrustedProbeRegressionTest(unittest.TestCase):
     def test_rejects_symlinked_system_root(self):
         import tempfile
         from pathlib import Path
-        from sandbox_v2 import validate_system_root
+        from pod_base import validate_system_root
         with tempfile.TemporaryDirectory() as directory:
             image = Path(directory) / 'image-root'
             image.mkdir()
@@ -3587,11 +3786,11 @@ class ExecProcessLimitTest(unittest.TestCase):
         code = r"""
 import os, resource
 from unittest.mock import patch
-from sandbox_v2 import chroot_command
+from pod_base import chroot_command
 os.environ['AIDASH_PROCESS_LIMIT'] = '128'
 def execute(*args):
     print(*resource.getrlimit(resource.RLIMIT_NPROC))
-with patch('os.chroot'), patch('sandbox_v2.enter_working_directory'), patch('sandbox_v2.validate_system_root'), patch('sandbox_v2.image_environment', return_value={}), patch('sandbox_v2.drop_user_capabilities'), patch('os.execvpe', execute):
+with patch('os.chroot'), patch('pod_base.enter_working_directory'), patch('pod_base.validate_system_root'), patch('pod_base.image_environment', return_value={}), patch('pod_base.drop_user_capabilities'), patch('os.execvpe', execute):
     chroot_command('/rootfs', '.', ['/bin/true'], False)
 """
         result = subprocess.run([sys.executable, '-c', code], cwd=os.path.dirname(__file__),

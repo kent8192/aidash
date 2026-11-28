@@ -3,7 +3,10 @@
 # rebuild must not pick up different binaries: the base is pinned by digest and
 # packages (curl, util-linux's nsenter) come from one immutable, signed Debian
 # archive snapshot at exact versions. Update them together in a reviewed change.
-FROM python:3.13-slim-bookworm@sha256:2325bb286ec344af3e5898cc224b5844e2707ac6e26b1632516fd3edc84a5e26
+FROM python:3.13-slim-bookworm@sha256:2325bb286ec344af3e5898cc224b5844e2707ac6e26b1632516fd3edc84a5e26 AS pod-base
+COPY prepare_helpers.py pod_base.py helper_launcher.py /opt/aidash/
+
+FROM pod-base AS control
 ARG TARGETARCH
 ARG KUBECTL_VERSION=v1.34.0
 ARG DEBIAN_SNAPSHOT=20261001T000000Z
@@ -28,5 +31,5 @@ ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
 # bucket (#394). Only these two files invalidate the downloaded layer.
 COPY gvisor.json gvisor_installer.py /opt/aidash/
 RUN python3 -I /opt/aidash/gvisor_installer.py bundle "${TARGETARCH}"
-COPY control.py node_guard.py allocation_usage.py runner_journal.py execution_pod.py sandbox_v2.py prepare_helpers.py python_session.py mcp_session.py files_v2.py network_probe.py network_canary.py user_probe.py /opt/aidash/
+COPY control.py node_guard.py allocation_usage.py runner_journal.py execution_pod.py sandbox_v2.py helper_protocol.py helper_transport.py python_session.py mcp_session.py files_v2.py network_probe.py network_canary.py user_probe.py /opt/aidash/
 ENTRYPOINT ["python3", "-I", "/opt/aidash/control.py"]

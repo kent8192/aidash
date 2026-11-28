@@ -44,6 +44,7 @@ const RETIRED: &[&str] = &[
 	"generation_summary_usage",
 	"egress_budgets",
 	"egress_sessions",
+	"egress_scope_host_debits",
 	// The Research category (#987, ADR 0138).
 	"research_attempts",
 	"research_fragments",
@@ -102,8 +103,8 @@ const IN_DEPLOYMENT_SCOPE: &[&str] = &[
 	"execution.0184_retire_area_holds forward",
 	"execution.0113_content_object_references backward",
 	"execution.0113_content_object_references forward",
-	"federation.0032_retire_artifact_reads forward",
-	"federation.0033_completion_settlement_v2 forward",
+	"federation.0033_retire_artifact_reads forward",
+	"federation.0034_completion_settlement_v2 forward",
 	"identity.0067_scratch_member_policy forward",
 	"identity.0080_schedule_member_policy forward",
 	"identity.0082_remove_package_index_approvals forward",

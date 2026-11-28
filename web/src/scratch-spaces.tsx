@@ -186,9 +186,16 @@ function Edit({
           min={1 / gib}
           step="any"
           max={limits.ceilings.daily_sent_bytes / gib}
-          value={settings.daily_sent_bytes / gib}
+          value={
+            settings.daily_sent_bytes == null
+              ? ""
+              : settings.daily_sent_bytes / gib
+          }
           onChange={(e) =>
-            change("daily_sent_bytes", bytesFromGiB(e.target.value))
+            change(
+              "daily_sent_bytes",
+              e.target.value ? bytesFromGiB(e.target.value) : null,
+            )
           }
         />
       </Field>
@@ -198,9 +205,16 @@ function Edit({
           min={1 / gib}
           step="any"
           max={limits.ceilings.daily_received_bytes / gib}
-          value={settings.daily_received_bytes / gib}
+          value={
+            settings.daily_received_bytes == null
+              ? ""
+              : settings.daily_received_bytes / gib
+          }
           onChange={(e) =>
-            change("daily_received_bytes", bytesFromGiB(e.target.value))
+            change(
+              "daily_received_bytes",
+              e.target.value ? bytesFromGiB(e.target.value) : null,
+            )
           }
         />
       </Field>

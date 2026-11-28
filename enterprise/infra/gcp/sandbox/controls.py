@@ -220,7 +220,9 @@ class Controls:
             labels = pod['metadata'].get('labels', {})
             role = expected_role(namespace, pod)
             allowed = role is not None
-            require(not allowed or labels.get('app.kubernetes.io/component') == role, 'workload role and service account disagree')
+            component = labels.get('app.kubernetes.io/component')
+            require(not allowed or component == role or (role == 'server' and component == 'egress'),
+                    'workload role and service account disagree')
             label_matches = (labels.get('aidash.run/metadata-server') == 'allowed' if allowed
                              else 'aidash.run/metadata-server' not in labels)
             uri = 'http://169.254.169.254/computeMetadata/v1/instance/service-accounts/default/email'

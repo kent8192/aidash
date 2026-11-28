@@ -71,6 +71,7 @@ ADMISSION = "env-environment-admission"
 LOAD_BALANCER = "env-environment-edge"
 WRITER_PODS = "app.kubernetes.io/instance=app,app.kubernetes.io/component in (server,worker)"
 MIGRATION = "app.kubernetes.io/instance=app,app.kubernetes.io/component=migration"
+EGRESS_PODS = "app.kubernetes.io/instance=app,app.kubernetes.io/component=egress"
 RUNNER_PODS = "aidash.run/runner=app"
 EDGE_PODS = "aidash.run/edge=env"
 WRITER_REPLICAS = 1
@@ -786,18 +787,21 @@ def image(release, kind):
     return value
 
 
-def egress(identity, provider):
-    """Turn the Egress gateway on exactly where a Tenant Secret broker serves it.
-
-    On Cloud the gateway forwards Tenant Secret requests only through that broker
-    (ADR 0095), so without one it has nothing it may attach and stays off.
-    """
+def egress(identity, provider, output):
+    """Render operator-owned Egress IP groups from the applied infrastructure."""
+    groups = output.get("egress_ip_groups", {})
+    shared = output.get("egress_shared")
     if not (provider or {}).get("tenant_secret_broker"):
+        if groups or shared:
+            raise Refused("Egress IP groups require an enabled Egress gateway")
         return {"enabled": False}
-    address = EGRESS_CLUSTER_IPS.get(identity)
+    address = shared["clusterIP"] if shared else EGRESS_CLUSTER_IPS.get(identity)
     if address is None:
         raise Refused("The Egress gateway has no reserved Service IP for this Environment")
-    return {"enabled": True, "clusterIP": address}
+    settings = {"enabled": True, "clusterIP": address, "ipGroups": groups, "suspended": True}
+    if shared:
+        settings["sharedNodePool"] = True
+    return settings
 
 
 def app_values(cluster, identity, output, release, sha, settings):
@@ -867,7 +871,7 @@ def app_values(cluster, identity, output, release, sha, settings):
             "runner": {"enabled": True, "image": control, "existingSecret": "app-runner",
                        "ingress": {"podSelectors": [{"aidash.run/activity": "env"}]},
                        "journal": {"storageClassName": journal_class}},
-            "egress": egress(identity, settings["provider"]),
+            "egress": egress(identity, settings["provider"], output),
         },
         **failover(identity),
     }
@@ -995,12 +999,29 @@ def drain(cluster, identity, workloads=(SERVER, WORKER), selector=WRITER_PODS):
     wait_until(lambda: not live_pods(cluster, namespace, selector), "Application Pods did not drain", 300)
 
 
+def egress_workloads(cluster, namespace):
+    return [
+        "deployment/" + deployment["metadata"]["name"]
+        for deployment in cluster.items("deployment", namespace, EGRESS_PODS)
+    ]
+
+
+def stop_egress(cluster, namespace):
+    for workload in egress_workloads(cluster, namespace):
+        cluster.scale(namespace, workload, 0)
+    wait_until(lambda: not live_pods(cluster, namespace, EGRESS_PODS),
+               "Egress gateway Pods did not drain", 300)
+
+
 def start_writers(cluster, identity):
     namespace = namespace_of(identity)
     for workload in (SERVER, WORKER):
         cluster.scale(namespace, target(identity, workload), WRITER_REPLICAS)
     for workload in (SERVER, WORKER):
         cluster.rollout(namespace, target(identity, workload))
+    for workload in egress_workloads(cluster, namespace):
+        cluster.scale(namespace, workload, 1)
+        cluster.rollout(namespace, workload)
 
 
 def unseal(cluster, identity):
@@ -1073,6 +1094,7 @@ def quiesce(cluster, identity):
     admission(cluster, identity, "close")
     drain(cluster, identity)
     drain(cluster, identity, (RUNNER,), RUNNER_PODS)
+    stop_egress(cluster, namespace)
     return True
 
 
@@ -1105,6 +1127,7 @@ def deploy(cluster, identity, output, release, sha, settings, demo_people=None, 
         cluster.rollout(namespace, workload)
     cluster.scale(namespace, target(identity, RUNNER), 1)
     cluster.rollout(namespace, target(identity, RUNNER))
+    stop_egress(cluster, namespace)
     database_roles(cluster, identity)
     migrate(cluster, identity, sha, demo_people, fork)
     observer_role(cluster, identity)
@@ -1334,9 +1357,11 @@ def reload(cluster, identity, output, settings):
     # Releases installed before the installer had its own namespace carry no
     # value for it; the chart default would be shared by every Environment.
     values.setdefault("execution", {})["installerNamespace"] = namespaces(identity)[3]
+    values["execution"]["egress"] = egress(identity, settings["provider"], output)
     for role in ("server", "worker"):
         values.setdefault(role, {})["replicas"] = 0
     cluster.upgrade(namespace, "app", APP_CHART, values)
+    stop_egress(cluster, namespace)
     cluster.scale(namespace, target(identity, RUNNER), 1)
     cluster.rollout(namespace, target(identity, RUNNER))
     # materialize() points the runtime Secrets at the server and observer logins.
@@ -1352,6 +1377,8 @@ def health(cluster, identity):
     namespace = namespace_of(identity)
     for workload in (SERVER, WORKER, RUNNER):
         cluster.rollout(namespace, target(identity, workload))
+    for workload in egress_workloads(cluster, namespace):
+        cluster.rollout(namespace, workload)
     value = cluster.get(*target(identity, SERVER).split("/", 1), namespace) or {}
     status = value.get("status", {})
     if not status.get("readyReplicas"):
@@ -1384,6 +1411,7 @@ def stop(cluster, identity):
     memory_schedules(cluster, identity, True)
     if cluster.get("cronjob", ACTIVITY, namespace) is not None:
         cluster.patch("cronjob", ACTIVITY, {"spec": {"suspend": True}}, namespace)
+    stop_egress(cluster, namespace)
     for workload in (*(target(identity, w) for w in (SERVER, WORKER, RUNNER, EDGE)), *STATEFULSETS):
         if exists(cluster, namespace, workload):
             cluster.scale(namespace, workload, 0)

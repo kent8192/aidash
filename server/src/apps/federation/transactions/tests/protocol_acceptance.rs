@@ -1,5 +1,5 @@
 #![allow(clippy::disallowed_methods)] // Fixtures reach the database outside a tenancy scope.
-#[path = "../../../execution/tests/support/legacy.rs"]
+#[path = "../../../execution/tests/support/fixtures.rs"]
 mod common;
 #[path = "../../../execution/tests/support/sender_schedule.rs"]
 mod sender_schedule;
@@ -439,14 +439,15 @@ async fn fixture_origin(node: &Node) -> Value {
 	json!({"credential_id":credential.id,"tenant":credential.tenant,"subject":credential.subject})
 }
 
-fn fixture_preflight(manifest: &Manifest, origin: &Value, node: &str) -> Value {
+fn fixture_preflight(manifest: &Manifest, seed: &str, origin: &Value, node: &str) -> Value {
 	let origin = aidash_domain::transactions::authority::Origin {
 		credential_id: serde_json::from_value(origin["credential_id"].clone()).unwrap(),
 		tenant: origin["tenant"].as_str().unwrap().into(),
 		subject: origin["subject"].as_str().unwrap().into(),
 	};
 	let request =
-		aidash_application::transactions::authority::request(manifest, &origin, node).unwrap();
+		aidash_application::transactions::authority::sealed_request(manifest, seed, &origin, node)
+			.unwrap();
 	json!({
 		"id":request.id,"coordinator":request.coordinator,"digest":request.digest,
 		"origin":{"credential_id":origin.credential_id,"tenant":origin.tenant,"subject":origin.subject},
@@ -467,7 +468,7 @@ async fn seed_existing_scoped_transaction(
 	assert_eq!(participants.len(), manifest.participants.len());
 	// Admitted as the host does: a Deployment Administrator has no HTTP route to
 	// submit a transaction (#484).
-	coordinator::submit(&source.f, manifest).await.unwrap();
+	let seed = coordinator::submit(&source.f, manifest).await.unwrap().seed;
 	let origin = fixture_origin(source).await;
 	let lease =
 		DatabaseConnectionLease::register(source.f.store.control_pool.connection()).unwrap();
@@ -482,7 +483,7 @@ async fn seed_existing_scoped_transaction(
 	for node in participants {
 		let local = fixture_origin(node).await;
 		let binding = json!({
-			"request":fixture_preflight(manifest, &origin, &node.address),
+			"request":fixture_preflight(manifest, &seed, &origin, &node.address),
 			"local":local,"subjects":[local["subject"]]
 		});
 		let lease =
@@ -536,6 +537,8 @@ async fn assert_no_transaction_state(nodes: &[&Node], id: Uuid) {
 }
 
 async fn peer_preflight(source: &Node, target: &Node, manifest: &Manifest) -> (u16, Value) {
+	// A preflight checks only the digest's shape, so any seed seals it.
+	let seed = "5e".repeat(32);
 	let origin = fixture_origin(source).await;
 	let response = common::peering::signed(
 		&source.f.client,
@@ -544,7 +547,7 @@ async fn peer_preflight(source: &Node, target: &Node, manifest: &Manifest) -> (u
 		(&source.f, &source.node_address()),
 		&target.node_address(),
 		"alice",
-		&fixture_preflight(manifest, &origin, &target.address),
+		&fixture_preflight(manifest, &seed, &origin, &target.address),
 	)
 	.await
 	.send()
@@ -553,6 +556,47 @@ async fn peer_preflight(source: &Node, target: &Node, manifest: &Manifest) -> (u
 	let status = response.status().as_u16();
 	let body = response.json().await.unwrap();
 	(status, body)
+}
+
+/// Every participant that recorded `manifest` holds only its own part
+/// (ADR 0146): no other participant's mutation reached its records.
+async fn assert_only_own_parts(nodes: &[&Node], manifest: &Manifest) {
+	use aidash_server::apps::federation::transactions::models::AtomicParticipant;
+	use reinhardt::db::orm::Model;
+	for node in nodes {
+		let lease =
+			DatabaseConnectionLease::register(node.f.store.control_pool.connection()).unwrap();
+		let rows = AtomicParticipant::objects()
+			.filter(AtomicParticipant::field_id().eq(manifest.id))
+			.all_with_db(&mut lease.handle())
+			.await
+			.unwrap();
+		for row in rows {
+			let share: aidash_domain::transactions::share::Share =
+				serde_json::from_value(row.manifest.0.clone()).unwrap();
+			assert_eq!(share.part.node_id, node.address);
+			let stored = row.manifest.0.to_string();
+			for other in manifest
+				.participants
+				.iter()
+				.filter(|participant| participant.node_id != node.address)
+			{
+				for mutation in &other.mutations {
+					let aidash_server::transactions::Mutation::ThreadTitle { thread_id, .. } =
+						mutation
+					else {
+						continue;
+					};
+					assert!(
+						!stored.contains(&thread_id.to_string()),
+						"{} holds {}'s target",
+						node.address,
+						other.node_id
+					);
+				}
+			}
+		}
+	}
 }
 
 async fn steps(node: &Node, id: Uuid, count: usize) {
@@ -770,10 +814,15 @@ async fn two_node_commit_hides_partial_application_and_releases_only_after_all_a
 	for (node, thread) in [(&a, wa), (&b, wb)] {
 		assert_eq!(node.get(&format!("/api/threads/{thread}")).await.0, 200);
 		assert_eq!(
-			participant::finish(&node.f, None, a.address.as_str(), &manifest)
-				.await
-				.unwrap()
-				.phase,
+			participant::finish(
+				&node.f,
+				None,
+				a.address.as_str(),
+				&common::share(&a.f, &manifest, &node.address).await
+			)
+			.await
+			.unwrap()
+			.phase,
 			"COMMITTED"
 		);
 		let updates: i64 = {
@@ -826,17 +875,27 @@ async fn stale_prepare_aborts_every_node_and_delayed_reserve_cannot_resurrect_it
 		);
 		assert_eq!(node.get(&format!("/api/threads/{thread}")).await.0, 200);
 		assert_eq!(
-			participant::reserve(&node.f, None, a.address.as_str(), &manifest)
-				.await
-				.unwrap()
-				.phase,
+			participant::reserve(
+				&node.f,
+				None,
+				a.address.as_str(),
+				&common::share(&a.f, &manifest, &node.address).await
+			)
+			.await
+			.unwrap()
+			.phase,
 			"ABORTED"
 		);
 		assert_eq!(
-			participant::finish(&node.f, None, a.address.as_str(), &manifest)
-				.await
-				.unwrap()
-				.phase,
+			participant::finish(
+				&node.f,
+				None,
+				a.address.as_str(),
+				&common::share(&a.f, &manifest, &node.address).await
+			)
+			.await
+			.unwrap()
+			.phase,
 			"ABORTED"
 		);
 	}
@@ -1167,12 +1226,22 @@ async fn thread_task_execution_and_completion_message_commit_together_once(
 		"{committed:?}"
 	);
 	for _ in 0..2 {
-		participant::finish(&a.f, None, a.address.as_str(), &manifest)
-			.await
-			.unwrap();
-		participant::finish(&b.f, None, a.address.as_str(), &manifest)
-			.await
-			.unwrap();
+		participant::finish(
+			&a.f,
+			None,
+			a.address.as_str(),
+			&common::share(&a.f, &manifest, &a.address).await,
+		)
+		.await
+		.unwrap();
+		participant::finish(
+			&b.f,
+			None,
+			a.address.as_str(),
+			&common::share(&a.f, &manifest, &b.address).await,
+		)
+		.await
+		.unwrap();
 	}
 	assert_eq!(
 		a.f.store.task(&TEST_FIXTURE, task.id).await.unwrap().status,
@@ -1328,7 +1397,7 @@ async fn peer_trust_denial_aborts_promptly_and_revocation_preserves_admitted_rec
 	// An authenticated peer cannot claim that a different node coordinates its manifest.
 	let mut forged = admitted.clone();
 	forged.coordinator = b.address.clone();
-	let body = serde_json::to_vec(&forged).unwrap();
+	let body = serde_json::to_vec(&common::share(&a.f, &forged, &b.address).await).unwrap();
 	let token = common::peering::token(
 		a.f.config.deployment_key.as_deref().unwrap(),
 		a.f.config.deployment.as_str(),
@@ -1631,7 +1700,9 @@ async fn unreachable_aborted_transactions_cannot_starve_later_local_work(
 #[case::trust_after_admission(2, "trust", "COMMIT")]
 #[case::mapping_before_admission(1, "mapping", "ABORT")]
 #[case::mapping_after_admission(2, "mapping", "COMMIT")]
-#[case::recipient_disclosure_denied(0, "disclosure", "REJECTED")]
+#[case::receiver_policy_denied(0, "denied", "REJECTED")]
+#[case::fresh_submission_commits(0, "fresh", "COMMIT")]
+#[case::withdrawal_after_preflight(0, "withdrawn", "ABORT")]
 #[tokio::test]
 async fn mapped_transaction_admission_and_revocation(
 	#[case] transitions: usize,
@@ -1746,10 +1817,10 @@ async fn mapped_transaction_admission_and_revocation(
 			});
 		third = Some((c, thread));
 	}
-	if revocation == "disclosure" {
+	if revocation == "denied" {
 		let snapshot = auth_b.snapshot("acme").await.unwrap();
 		let mut policy = json!(snapshot.bundle);
-		policy["policies"].as_array_mut().unwrap().push(json!({"id":"no-disclosure","effect":"deny","subjects":{"any":true},"actions":["transaction.disclose"],"resources":{"kinds":["*"]}}));
+		policy["policies"].as_array_mut().unwrap().push(json!({"id":"no-transactions","effect":"deny","subjects":{"any":true},"actions":["transaction.submit"],"resources":{"kinds":["*"]}}));
 		auth_b
 			.replace(
 				"acme",
@@ -1760,7 +1831,9 @@ async fn mapped_transaction_admission_and_revocation(
 			.await
 			.unwrap();
 	}
-	if revocation != "disclosure" {
+	// The other cases resubmit a transaction the host already admitted; these
+	// submit a new one across Deployments (#1109).
+	if !matches!(revocation, "denied" | "fresh" | "withdrawn") {
 		let mut participants = vec![&a, &b];
 		if let Some((c, _)) = third.as_ref() {
 			participants.push(c);
@@ -1775,9 +1848,9 @@ async fn mapped_transaction_admission_and_revocation(
 		json!(manifest),
 	)
 	.await;
-	if revocation == "disclosure" {
-		// Suspension rejects the fresh scoped submission before a peer call.
-		// The peer endpoint independently retains its disclosure-policy denial.
+	if revocation == "denied" {
+		// B's policy refuses its preflight, so the submission persists nothing
+		// anywhere. The peer endpoint refuses the same preflight on its own.
 		let (peer_status, peer_body) = peer_preflight(&a, &b, &manifest).await;
 		assert_eq!(peer_status, 403, "{peer_body}");
 		let mut participants = vec![&a, &b];
@@ -1803,7 +1876,7 @@ async fn mapped_transaction_admission_and_revocation(
 			.unwrap();
 			assert_eq!(
 				count, 0,
-				"no full manifest is admitted before all disclosure preflights pass"
+				"nothing is admitted before every participant's preflight passes"
 			);
 		}
 		if let Some((c, _)) = third {
@@ -1948,7 +2021,10 @@ async fn mapped_transaction_admission_and_revocation(
 				);
 				let ticket: Value = serde_json::from_slice(bytes).unwrap();
 				assert_eq!(ticket["id"], json!(manifest.id));
-				assert_eq!(ticket["digest"], manifest.digest().unwrap());
+				assert_eq!(
+					ticket["digest"],
+					json!(coordinator::status(&a.f, manifest.id).await.unwrap().digest)
+				);
 			}
 
 			drop(ticket_app);
@@ -1990,12 +2066,14 @@ async fn mapped_transaction_admission_and_revocation(
 				.await
 				.unwrap();
 		}
-		"receiver" => {
+		// B withdraws the authority its preflight checked before its reservation.
+		"receiver" | "withdrawn" => {
 			auth_b
 				.revoke_credential("acme", credential_b.id)
 				.await
 				.unwrap();
 		}
+		"fresh" => {}
 		"mapping" => {
 			write(&b.f, "acme", b.mapping(&a, credential_b.id, false, 1))
 				.await
@@ -2029,6 +2107,13 @@ async fn mapped_transaction_admission_and_revocation(
 	}
 	let result = complete(&a, manifest.id).await;
 	assert_eq!(result.decision.as_deref(), Some(expected), "{result:?}");
+	{
+		let mut participants = vec![&a, &b];
+		if let Some((c, _)) = third.as_ref() {
+			participants.push(c);
+		}
+		assert_only_own_parts(&participants, &manifest).await;
+	}
 	if let Some(path) = reconciliation_check {
 		let (status, body) = common::BrowserMapping::new(&a.f, "acme", "alice")
 			.await
@@ -2101,7 +2186,6 @@ fn mapped_nodes(
 struct FaultSignals {
 	admitted: Arc<tokio::sync::Notify>,
 	release: Arc<tokio::sync::Notify>,
-	gate: Arc<tokio::sync::Semaphore>,
 	barrier: Arc<tokio::sync::Barrier>,
 	active: Arc<std::sync::atomic::AtomicUsize>,
 	peak: Arc<std::sync::atomic::AtomicUsize>,
@@ -2109,7 +2193,6 @@ struct FaultSignals {
 #[fixture]
 fn fault_signals() -> FaultSignals {
 	FaultSignals {
-		gate: Arc::new(tokio::sync::Semaphore::new(0)),
 		admitted: Arc::new(tokio::sync::Notify::new()),
 		release: Arc::new(tokio::sync::Notify::new()),
 		barrier: Arc::new(tokio::sync::Barrier::new(2)),
@@ -2371,8 +2454,8 @@ async fn node_closure_fences_a_participant_snapshot_taken_before_deletion(
 	let attempt = tokio::spawn({
 		let f = a.f.clone();
 		let caller = a.address.clone();
-		let manifest = manifest.clone();
-		async move { participant::reserve(&f, None, &caller, &manifest).await }
+		let share = common::share(&a.f, &manifest, &a.address).await;
+		async move { participant::reserve(&f, None, &caller, &share).await }
 	});
 	let waiting = Query::select()
 		.column(Alias::new("pid"))
@@ -2428,7 +2511,13 @@ async fn node_closure_fences_a_participant_snapshot_taken_before_deletion(
 	);
 	assert!(
 		matches!(
-			participant::reserve(&a.f, None, &a.address, &manifest).await,
+			participant::reserve(
+				&a.f,
+				None,
+				&a.address,
+				&common::share(&a.f, &manifest, &a.address).await
+			)
+			.await,
 			Err(Error::Forbidden)
 		),
 		"a fresh retry must observe the closed Node"

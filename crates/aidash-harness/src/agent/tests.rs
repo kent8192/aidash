@@ -751,7 +751,6 @@ impl ExecutionStore for Backend {
 	async fn calibration_samples(
 		&self,
 		upstream_model: &str,
-		_projection_version: u8,
 	) -> Result<Vec<aidash_domain::provider::estimate::CalibrationSample>> {
 		assert_eq!(
 			self.entry("model").config["model_id"].as_str(),
@@ -1256,7 +1255,6 @@ impl ExecutionAuthority for Backend {
 		&self,
 		messages: &[(i64, Uuid, usize)],
 		model: &ModelConfig,
-		_projection: aidash_domain::projection::ProjectionVersion,
 	) -> Result<HumanMediaBatch> {
 		let _ = model;
 		if !self.0.human_media_pending {
@@ -4068,6 +4066,19 @@ async fn truncated_summary_retries_once_with_a_smaller_range(
 			.collect::<Vec<_>>()
 	);
 	assert!(!reserved.contains(&fixture.backend.0.token));
+	let usage = fixture.backend.0.usage.lock().unwrap();
+	let summaries: Vec<_> = usage
+		.iter()
+		.filter(|(attempt, _)| attempt.purpose == UsagePurpose::Summary)
+		.collect();
+	let [(first, _), (retry, _)] = summaries.as_slice() else {
+		panic!("expected two summary dispatches");
+	};
+	assert_ne!(first.attempt, retry.attempt);
+	let first_call = first.model_call.as_ref().unwrap();
+	let retry_call = retry.model_call.as_ref().unwrap();
+	assert!(first_call.retry_key.is_some());
+	assert_eq!(first_call.retry_key, retry_call.retry_key);
 }
 
 #[rstest]

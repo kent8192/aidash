@@ -6,7 +6,7 @@ use aidash_domain::registry::EntityRef;
 use aidash_server::federation::Federation;
 use serde_json::{Value, json};
 use uuid::Uuid;
-#[path = "../../execution/tests/support/legacy.rs"]
+#[path = "../../execution/tests/support/fixtures.rs"]
 mod common;
 
 const LISTED: &str = "listed-agent";

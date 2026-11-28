@@ -532,6 +532,12 @@ impl HarnessManagement {
 					"media run messages require a local run".into(),
 				));
 			}
+			let snapshot = visible
+				.context
+				.binding_snapshot
+				.as_ref()
+				.ok_or_else(|| Error::Invalid("Run has no admitted Binding snapshot".into()))?;
+			f.store.require_run_projection(snapshot)?;
 			Ok(())
 		}
 		.await;
@@ -580,7 +586,6 @@ impl HarnessManagement {
 			let model: crate::registry::ModelConfig =
 				crate::registry::ModelConfig::from_stored(model.config)?;
 			let headroom = f.run_request_headroom(&run).await?;
-			let version = aidash_domain::projection::ProjectionVersion::Native;
 			let batch = aidash_application::execution::media::load(
 				&mut crate::apps::workspaces::repositories::media::ScopedMedia {
 					access: lease.access_mut(),
@@ -590,7 +595,6 @@ impl HarnessManagement {
 				run.thread_id,
 				&[(record.seq, message, headroom)],
 				&model,
-				version,
 			)
 			.await
 			.map_err(|error| match error {

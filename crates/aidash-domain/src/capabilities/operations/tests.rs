@@ -77,6 +77,8 @@ fn only_a_send_the_recorded_runner_may_not_have_is_refused(
 #[fixture]
 fn input() -> ShellRequest {
 	ShellRequest {
+		background: false,
+		notify_on_exit: false,
 		idempotency_key: Uuid::from_u128(1),
 		command: "printf 'ok'".into(),
 		timeout_seconds: None,

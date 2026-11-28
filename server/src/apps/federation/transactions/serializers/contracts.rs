@@ -2,7 +2,10 @@ use serde::{Deserialize, Serialize};
 // Serializable contracts for transactions.
 
 use crate::apps::federation::transactions::models::AtomicParticipant;
-pub use aidash_domain::transactions::{Isolation, Manifest, Mutation, Participant};
+pub use aidash_domain::transactions::{
+	Isolation, Manifest, Mutation, Participant,
+	share::{Part, Seal, Share},
+};
 use chrono::{DateTime, Utc};
 use schemars::JsonSchema;
 use serde_json::Value;
@@ -15,6 +18,12 @@ pub struct Status {
 
 	#[schemars(with = "Manifest")]
 	pub manifest: Value,
+	/// The secret that seals every part (ADR 0146). It is read from the
+	/// coordinator's records but never leaves its Deployment, so no response
+	/// carries it.
+	#[serde(default, skip_serializing)]
+	#[schemars(skip)]
+	pub seed: String,
 	pub decision: Option<String>,
 	pub visible: bool,
 	pub complete: bool,
@@ -25,12 +34,47 @@ crate::native_record!(Status {
 	id,
 	digest,
 	manifest,
+	seed,
 	decision,
 	visible,
 	complete,
 	last_error,
 	created_at
 });
+
+/// The coordinator's decision as a participant receives it: bound to the
+/// transaction digest, without the manifest (ADR 0146).
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[schemars(rename = "TransactionDecision")]
+#[serde(deny_unknown_fields)]
+pub struct Decision {
+	pub id: Uuid,
+	pub digest: String,
+	pub decision: Option<String>,
+	pub visible: bool,
+}
+
+impl From<aidash_domain::transactions::authority::Decision> for Decision {
+	fn from(decision: aidash_domain::transactions::authority::Decision) -> Self {
+		Self {
+			id: decision.id,
+			digest: decision.digest,
+			decision: decision.decision,
+			visible: decision.visible,
+		}
+	}
+}
+
+impl From<Decision> for aidash_domain::transactions::authority::Decision {
+	fn from(decision: Decision) -> Self {
+		Self {
+			id: decision.id,
+			digest: decision.digest,
+			decision: decision.decision,
+			visible: decision.visible,
+		}
+	}
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[schemars(rename = "TransactionVote")]
@@ -46,7 +90,8 @@ pub struct LocalStatus {
 	pub coordinator: String,
 	pub digest: String,
 
-	#[schemars(with = "Manifest")]
+	/// The participant's own share (ADR 0146).
+	#[schemars(with = "Share")]
 	pub manifest: Value,
 	pub phase: String,
 	pub updated_at: DateTime<Utc>,
@@ -73,6 +118,7 @@ impl From<Status> for aidash_domain::transactions::authority::Status {
 			id: status.id,
 			digest: status.digest,
 			manifest: status.manifest,
+			seed: status.seed,
 			decision: status.decision,
 			visible: status.visible,
 			complete: status.complete,
@@ -88,6 +134,7 @@ impl From<aidash_domain::transactions::authority::Status> for Status {
 			id: status.id,
 			digest: status.digest,
 			manifest: status.manifest,
+			seed: status.seed,
 			decision: status.decision,
 			visible: status.visible,
 			complete: status.complete,

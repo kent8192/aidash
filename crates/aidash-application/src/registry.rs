@@ -241,6 +241,7 @@ pub async fn register(
 	node: &str,
 ) -> Result<Entry> {
 	system::reject_owner_definition(&entry)?;
+	validation::check_registration_pins(&entry)?;
 	if entry.binding_normalization.is_some() {
 		return Err(Error::Invalid("Binding normalization is read-only".into()));
 	}
@@ -301,6 +302,7 @@ pub async fn register_definition(
 	node: &str,
 ) -> Result<bool> {
 	system::reject_owner_definition(entry)?;
+	validation::check_registration_pins(entry)?;
 	reject_external_service_bindings(entry)?;
 	let mut entry = entry.clone();
 	apply_definition_defaults(scope, &mut entry).await;

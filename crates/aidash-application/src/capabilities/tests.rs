@@ -207,6 +207,8 @@ async fn cancelled_result_is_not_projected_before_every_transactional_effect_suc
 #[fixture]
 fn input() -> ShellRequest {
 	ShellRequest {
+		background: false,
+		notify_on_exit: false,
 		idempotency_key: Uuid::from_u128(1),
 		command: "printf 'ok'".into(),
 		timeout_seconds: None,
@@ -380,6 +382,41 @@ async fn pod_python_admission_preserves_the_expected_session_in_idempotency(
 		Err(Error::Conflict(code)) if code == "IDEMPOTENCY_CONFLICT"
 	));
 	assert_eq!(scope.accepted.len(), 1);
+}
+
+#[rstest]
+#[tokio::test]
+async fn background_admission_uses_a_separate_ceiling(
+	mut scope: Scope,
+	run: RunMetadata,
+	mut input: ShellRequest,
+) {
+	input.background = true;
+	input.notify_on_exit = true;
+	input.timeout_seconds = Some(14_401);
+	let error = super::pod::accept(
+		&mut scope,
+		&run,
+		input.clone(),
+		None,
+		super::pod::SHELL,
+		"space",
+	)
+	.await
+	.unwrap_err();
+	let typed =
+		aidash_domain::capabilities::errors::CapabilityError::message(400, &error.to_string());
+	assert_eq!(typed.code, "BACKGROUND_TIME_LIMIT_EXCEEDED");
+	assert_eq!(typed.details, Some(json!({"maximum_seconds": 14_400})));
+	assert!(scope.accepted.is_empty());
+
+	input.timeout_seconds = Some(9_000);
+	super::pod::accept(&mut scope, &run, input, None, super::pod::SHELL, "space")
+		.await
+		.unwrap();
+	assert_eq!(scope.accepted[0].input["seconds"], 9_000);
+	assert_eq!(scope.accepted[0].input["background"], true);
+	assert_eq!(scope.accepted[0].input["notify_on_exit"], true);
 }
 
 #[rstest]

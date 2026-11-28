@@ -195,6 +195,9 @@ const TENANT_REGISTRY_MIGRATIONS: &[(&str, &str)] = &[
 	("execution", "0161_generation_subnode_cleanup"),
 	("execution", "0162_scope_host_debits"),
 	("execution", "0163_scope_host_debit_state"),
+	("execution", "0164_model_call_recovery"),
+	("execution", "0165_background_time_limit"),
+	("execution", "0166_scope_connection_debits"),
 	("execution", "0180_unorder_runs"),
 	("execution", "0181_unordered_run_bindings"),
 	("execution", "0182_unpin_live_previews"),
@@ -212,6 +215,8 @@ const TENANT_REGISTRY_MIGRATIONS: &[(&str, &str)] = &[
 	("knowledge", "0058_threads"),
 	("knowledge", "0059_threads_state"),
 	("federation", "0030_threads"),
+	("federation", "0031_transaction_parts"),
+	("federation", "0032_transaction_parts_state"),
 	("registry", "0081_thread_tools"),
 	("registry", "0082_thread_source_scope"),
 	("registry", "0090_prune_definition_fields"),
@@ -285,6 +290,9 @@ const CONTENT_STORE_CUTOVER_MIGRATIONS: &[(&str, &str)] = &[
 	("execution", "0161_generation_subnode_cleanup"),
 	("execution", "0162_scope_host_debits"),
 	("execution", "0163_scope_host_debit_state"),
+	("execution", "0164_model_call_recovery"),
+	("execution", "0165_background_time_limit"),
+	("execution", "0166_scope_connection_debits"),
 	("execution", "0180_unorder_runs"),
 	("execution", "0181_unordered_run_bindings"),
 	("execution", "0182_unpin_live_previews"),
@@ -302,6 +310,8 @@ const CONTENT_STORE_CUTOVER_MIGRATIONS: &[(&str, &str)] = &[
 	("knowledge", "0058_threads"),
 	("knowledge", "0059_threads_state"),
 	("federation", "0030_threads"),
+	("federation", "0031_transaction_parts"),
+	("federation", "0032_transaction_parts_state"),
 	("registry", "0090_prune_definition_fields"),
 	("registry", "0091_thread_target_kinds"),
 	("registry", "0092_registry_kind_check"),
@@ -316,8 +326,8 @@ const GOAL_MIGRATIONS: &[(&str, &str)] = &[
 	("execution", "0171_outside_versions"),
 	("execution", "0172_retire_completion_gate"),
 	("execution", "0173_authorization_read_model_state"),
-	("federation", "0032_retire_artifact_reads"),
-	("federation", "0033_completion_settlement_v2"),
+	("federation", "0033_retire_artifact_reads"),
+	("federation", "0034_completion_settlement_v2"),
 	("identity", "0123_goal_judge_model"),
 	("workspaces", "0070_task_goals"),
 	("workspaces", "0071_completion_messages"),
@@ -367,12 +377,15 @@ async fn reverse_task_executions(
 		"0161_generation_subnode_cleanup",
 		"0162_scope_host_debits",
 		"0163_scope_host_debit_state",
+		"0164_model_call_recovery",
+		"0165_background_time_limit",
+		"0166_scope_connection_debits",
 	] {
 		renamed.push(source.get_migration("execution", name).await.unwrap());
 	}
 	for &(app, name) in GOAL_MIGRATIONS
 		.iter()
-		.filter(|(app, name)| *app == "execution" || *name == "0033_completion_settlement_v2")
+		.filter(|(app, name)| *app == "execution" || *name == "0034_completion_settlement_v2")
 		.chain(DRIVE_MIGRATIONS)
 	{
 		renamed.push(source.get_migration(app, name).await.unwrap());
@@ -485,7 +498,7 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 			.map(|m| m.name.clone())
 			.collect::<Vec<_>>()
 	};
-	assert_eq!(head("federation"), ["0033_completion_settlement_v2"]);
+	assert_eq!(head("federation"), ["0034_completion_settlement_v2"]);
 	assert_eq!(head("registry"), ["0094_thread_target_kind_state"]);
 	assert_eq!(head("identity"), ["0123_goal_judge_model"]);
 	assert_eq!(head("execution"), ["0184_retire_area_holds"]);
@@ -502,7 +515,7 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 			.iter()
 			.filter(|migration| migration.state_only)
 			.count(),
-		143
+		144
 	);
 	let tables = migrations
 		.iter()
@@ -546,6 +559,8 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 								| ("registry", "0090_prune_definition_fields")
 								| ("registry", "0091_thread_target_kinds")
 								| ("execution", "0089_remove_agent_cluster")
+								// Discarded journals cannot be restored (#1107).
+								| ("federation", "0031_transaction_parts")
 						),
 					"{}.{}",
 					migration.app_label,
@@ -889,6 +904,9 @@ async fn run_created_at_backfills_last_update_and_remains_fixed_on_later_updates
 			("execution", "0161_generation_subnode_cleanup"),
 			("execution", "0162_scope_host_debits"),
 			("execution", "0163_scope_host_debit_state"),
+			("execution", "0164_model_call_recovery"),
+			("execution", "0165_background_time_limit"),
+			("execution", "0166_scope_connection_debits"),
 			("execution", "0180_unorder_runs"),
 			("execution", "0181_unordered_run_bindings"),
 			("execution", "0182_unpin_live_previews"),
@@ -903,6 +921,8 @@ async fn run_created_at_backfills_last_update_and_remains_fixed_on_later_updates
 			("knowledge", "0058_threads"),
 			("knowledge", "0059_threads_state"),
 			("federation", "0030_threads"),
+			("federation", "0031_transaction_parts"),
+			("federation", "0032_transaction_parts_state"),
 		])
 		.await;
 	fixture.tenant_root("acme").await;
@@ -1436,7 +1456,7 @@ async fn preserved_baseline_does_not_generate_table_recreation(
 			.iter()
 			.filter(|migration| migration.state_only)
 			.count(),
-		143
+		144
 	);
 }
 
@@ -2712,6 +2732,9 @@ async fn registry_upgrade_keeps_existing_compaction_decider(
 			("execution", "0161_generation_subnode_cleanup"),
 			("execution", "0162_scope_host_debits"),
 			("execution", "0163_scope_host_debit_state"),
+			("execution", "0164_model_call_recovery"),
+			("execution", "0165_background_time_limit"),
+			("execution", "0166_scope_connection_debits"),
 			("execution", "0180_unorder_runs"),
 			("execution", "0181_unordered_run_bindings"),
 			("execution", "0182_unpin_live_previews"),
@@ -2729,6 +2752,8 @@ async fn registry_upgrade_keeps_existing_compaction_decider(
 			("knowledge", "0058_threads"),
 			("knowledge", "0059_threads_state"),
 			("federation", "0030_threads"),
+			("federation", "0031_transaction_parts"),
+			("federation", "0032_transaction_parts_state"),
 			("registry", "0081_thread_tools"),
 			("registry", "0082_thread_source_scope"),
 			("registry", "0090_prune_definition_fields"),
@@ -5424,6 +5449,8 @@ const THREAD_MIGRATIONS: &[(&str, &str)] = &[
 	("knowledge", "0058_threads"),
 	("knowledge", "0059_threads_state"),
 	("federation", "0030_threads"),
+	("federation", "0031_transaction_parts"),
+	("federation", "0032_transaction_parts_state"),
 	("execution", "0150_task_executions"),
 	("execution", "0151_task_executions_state"),
 	("execution", "0152_stint_leases"),
@@ -5436,6 +5463,9 @@ const THREAD_MIGRATIONS: &[(&str, &str)] = &[
 	("execution", "0161_generation_subnode_cleanup"),
 	("execution", "0162_scope_host_debits"),
 	("execution", "0163_scope_host_debit_state"),
+	("execution", "0164_model_call_recovery"),
+	("execution", "0165_background_time_limit"),
+	("execution", "0166_scope_connection_debits"),
 	("registry", "0090_prune_definition_fields"),
 	("registry", "0091_thread_target_kinds"),
 	("registry", "0092_registry_kind_check"),
@@ -6022,6 +6052,9 @@ async fn existing_conversations_receive_distinct_dedicated_scratch_spaces(
 			("execution", "0161_generation_subnode_cleanup"),
 			("execution", "0162_scope_host_debits"),
 			("execution", "0163_scope_host_debit_state"),
+			("execution", "0164_model_call_recovery"),
+			("execution", "0165_background_time_limit"),
+			("execution", "0166_scope_connection_debits"),
 			("execution", "0180_unorder_runs"),
 			("execution", "0181_unordered_run_bindings"),
 			("execution", "0182_unpin_live_previews"),
@@ -6036,6 +6069,8 @@ async fn existing_conversations_receive_distinct_dedicated_scratch_spaces(
 			("knowledge", "0058_threads"),
 			("knowledge", "0059_threads_state"),
 			("federation", "0030_threads"),
+			("federation", "0031_transaction_parts"),
+			("federation", "0032_transaction_parts_state"),
 			("workspaces", "0060_duty_template"),
 			("workspaces", "0061_duty_template_check"),
 			("workspaces", "0062_task_duty_script"),
@@ -6137,6 +6172,9 @@ async fn existing_conversations_receive_distinct_dedicated_scratch_spaces(
 			("execution", "0161_generation_subnode_cleanup"),
 			("execution", "0162_scope_host_debits"),
 			("execution", "0163_scope_host_debit_state"),
+			("execution", "0164_model_call_recovery"),
+			("execution", "0165_background_time_limit"),
+			("execution", "0166_scope_connection_debits"),
 			("execution", "0180_unorder_runs"),
 			("execution", "0181_unordered_run_bindings"),
 			("execution", "0182_unpin_live_previews"),
@@ -6151,6 +6189,8 @@ async fn existing_conversations_receive_distinct_dedicated_scratch_spaces(
 			("knowledge", "0058_threads"),
 			("knowledge", "0059_threads_state"),
 			("federation", "0030_threads"),
+			("federation", "0031_transaction_parts"),
+			("federation", "0032_transaction_parts_state"),
 			("workspaces", "0060_duty_template"),
 			("workspaces", "0061_duty_template_check"),
 			("workspaces", "0062_task_duty_script"),
@@ -6260,6 +6300,9 @@ async fn existing_workspace_receives_scratch_space_owned_by_its_creator(
 			("execution", "0161_generation_subnode_cleanup"),
 			("execution", "0162_scope_host_debits"),
 			("execution", "0163_scope_host_debit_state"),
+			("execution", "0164_model_call_recovery"),
+			("execution", "0165_background_time_limit"),
+			("execution", "0166_scope_connection_debits"),
 			("execution", "0180_unorder_runs"),
 			("execution", "0181_unordered_run_bindings"),
 			("execution", "0182_unpin_live_previews"),
@@ -6274,6 +6317,8 @@ async fn existing_workspace_receives_scratch_space_owned_by_its_creator(
 			("knowledge", "0058_threads"),
 			("knowledge", "0059_threads_state"),
 			("federation", "0030_threads"),
+			("federation", "0031_transaction_parts"),
+			("federation", "0032_transaction_parts_state"),
 			("workspaces", "0060_duty_template"),
 			("workspaces", "0061_duty_template_check"),
 			("workspaces", "0062_task_duty_script"),
@@ -6570,7 +6615,7 @@ async fn scope_egress_rows_are_tenant_bound_and_purged_with_the_node(
 		foreign.is_err(),
 		"a different Tenant cannot refer to the scope"
 	);
-	sqlx::query("INSERT INTO egress_scope_connections (id, tenant, node, scope_id, host, port, sent_bytes, received_bytes, duration_ms, outcome, created_at) VALUES ($1, 'acme', $2, $3, 'example.com', 443, 1, 2, 3, 'completed', now())")
+	sqlx::query("INSERT INTO egress_scope_connections (id, tenant, node, scope_id, host, port, sent_bytes, received_bytes, duration_ms, outcome, created_at, charged_sent, charged_received) VALUES ($1, 'acme', $2, $3, 'example.com', 443, 1, 2, 3, 'completed', now(), 4, 5)")
 		.bind(Uuid::new_v4()).bind(&node).bind(scope).execute(&pool).await.unwrap();
 	sqlx::query("INSERT INTO egress_scope_connections (id, tenant, node, scope_id, host, port, sent_bytes, received_bytes, duration_ms, outcome, created_at) VALUES ($1, 'acme', $2, $3, 'example.com', 0, 0, 0, 0, 'invalid_proxy_target', now())")
 		.bind(Uuid::new_v4()).bind(&node).bind(scope).execute(&pool).await.unwrap();
@@ -6587,13 +6632,20 @@ async fn scope_egress_rows_are_tenant_bound_and_purged_with_the_node(
 	let empty = sqlx::query("INSERT INTO egress_scope_refusals (id, tenant, node, scope_id, minute, host, reason, count) VALUES ($1, 'acme', $2, $3, now(), '', 'egress_host_forbidden', 0)")
 		.bind(Uuid::new_v4()).bind(&node).bind(scope).execute(&pool).await;
 	assert!(empty.is_err(), "a tally counts at least one connection");
-	sqlx::query("INSERT INTO egress_scope_host_debits (id, tenant, node, scope_id, day, sent, bytes) VALUES ($1, 'acme', $2, $3, CURRENT_DATE::text, false, 2)")
-		.bind(Uuid::new_v4()).bind(&node).bind(scope).execute(&pool).await.unwrap();
-	purge_fixture_node(&pool, "acme", &node).await;
+	let receipts: Option<String> =
+		sqlx::query_scalar("SELECT to_regclass('egress_scope_host_debits')::text")
+			.fetch_one(&pool)
+			.await
+			.unwrap();
+	assert_eq!(receipts, None);
+	sqlx::query("DELETE FROM nodes WHERE tenant = 'acme' AND name = $1")
+		.bind(&node)
+		.execute(&pool)
+		.await
+		.unwrap();
 	for table in [
 		"egress_scope_state",
 		"egress_scope_daily",
-		"egress_scope_host_debits",
 		"egress_scope_connections",
 		"egress_scope_events",
 		"egress_scope_refusals",
@@ -6811,6 +6863,9 @@ async fn area_queue_sleep_backfills_executions_on_upgrade(
 			("execution", "0161_generation_subnode_cleanup"),
 			("execution", "0162_scope_host_debits"),
 			("execution", "0163_scope_host_debit_state"),
+			("execution", "0164_model_call_recovery"),
+			("execution", "0165_background_time_limit"),
+			("execution", "0166_scope_connection_debits"),
 			("execution", "0180_unorder_runs"),
 			("execution", "0181_unordered_run_bindings"),
 			("execution", "0182_unpin_live_previews"),
@@ -6949,6 +7004,9 @@ async fn merged_working_areas_keep_the_active_one_and_leave_no_reference_behind(
 			("execution", "0161_generation_subnode_cleanup"),
 			("execution", "0162_scope_host_debits"),
 			("execution", "0163_scope_host_debit_state"),
+			("execution", "0164_model_call_recovery"),
+			("execution", "0165_background_time_limit"),
+			("execution", "0166_scope_connection_debits"),
 			("execution", "0180_unorder_runs"),
 			("execution", "0181_unordered_run_bindings"),
 			("execution", "0182_unpin_live_previews"),
@@ -7220,6 +7278,9 @@ async fn thread_member_policy_names_thread_actions_kind_and_attribute(
 			("execution", "0161_generation_subnode_cleanup"),
 			("execution", "0162_scope_host_debits"),
 			("execution", "0163_scope_host_debit_state"),
+			("execution", "0164_model_call_recovery"),
+			("execution", "0165_background_time_limit"),
+			("execution", "0166_scope_connection_debits"),
 			("execution", "0180_unorder_runs"),
 			("execution", "0181_unordered_run_bindings"),
 			("execution", "0182_unpin_live_previews"),
@@ -7661,6 +7722,9 @@ async fn model_call_usage_requires_one_owner_after_upgrade(
 			("execution", "0161_generation_subnode_cleanup"),
 			("execution", "0162_scope_host_debits"),
 			("execution", "0163_scope_host_debit_state"),
+			("execution", "0164_model_call_recovery"),
+			("execution", "0165_background_time_limit"),
+			("execution", "0166_scope_connection_debits"),
 			("execution", "0180_unorder_runs"),
 			("execution", "0181_unordered_run_bindings"),
 			("execution", "0182_unpin_live_previews"),
@@ -7754,4 +7818,42 @@ async fn model_call_usage_requires_one_owner_after_upgrade(
 	.await
 	.unwrap();
 	assert_eq!(checked, (true, true));
+
+	let source = FilesystemSource::new(fixture.directory.path().join("migrations"));
+	let recovery = source
+		.get_migration("execution", "0164_model_call_recovery")
+		.await
+		.unwrap();
+	let mut executor = DatabaseMigrationExecutor::new(fixture.connection.clone());
+	executor
+		.rollback_migrations(std::slice::from_ref(&recovery))
+		.await
+		.unwrap();
+	let mut usage = Query::select();
+	usage
+		.from("inference_usage")
+		.and_where(Expr::col("model_call_id").eq(Expr::value(model_call)));
+	let retained: Uuid = sqlx::query_scalar(
+		&usage
+			.clone()
+			.column("model_call_id")
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_one(&pool)
+	.await
+	.unwrap();
+	assert_eq!(retained, model_call);
+	executor.apply_migrations(&[recovery]).await.unwrap();
+	let pending: bool = sqlx::query_scalar(
+		&usage
+			.column("late_report_pending")
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_one(&pool)
+	.await
+	.unwrap();
+	assert!(
+		!pending,
+		"upgraded reports start with no late settlement pending"
+	);
 }

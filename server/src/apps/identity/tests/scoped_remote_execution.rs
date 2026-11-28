@@ -4,7 +4,7 @@ use common::upstream_fixtures;
 use futures_util::{FutureExt, future::BoxFuture};
 use reinhardt::ServerRouter as Router;
 use upstream_fixtures::reply;
-#[path = "../../execution/tests/support/legacy.rs"]
+#[path = "../../execution/tests/support/fixtures.rs"]
 mod common;
 #[path = "scoped_remote_execution/connections.rs"]
 mod connections;
@@ -3313,7 +3313,7 @@ async fn scoped_remote_worker_finishes_at_home_and_retries_keep_one_execution(
 
 #[rstest::rstest]
 #[tokio::test]
-async fn new_cross_node_scoped_transaction_is_rejected_before_manifest_persistence(
+async fn new_cross_node_scoped_transaction_is_accepted_now_that_parts_are_sealed(
 	#[future(awt)] scoped_pair: Pair,
 ) {
 	use aidash_server::transactions::{Manifest, coordinator};
@@ -3347,18 +3347,12 @@ async fn new_cross_node_scoped_transaction_is_rejected_before_manifest_persisten
 		json!(manifest),
 	)
 	.await;
-	assert_eq!(status, 403, "{body}");
-	assert!(coordinator::status(&p.a, manifest.id).await.is_err());
-	assert_eq!(
-		p.a.store
-			.task(&TEST_FIXTURE, task.id)
-			.await
-			.unwrap()
-			.status
-			.as_str(),
-		"RUNNING"
-	);
-	assert_eq!(p.run().await.phase().as_str(), "TOOL_CALL");
+	// #869/#1107: the cross-Deployment pause is lifted because each participant
+	// now receives only its own sealed part, so the coordinator accepts and
+	// persists the transaction. The commit itself is covered by
+	// `transaction_acceptance` (fresh cross-Deployment subject submission).
+	assert_eq!(status, 202, "{body}");
+	assert!(coordinator::status(&p.a, manifest.id).await.is_ok());
 	p.close().await;
 }
 

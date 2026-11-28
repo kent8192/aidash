@@ -222,7 +222,7 @@ pub(crate) fn implementations() -> BTreeMap<String, Arc<dyn Tool>> {
 		),
 		(
 			"shell",
-			"Start a Shell operation and wait for completion without another model call. wait_seconds defaults to 300, is capped at 3600, and zero returns immediately. Cancellation cannot undo earlier effects. expected_revision is the revision from the previous result; a new area starts at 1.",
+			"Start a Shell operation. Set background to true and provide timeout_seconds to keep it running without waiting. Set notify_on_exit to receive a Task input when it ends. wait_seconds defaults to 300 for foreground commands and zero for Background processes, and is capped at 3600. Cancellation cannot undo earlier effects. expected_revision is the revision from the previous result; a new area starts at 1.",
 			schema::<Shell>(),
 		),
 		(

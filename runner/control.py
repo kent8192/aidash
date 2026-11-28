@@ -383,7 +383,15 @@ class Runner(AllocationJournal):
             self.kube(["delete", "pod", self.pod_name(operation), "--wait=false"] +
                       (["--force", "--grace-period=0"] if stopped else []), check=False)
 
+    @staticmethod
+    def prepare_helper_exec(arguments):
+        from helper_transport import prepare_helper_exec
+        return prepare_helper_exec(arguments)
+
     def kube(self, arguments, data=None, timeout=45, check=True):
+        arguments, bundle = self.prepare_helper_exec(arguments)
+        if bundle:
+            data = bundle + (data or b'')
         result = subprocess.run(self.command + arguments, input=data, stdout=subprocess.PIPE,
                                 stderr=subprocess.PIPE, env=self.environment, timeout=timeout)
         if check and result.returncode:
@@ -1624,7 +1632,8 @@ class Handler(BaseHTTPRequestHandler):
             if path == '/v2/runs/cancel':
                 return runner.execution_pods.cancel_run(request['scratch_space_id'], request['run_id'])
             if path == '/v2/runs/stop':
-                return runner.execution_pods.stop_run(request['scratch_space_id'], request['run_id'])
+                return runner.execution_pods.stop_run(request['scratch_space_id'], request['run_id'],
+                                                      reason=request.get('reason', 'stopped'))
             if path == '/v2/runs/stop_sessions':
                 return runner.execution_pods.stop_sessions(request['scratch_space_id'], request['run_id'])
             if path == '/v2/background/ended':

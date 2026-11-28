@@ -346,7 +346,11 @@ pub(crate) async fn stop_pending_run_with_runner(
 		};
 	tx.commit().await?;
 	runner
-		.stop_run(&space.to_string(), &run_id.to_string())
+		.stop_run(
+			&space.to_string(),
+			&run_id.to_string(),
+			aidash_application::ports::capabilities::execution_pod::RunStopReason::RunAuthorityRevoked,
+		)
 		.await
 		.map_err(|error| {
 			aidash_application::Error::External(format!("Run stop failed: {error}"))

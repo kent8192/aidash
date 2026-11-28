@@ -265,10 +265,15 @@ async fn two_node_commit_hides_partial_application_and_releases_only_after_all_a
 	for (node, thread_id) in [(&a, wa), (&b, wb)] {
 		assert_eq!(node.get(&format!("/api/threads/{thread_id}")).await.0, 200);
 		assert_eq!(
-			participant::finish(&node.f, None, a.address.as_str(), &manifest)
-				.await
-				.unwrap()
-				.phase,
+			participant::finish(
+				&node.f,
+				None,
+				a.address.as_str(),
+				&share_for(&a.f, &manifest, &node.address).await
+			)
+			.await
+			.unwrap()
+			.phase,
 			"COMMITTED"
 		);
 		assert_eq!(updates(node, thread_id).await, 1);
@@ -297,17 +302,27 @@ async fn stale_prepare_aborts_every_node_and_delayed_reserve_cannot_resurrect_it
 		assert_eq!(thread(node, thread_id).await.revision, 0);
 		assert_eq!(node.get(&format!("/api/threads/{thread_id}")).await.0, 200);
 		assert_eq!(
-			participant::reserve(&node.f, None, a.address.as_str(), &manifest)
-				.await
-				.unwrap()
-				.phase,
+			participant::reserve(
+				&node.f,
+				None,
+				a.address.as_str(),
+				&share_for(&a.f, &manifest, &node.address).await
+			)
+			.await
+			.unwrap()
+			.phase,
 			"ABORTED"
 		);
 		assert_eq!(
-			participant::finish(&node.f, None, a.address.as_str(), &manifest)
-				.await
-				.unwrap()
-				.phase,
+			participant::finish(
+				&node.f,
+				None,
+				a.address.as_str(),
+				&share_for(&a.f, &manifest, &node.address).await
+			)
+			.await
+			.unwrap()
+			.phase,
 			"ABORTED"
 		);
 	}
@@ -544,9 +559,14 @@ async fn thread_task_execution_and_completion_message_commit_together_once(
 		);
 		let mut fresh = manifest.clone();
 		fresh.id = Uuid::new_v4();
-		let rejected = participant::reserve(&b.f, None, a.address.as_str(), &fresh)
-			.await
-			.unwrap_err();
+		let rejected = participant::reserve(
+			&b.f,
+			None,
+			a.address.as_str(),
+			&share_for(&a.f, &fresh, &b.address).await,
+		)
+		.await
+		.unwrap_err();
 		assert!(
 			matches!(rejected, aidash_server::Error::Conflict(ref reason) if reason == "Node cancellation is pending"),
 			"restoration must not reopen a captured Run while its decision is recovering: {rejected}"
@@ -577,19 +597,35 @@ async fn thread_task_execution_and_completion_message_commit_together_once(
 		fresh.id = Uuid::new_v4();
 		assert!(
 			matches!(
-				participant::reserve(&b.f, None, a.address.as_str(), &fresh).await,
+				participant::reserve(
+					&b.f,
+					None,
+					a.address.as_str(),
+					&share_for(&a.f, &fresh, &b.address).await
+				)
+				.await,
 				Err(aidash_server::Error::Forbidden)
 			),
 			"retiring the queue must not restore old Run authority"
 		);
 	}
 	for _ in 0..2 {
-		participant::finish(&a.f, None, a.address.as_str(), &manifest)
-			.await
-			.unwrap();
-		participant::finish(&b.f, None, a.address.as_str(), &manifest)
-			.await
-			.unwrap();
+		participant::finish(
+			&a.f,
+			None,
+			a.address.as_str(),
+			&share_for(&a.f, &manifest, &a.address).await,
+		)
+		.await
+		.unwrap();
+		participant::finish(
+			&b.f,
+			None,
+			a.address.as_str(),
+			&share_for(&a.f, &manifest, &b.address).await,
+		)
+		.await
+		.unwrap();
 	}
 	assert_eq!(
 		a.f.store.task(&TEST_FIXTURE, task.id).await.unwrap().status,
@@ -712,6 +748,8 @@ async fn peer_trust_denial_aborts_promptly_and_revocation_preserves_admitted_rec
 	let mut forged = admitted.clone();
 	forged.coordinator = b.address.clone();
 	let client = &b.peer_client;
+	// What a participant receives is a share (ADR 0146).
+	let forged = share_for(&a.f, &forged, &b.address).await;
 	let body = serde_json::to_vec(&forged).unwrap();
 	let token = crate::fixtures::peering::token(
 		a.f.config.deployment_key.as_deref().unwrap(),
@@ -935,3 +973,17 @@ async fn next_frame(response: &mut reqwest::Response) -> String {
 
 #[path = "node_purge.rs"]
 mod node_purge_recovery;
+
+/// What the participant at `node` receives (ADR 0146): sealed with the seed
+/// the coordinator stored, or with a fixed seed when none admitted it.
+async fn share_for(
+	coordinator: &aidash_server::federation::Federation,
+	manifest: &aidash_server::transactions::Manifest,
+	node: &str,
+) -> aidash_server::transactions::Share {
+	let seed = aidash_server::transactions::coordinator::status(coordinator, manifest.id)
+		.await
+		.map(|status| status.seed)
+		.unwrap_or_else(|_| "5e".repeat(32));
+	manifest.share(&seed, node).unwrap()
+}

@@ -4,7 +4,7 @@ use aidash_domain::{
 	context::{Context, ContextUsage},
 	provider::ToolCall,
 	run_state::{RawRun, ToolCallState, encode},
-	transactions::{Isolation, Participant},
+	transactions::{Isolation, Manifest, Participant, share::claim},
 };
 use async_trait::async_trait;
 use rstest::{fixture, rstest};
@@ -62,6 +62,15 @@ fn manifest(local: &str, mutations: Vec<Mutation>, other: Option<Participant>) -
 		deadline: "2030-01-01T00:00:00Z".parse().unwrap(),
 		participants,
 	}
+}
+
+const SEED: &str = "5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e";
+const HOME: &str = "aidash://home/brave-otter-k3m9q2xa";
+const WORKER: &str = "aidash://worker/brave-otter-k3m9q2xa";
+
+/// What the participant at `node` holds.
+fn sealed(manifest: &Manifest, node: &str) -> Share {
+	manifest.share(SEED, node).unwrap()
 }
 
 struct Scope {
@@ -209,16 +218,23 @@ async fn task_guards_precede_delegation_and_writes(
 		vec![completion()],
 		None,
 	);
-	let error = apply(&mut scope, "aidash://home/brave-otter-k3m9q2xa", &manifest)
-		.await
-		.unwrap_err();
+	let error = apply(
+		&mut scope,
+		"aidash://home/brave-otter-k3m9q2xa",
+		&sealed(&manifest, "aidash://home/brave-otter-k3m9q2xa"),
+	)
+	.await
+	.unwrap_err();
 	assert_eq!(error.to_string(), message);
 	assert_eq!(scope.calls, calls);
 	assert!(scope.events.is_empty());
 }
 
 #[rstest]
-#[case::missing_participant(None, "forbidden")]
+#[case::missing_participant(
+	None,
+	"delegated completion requires its participant's execution finalization"
+)]
 #[case::missing_pair(Some(vec![]), "delegated completion requires its participant's execution finalization")]
 #[case::another_task(Some(vec![Mutation::FinishRun { run_id: Uuid::from_u128(4), task_id: Uuid::from_u128(7), expected_revision: 5 }]), "delegated completion requires its participant's execution finalization")]
 #[tokio::test]
@@ -238,10 +254,14 @@ async fn delegated_task_requires_its_executor_pair(
 		peer,
 	);
 	assert_eq!(
-		apply(&mut scope, "aidash://home/brave-otter-k3m9q2xa", &manifest)
-			.await
-			.unwrap_err()
-			.to_string(),
+		apply(
+			&mut scope,
+			"aidash://home/brave-otter-k3m9q2xa",
+			&sealed(&manifest, "aidash://home/brave-otter-k3m9q2xa")
+		)
+		.await
+		.unwrap_err()
+		.to_string(),
 		message
 	);
 	assert_eq!(scope.calls, ["task", "children", "delegation"]);
@@ -261,9 +281,13 @@ async fn task_completion_keeps_provenance_and_event_after_the_selective_write(mu
 			mutations: vec![finalization()],
 		}),
 	);
-	apply(&mut scope, "aidash://home/brave-otter-k3m9q2xa", &manifest)
-		.await
-		.unwrap();
+	apply(
+		&mut scope,
+		"aidash://home/brave-otter-k3m9q2xa",
+		&sealed(&manifest, "aidash://home/brave-otter-k3m9q2xa"),
+	)
+	.await
+	.unwrap();
 	let key = format!("atomic:{}:task:{}", manifest.id, scope.task.id);
 	assert_eq!(scope.keys.as_slice(), std::slice::from_ref(&key));
 	assert_eq!(
@@ -324,7 +348,7 @@ async fn run_preconditions_take_precedence_over_corrupt_execution_state(
 		None,
 	);
 	assert!(
-		matches!(apply(&mut scope, "aidash://worker/brave-otter-k3m9q2xa", &manifest).await, Err(Error::Domain(aidash_domain::Error::Conflict(message))) if message == "run must be quiescent at its expected tool-call revision")
+		matches!(apply(&mut scope, "aidash://worker/brave-otter-k3m9q2xa", &sealed(&manifest, "aidash://worker/brave-otter-k3m9q2xa")).await, Err(Error::Domain(aidash_domain::Error::Conflict(message))) if message == "run must be quiescent at its expected tool-call revision")
 	);
 	assert_eq!(scope.calls, ["run"]);
 }
@@ -367,7 +391,7 @@ async fn execution_state_is_checked_before_home_pair_and_writes(
 		apply(
 			&mut scope,
 			"aidash://worker/brave-otter-k3m9q2xa",
-			&manifest
+			&sealed(&manifest, "aidash://worker/brave-otter-k3m9q2xa")
 		)
 		.await
 		.unwrap_err()
@@ -378,7 +402,10 @@ async fn execution_state_is_checked_before_home_pair_and_writes(
 }
 
 #[rstest]
-#[case::missing_home(None, "forbidden")]
+#[case::missing_home(
+	None,
+	"execution finalization requires the home task's atomic completion"
+)]
 #[case::missing_task(Some(vec![]), "execution finalization requires the home task's atomic completion")]
 #[tokio::test]
 async fn run_completion_requires_the_home_task_pair(
@@ -399,7 +426,7 @@ async fn run_completion_requires_the_home_task_pair(
 		apply(
 			&mut scope,
 			"aidash://worker/brave-otter-k3m9q2xa",
-			&manifest
+			&sealed(&manifest, "aidash://worker/brave-otter-k3m9q2xa")
 		)
 		.await
 		.unwrap_err()
@@ -430,7 +457,9 @@ async fn execution_event_preserves_raw_usage_and_home_visibility(
 		)
 	};
 	let manifest = manifest(node, mutations, other);
-	apply(&mut scope, node, &manifest).await.unwrap();
+	apply(&mut scope, node, &sealed(&manifest, node))
+		.await
+		.unwrap();
 	assert_eq!(
 		scope.events[0],
 		(
@@ -459,10 +488,14 @@ async fn provenance_failures_stop_event_publication(
 		None,
 	);
 	assert_eq!(
-		apply(&mut scope, "aidash://home/brave-otter-k3m9q2xa", &manifest)
-			.await
-			.unwrap_err()
-			.to_string(),
+		apply(
+			&mut scope,
+			"aidash://home/brave-otter-k3m9q2xa",
+			&sealed(&manifest, "aidash://home/brave-otter-k3m9q2xa")
+		)
+		.await
+		.unwrap_err()
+		.to_string(),
 		format!("fault:{failure}")
 	);
 	assert_eq!(scope.calls, calls);
@@ -477,12 +510,120 @@ async fn a_finished_runs_subnode_end_is_locked_before_any_event_of_the_manifest(
 		vec![completion(), finalization()],
 		None,
 	);
-	apply(&mut scope, "aidash://home/brave-otter-k3m9q2xa", &manifest)
-		.await
-		.unwrap();
+	apply(
+		&mut scope,
+		"aidash://home/brave-otter-k3m9q2xa",
+		&sealed(&manifest, "aidash://home/brave-otter-k3m9q2xa"),
+	)
+	.await
+	.unwrap();
 	assert_eq!(scope.end_locks, [(Uuid::from_u128(4), 0)]);
 	assert!(
 		scope.events.len() >= 2,
 		"the task and the Run events follow"
 	);
+}
+
+#[rstest]
+#[tokio::test]
+async fn a_share_whose_part_is_for_another_node_is_refused(mut scope: Scope) {
+	let manifest = manifest(
+		HOME,
+		vec![completion()],
+		Some(Participant {
+			node_id: WORKER.into(),
+			mutations: vec![finalization()],
+		}),
+	);
+	assert!(matches!(
+		apply(&mut scope, HOME, &sealed(&manifest, WORKER)).await,
+		Err(Error::Forbidden)
+	));
+	assert!(scope.calls.is_empty());
+	assert!(scope.end_locks.is_empty());
+}
+
+/// The home Node never sees the executor's mutations; the executor's seal
+/// claims carry the pairing (ADR 0146).
+#[rstest]
+#[case::claimed(true)]
+#[case::unclaimed(false)]
+#[tokio::test]
+async fn delegated_completion_is_checked_through_the_executors_claims(
+	mut scope: Scope,
+	#[case] claimed: bool,
+) {
+	scope.delegated = Some(WORKER.into());
+	let manifest = manifest(
+		HOME,
+		vec![completion()],
+		Some(Participant {
+			node_id: WORKER.into(),
+			mutations: vec![finalization()],
+		}),
+	);
+	let mut share = sealed(&manifest, HOME);
+	assert_eq!(share.part.mutations, [completion()]);
+	let seal = share
+		.seals
+		.iter_mut()
+		.find(|seal| seal.node_id == WORKER)
+		.unwrap();
+	assert_eq!(seal.claims, [claim("finish_run", Uuid::from_u128(1))]);
+	if !claimed {
+		seal.claims.clear();
+	}
+	let result = apply(&mut scope, HOME, &share).await;
+	if claimed {
+		result.unwrap();
+		assert!(scope.calls.contains(&"complete_task"));
+	} else {
+		assert_eq!(
+			result.unwrap_err().to_string(),
+			"delegated completion requires its participant's execution finalization"
+		);
+		assert!(scope.keys.is_empty());
+	}
+}
+
+/// The executor never sees the home Node's mutations; the home seal's
+/// claims carry the pairing.
+#[rstest]
+#[case::claimed(true)]
+#[case::another_task(false)]
+#[tokio::test]
+async fn run_completion_is_checked_through_the_home_claims(
+	mut scope: Scope,
+	#[case] claimed: bool,
+) {
+	let manifest = manifest(
+		WORKER,
+		vec![finalization()],
+		Some(Participant {
+			node_id: HOME.into(),
+			mutations: vec![completion()],
+		}),
+	);
+	let mut share = sealed(&manifest, WORKER);
+	assert_eq!(share.part.mutations, [finalization()]);
+	let seal = share
+		.seals
+		.iter_mut()
+		.find(|seal| seal.node_id == HOME)
+		.unwrap();
+	assert_eq!(seal.claims, [claim("complete_task", Uuid::from_u128(1))]);
+	if !claimed {
+		seal.claims = vec![claim("complete_task", Uuid::from_u128(7))];
+	}
+	let result = apply(&mut scope, WORKER, &share).await;
+	if claimed {
+		result.unwrap();
+		assert_eq!(&scope.calls[..2], &["run", "complete_run"]);
+	} else {
+		assert_eq!(
+			result.unwrap_err().to_string(),
+			"execution finalization requires the home task's atomic completion"
+		);
+		assert_eq!(scope.calls, ["run"]);
+	}
 }
