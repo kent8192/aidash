@@ -209,6 +209,7 @@ impl Save {
 				exclude: input.exclude.clone(),
 				include: input.include.clone(),
 				max_files: u32::try_from(MAX_AREA_FILES + 1).expect("bounded"),
+				after: None,
 				missing_ok: input.sync,
 			};
 			let manifest = in_pod!(context, context.runtime.file_manifest(&request))?;

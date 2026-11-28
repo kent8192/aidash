@@ -63,6 +63,11 @@ impl Tool for CoreTool {
 				_ => {}
 			}
 		}
+		if crate::apps::drives::tools::handles(self.name, &input) {
+			return authority
+				.drive_tool(&ctx.store, &ctx.run, self.name, input, key)
+				.await;
+		}
 		let shared_read = aidash_domain::tool::concurrency::batchable(&self.contract.behavior)
 			&& aidash_domain::tool::concurrency::shares_every_resource(self.name, &input);
 		authority
@@ -123,13 +128,28 @@ pub(crate) fn implementations() -> BTreeMap<String, Arc<dyn Tool>> {
 	for (name, description, mut parameters) in [
 		(
 			"file_search",
-			"Search authorized files with located provenance and revision-bound continuation. In path mode an empty query lists every path in the scope. scope=scratch searches the Scratch Space your commands run in (literal, regex or path mode, optional glob); its results have no cursor.",
+			"Search authorized files with located provenance and revision-bound continuation. In path mode an empty query lists every path in the scope. scope=drive searches authorized Node Drives. scope=scratch searches the Scratch Space your commands run in (literal, regex or path mode, optional glob); its results have no cursor.",
 			schema::<pod::ToolFileSearch>(),
 		),
 		(
 			"file_read",
-			"Read authorized text or metadata. Give file_id for a Working Area or Reference file, or path for a file in the Scratch Space your commands run in (text only, continue with next_offset). Set thread_id and area_id together to read a Subnode you created. Use model_input with an exact digest to include an image or audio file in the next model inference only.",
+			"Read authorized text or metadata. Give file_id for a Working Area or Reference file, or path for a file in the Scratch Space your commands run in (text only, continue with next_offset). Set drive={node,path,version?} to read a Drive File. Use model_input with an exact digest to include an image or audio file in the next model inference only.",
 			schema::<pod::ToolFileRead>(),
+		),
+		(
+			"drive_publish",
+			"Publish selected Scratch Space files to your Node Drive. Supply base_version for each destination path, or new for a new file, and an explicit index selector or none. Use drive_publish_status for a background publication.",
+			schema::<aidash_domain::drive::Publish>(),
+		),
+		(
+			"drive_publish_status",
+			"Read the progress or result of a Drive publication by this Task.",
+			schema::<crate::apps::drives::tools::Status>(),
+		),
+		(
+			"drive_search",
+			"Search authorized Drive passages and paths by meaning. The optional node limits the search to one Node Drive.",
+			schema::<crate::apps::drives::tools::Search>(),
 		),
 		(
 			"file_save",

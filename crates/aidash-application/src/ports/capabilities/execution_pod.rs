@@ -305,6 +305,9 @@ pub struct FileManifestRequest {
 	pub exclude: Vec<String>,
 	pub include: Vec<String>,
 	pub max_files: u32,
+	/// Drive pagination uses an empty first cursor, then the last returned path.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub after: Option<String>,
 	/// A `root` that does not exist lists no files instead of failing, so a
 	/// sync save can select a deleted path.
 	#[serde(default, skip_serializing_if = "std::ops::Not::not")]

@@ -849,7 +849,7 @@ if __name__ == '__main__':
             request = json.loads(sys.stdin.buffer.read(2 * 1048576 + 1))
             service = FileService('/scratch-system/scratch', '/scratch-system/file-writes')
             operation = sys.argv[2]
-            if operation not in ('read', 'search', 'write', 'manifest', 'patch'):
+            if operation not in ('read', 'search', 'write', 'manifest', 'patch', 'usage'):
                 raise ValueError('invalid file operation')
             result = {'result': run_bounded(service, operation, request)}
         except PatchReceiptUnavailable as error:

@@ -1382,6 +1382,50 @@ impl WorkerAuthority {
 		}
 	}
 
+	pub(crate) fn drive_tool<'a>(
+		&'a self,
+		store: &'a Store,
+		run: &'a Run,
+		name: &'a str,
+		input: Value,
+		key: &'a str,
+	) -> futures_util::future::BoxFuture<'a, Result<Value>> {
+		Box::pin(async move {
+			if !run.is_local(store.deployment.as_str()) {
+				return Err(Error::Forbidden);
+			}
+			let mut outer = self.access.write().await;
+			let was_active = outer.tx.is_active();
+			if !was_active {
+				self.refresh_pod_file_authority(&mut outer, store, run)
+					.await?;
+			}
+			let result = if name == "drive_publish" {
+				let identity = outer.identity.clone();
+				outer.suspend().await?;
+				let fresh = access_for_run(store, &run.metadata(), false)
+					.await?
+					.ok_or(Error::Forbidden)?;
+				if fresh.identity.subject != identity.subject
+					|| fresh.identity.tenant != identity.tenant
+				{
+					return Err(Error::Forbidden);
+				}
+				crate::apps::drives::tools::invoke(store, fresh, run, name, input, key).await
+			} else {
+				let access = Access::under_lease(&outer).await?;
+				crate::apps::drives::tools::invoke(store, access, run, name, input, key).await
+			};
+			if was_active && !outer.tx.is_active() {
+				self.refresh_pod_file_authority(&mut outer, store, run)
+					.await?;
+			} else if !was_active && outer.tx.is_active() {
+				outer.suspend().await?;
+			}
+			result.or_else(|error| blocked(key, error))
+		})
+	}
+
 	fn core_tool_wire(result: aidash_domain::capabilities::files::Envelope) -> Result<Value> {
 		Ok(serde_json::to_value(
 			crate::capabilities::service::envelope(result)?,

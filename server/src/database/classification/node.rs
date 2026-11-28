@@ -30,6 +30,9 @@ pub enum Root {
 	ScratchSpace,
 	Record,
 	Duty,
+	Drive,
+	DriveUpload,
+	DriveJob,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Ownership {
@@ -82,6 +85,13 @@ pub fn ownership(name: &str) -> Result<Ownership> {
 		| "egress_scope_connections"
 		| "egress_scope_events"
 		| "egress_scope_refusals" => Node("node"),
+		"drives" => Node("node"),
+		"drive_entries" | "drive_versions" | "drive_trash" | "drive_uploads"
+		| "drive_jobs" | "drive_index_requests" => Link("drive_id", Drive),
+		"drive_upload_parts" => Link("upload_id", DriveUpload),
+		"drive_job_blobs" => Link("job_id", DriveJob),
+		"drive_run_reads" => Link("run_id", Run),
+		"drive_passages" => Shared,
 		"nodes" => Audit,
 		"authorization_remote_terminal_receipts" => Recovery,
 		"node_registrations" => Registrations,

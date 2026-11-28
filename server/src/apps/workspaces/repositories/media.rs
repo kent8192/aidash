@@ -370,6 +370,25 @@ impl<'a> SelectedMedia<'a> {
 }
 #[async_trait]
 impl aidash_application::ports::execution::media::SelectedMediaScope for SelectedMedia<'_> {
+	async fn drive_file(
+		&mut self,
+		selection: &aidash_domain::media::DriveFileSelection,
+		remaining: u64,
+	) -> Result<(String, String, Vec<u8>)> {
+		if !self.run.is_local(self.store.deployment.as_str()) {
+			return Err(aidash_application::Error::Forbidden);
+		}
+		if self.lease.is_none() {
+			self.lease = Some(self.access.clone().write_owned().await);
+		}
+		let access = self
+			.lease
+			.as_mut()
+			.ok_or(aidash_application::Error::Forbidden)?;
+		crate::apps::drives::tools::model_file(self.store, access, selection, remaining)
+			.await
+			.map_err(Into::into)
+	}
 	async fn current_files(&mut self) -> Result<Vec<SelectedFile>> {
 		if self.lease.is_none() {
 			self.lease = Some(self.access.clone().write_owned().await);

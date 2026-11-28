@@ -257,6 +257,10 @@ pub(crate) struct SealedObject {
 }
 
 impl SealedObject {
+	pub(crate) fn digest(&self) -> &str {
+		&self.hash
+	}
+
 	pub(crate) async fn publish(self, access: &mut Access) -> Result<(Uuid, String)> {
 		self.publish_in(access.tx.as_mut(), &access.identity.tenant)
 			.await

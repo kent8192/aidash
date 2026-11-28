@@ -45,6 +45,7 @@ fn openapi_for(offering: aidash_domain::offering::Offering) -> Result<OpenApiSch
 		.collect();
 	let mut contracts = Contracts::default();
 	apps::identity::serializers::openapi::register(&mut contracts, &mut document)?;
+	apps::drives::views::openapi(&mut contracts, &mut document)?;
 	apps::execution::capabilities::serializers::openapi::register(&mut contracts, &mut document)?;
 	apps::workspaces::serializers::openapi::register(&mut contracts, &mut document)?;
 	apps::execution::generation::serializers::openapi::register(&mut contracts, &mut document)?;
@@ -198,6 +199,25 @@ impl Contracts {
 			.insert(status.to_string(), RefOr::T(response));
 		Ok(())
 	}
+	pub fn request_header<E: EndpointInfo, T: JsonSchema>(
+		&mut self,
+		document: &mut OpenApiSchema,
+		_endpoint: impl FnOnce() -> E,
+		name: &str,
+	) -> Result<()> {
+		let schema = self.schema::<T>(false)?;
+		let parameter = ParameterBuilder::new()
+			.name(name)
+			.parameter_in(ParameterLocation::Header)
+			.required(Required::False)
+			.schema(Some(schema))
+			.build();
+		self.operation::<E>(document)?
+			.parameters
+			.get_or_insert_with(Vec::new)
+			.push(parameter);
+		Ok(())
+	}
 	pub fn response_header<E: EndpointInfo, T: JsonSchema>(
 		&mut self,
 		document: &mut OpenApiSchema,
@@ -280,6 +300,24 @@ impl Contracts {
 		);
 		Ok(())
 	}
+	pub fn binary_response<E: EndpointInfo>(
+		&mut self,
+		document: &mut OpenApiSchema,
+		_endpoint: impl FnOnce() -> E,
+		status: u16,
+		media_type: &str,
+	) -> Result<()> {
+		let schema = from_value::<RefOr<Schema>>(json!({"type":"string", "format":"binary"}))?;
+		let response = ResponseBuilder::new()
+			.description("File bytes")
+			.content(media_type, MediaType::new(Some(schema)))
+			.build();
+		self.operation::<E>(document)?
+			.responses
+			.responses
+			.insert(status.to_string(), RefOr::T(response));
+		Ok(())
+	}
 	pub fn query<E: EndpointInfo, T: JsonSchema>(
 		&mut self,
 		document: &mut OpenApiSchema,
@@ -324,6 +362,8 @@ impl Contracts {
 		for (name, format) in names.zip(formats) {
 			let schema = if *format == "Uuid" {
 				json!({"type":"string","format":"uuid"})
+			} else if *format == "i64" {
+				json!({"type":"integer","format":"int64"})
 			} else {
 				json!({"type":"string"})
 			};

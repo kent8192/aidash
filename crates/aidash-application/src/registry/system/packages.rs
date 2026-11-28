@@ -23,6 +23,10 @@ pub const SANDBOXED_GROUPS: &[(&str, &[&str])] = &[
 	// existing group's definitions.
 	("scratch_files", &["file_save", "file_remove", "file_copy"]),
 	(
+		"drive_publication",
+		&["drive_publish", "drive_publish_status"],
+	),
+	(
 		"background_processes",
 		&["process_list", "process_log", "process_stop"],
 	),

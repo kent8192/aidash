@@ -775,7 +775,7 @@ fn an_agent_normalized_before_the_execution_pod_keeps_its_1_0_0_file_tools() {
 			.clone()
 	};
 	assert_eq!(file_read(&resolved), "1.0.0");
-	assert_eq!(file_read(&today), "1.0.1");
+	assert_eq!(file_read(&today), "1.1.0");
 }
 
 #[test]

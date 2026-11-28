@@ -3,7 +3,7 @@ import {
   type FilePreviewVersion,
   type FileVersionResolver,
 } from "../file-preview";
-import { resolveWorkingAreaPath } from "../file-preview/working-area-path";
+import { resolveRelativeFilePath } from "../file-preview/relative-path";
 import { download, type CoreFile } from "./client";
 
 /**
@@ -20,7 +20,7 @@ export function createCurrentManifestResolver(
 ): FileVersionResolver {
   const cache = new Map<string, Promise<FilePreviewVersion | null>>();
   return (reference) => {
-    const path = resolveWorkingAreaPath(markdownPath, reference);
+    const path = resolveRelativeFilePath(markdownPath, reference);
     if (!path) return null;
     const file = files.find((entry) => entry.path === path);
     if (

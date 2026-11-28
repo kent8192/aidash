@@ -63,7 +63,16 @@ pub struct ModelFileSelection {
 pub enum ModelMedia {
 	File(ModelFileSelection),
 	WorkingImage(WorkingImageSelection),
+	DriveFile(DriveFileSelection),
 	ThreadAttachment(ThreadAttachmentSelection),
+}
+
+/// A Drive image selected by its immutable entry and digest.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct DriveFileSelection {
+	pub drive_entry: Uuid,
+	pub expected_digest: String,
 }
 
 /// An immutable attachment selected under the Run's current message authority.
@@ -81,7 +90,8 @@ impl ModelMedia {
 	/// Working Image opening degrades to metadata when the selected model
 	/// cannot accept images. Other selections retain their existing behavior.
 	pub fn supported_by(&self, modalities: &[String]) -> bool {
-		!matches!(self, Self::WorkingImage(_)) || modalities.iter().any(|item| item == "image")
+		!matches!(self, Self::WorkingImage(_) | Self::DriveFile(_))
+			|| modalities.iter().any(|item| item == "image")
 	}
 }
 

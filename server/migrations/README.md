@@ -70,6 +70,16 @@ backfill. Receipts follow their scope through Node and Tenant purge. Forced
 Tenant row security uses SQL assets because Reinhardt cannot express policies.
 `execution/0163_scope_host_debit_state` registers the receipt model state.
 
+`execution/0175_node_drives` through `0179_drive_tool_contract` add Node Drives,
+versioned manifests, trash, resumable uploads, publication jobs and read
+dependencies. The migration backfills Drive ownership for existing Nodes,
+and the Node insert trigger creates a Drive for each new Node. `knowledge/0062_drive_index` and
+`0063_drive_index_state` add the Drive index and its model state. SQL assets
+define the Node trigger, forced Tenant row policies and PostgreSQL validators
+because Reinhardt has no typed operations for them. Reversing the tool
+contract requires removing persisted Drive tool definitions and Agent
+configurations that remove the `drive_search` default.
+
 `registry/0056_attachment_tools` (after `registry/0055_remove_structured_harness_contracts`) extends the existing PostgreSQL descriptor
 and Agent default validators for the built-in `attachment_copy` operation.
 The function bodies use SQL assets because Reinhardt has no typed operation

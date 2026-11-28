@@ -460,6 +460,8 @@ use uuid::Uuid;
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ToolFileRead {
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub drive: Option<aidash_domain::drive::FileLocation>,
 	/// A Working Area or Reference file. Leave it out to read `path`.
 	pub file_id: Option<Uuid>,
 	/// A file in the Scratch Space, relative to its root. Leave out `file_id`.
@@ -476,6 +478,7 @@ pub struct ToolFileRead {
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ToolFileScope {
+	Drive,
 	Working,
 	References,
 	Received,

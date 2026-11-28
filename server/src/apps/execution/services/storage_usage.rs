@@ -1,6 +1,6 @@
 //! How many bytes of files Aidash stores for each Tenant: unique content blobs,
-//! channel attachments, Artifacts, Research snapshots and their originals, and
-//! Research page images. Database rows beyond those files do not count. A build
+//! Drive files and object-backed Thread Attachments contribute once per digest
+//! through core_blobs. Legacy inline files are counted separately. A build
 //! that meters usage takes a sample every day and hands it to its usage port.
 use crate::store::Store;
 use crate::{Error, Result};

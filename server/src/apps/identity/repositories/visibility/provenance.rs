@@ -229,36 +229,14 @@ impl ReadProvenanceScope for Reads<'_> {
 		if let Some(sources) = self.access.state_sources(run) {
 			return Ok(sources);
 		}
-		let result: NativeResult<Vec<RecordedRead>> = async {
-			let this = &mut *self.access;
-			let sources: Vec<(Uuid, String, Uuid)> = {
-				let query_bind_1 = run;
-				crate::database::native::query_as(
-					&Query::select()
-						.column(Alias::new("thread_id"))
-						.column(Alias::new("resource_kind"))
-						.column(Alias::new("resource_id"))
-						.from(Alias::new("authorization_run_reads"))
-						.and_where(
-							reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("run_id"))).eq(
-								SimpleExpr::CustomWithExpr(
-									"(?)".to_owned(),
-									vec![Expr::value(query_bind_1.to_owned()).into()],
-								),
-							),
-						)
-						.order_by(Alias::new("resource_kind"), Order::Asc)
-						.order_by(Alias::new("resource_id"), Order::Asc)
-						.to_string(PostgresQueryBuilder),
-				)
-				.columns(&["thread_id", "resource_kind", "resource_id"])
-				.fetch_all(&mut **this.tx)
-				.await?
-			};
-			Ok(sources)
-		}
-		.await;
-		result.map_err(Into::into)
+		crate::apps::identity::models::AuthorizationRunRead::for_run(self.access.tx.as_mut(), run)
+			.await
+			.map_err(Into::into)
+	}
+	async fn drive_source_visible(&mut self, entry: Uuid) -> Result<bool> {
+		crate::apps::drives::repository::source_visible(self.access, entry)
+			.await
+			.map_err(Into::into)
 	}
 	async fn source_task(&mut self, id: Uuid, thread: Uuid) -> Result<Option<Task>> {
 		if let Some(row) = self.access.state_source_task(id, thread) {
@@ -592,6 +570,11 @@ impl ReadProvenanceScope for NativeReads<'_> {
 	async fn prepare_sources(&mut self, sources: &[RecordedRead]) -> Result<()> {
 		self.access
 			.prepare_walk_sources(sources)
+			.await
+			.map_err(Into::into)
+	}
+	async fn drive_source_visible(&mut self, entry: Uuid) -> Result<bool> {
+		crate::apps::drives::repository::source_visible(self.access, entry)
 			.await
 			.map_err(Into::into)
 	}

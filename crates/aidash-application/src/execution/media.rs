@@ -375,6 +375,12 @@ pub async fn selected(
 					scope.read(file.file_id).await?,
 				)
 			}
+			ModelMedia::DriveFile(selection) => {
+				let (path, media_type, bytes) =
+					scope.drive_file(selection, 8 * 1024 * 1024 - total).await?;
+				total += bytes.len() as u64;
+				(format!("Selected Drive file: {path}"), media_type, bytes)
+			}
 			ModelMedia::ThreadAttachment(selection) => {
 				let Some((filename, media_type, bytes)) =
 					scope.thread_attachment(selection).await?

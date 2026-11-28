@@ -335,8 +335,21 @@ async fn reverse_task_executions(
 	] {
 		renamed.push(source.get_migration("execution", name).await.unwrap());
 	}
+	for &(app, name) in DRIVE_MIGRATIONS {
+		renamed.push(source.get_migration(app, name).await.unwrap());
+	}
 	executor.rollback_migrations(&renamed).await.unwrap();
 }
+
+const DRIVE_MIGRATIONS: &[(&str, &str)] = &[
+	("execution", "0175_node_drives"),
+	("execution", "0176_drive_reads"),
+	("execution", "0177_drive_model_state"),
+	("execution", "0178_drive_departed_folders"),
+	("execution", "0179_drive_tool_contract"),
+	("knowledge", "0062_drive_index"),
+	("knowledge", "0063_drive_index_state"),
+];
 
 async fn history_size() -> usize {
 	FilesystemSource::new(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("migrations"))
@@ -344,6 +357,26 @@ async fn history_size() -> usize {
 		.await
 		.unwrap()
 		.len()
+}
+
+async fn purge_fixture_node(pool: &PgPool, tenant: &str, node: &str) {
+	let mut tx = pool.begin().await.unwrap();
+	// Production purges Drive contents and their parent before the Node.
+	// These schema fixtures only have the empty Drive created with the Node.
+	let drive = sqlx::query("DELETE FROM drives WHERE tenant = $1 AND node = $2 AND head = 0")
+		.bind(tenant)
+		.bind(node)
+		.execute(&mut *tx)
+		.await
+		.unwrap();
+	assert_eq!(drive.rows_affected(), 1);
+	sqlx::query("DELETE FROM nodes WHERE tenant = $1 AND name = $2")
+		.bind(tenant)
+		.bind(node)
+		.execute(&mut *tx)
+		.await
+		.unwrap();
+	tx.commit().await.unwrap();
 }
 
 #[rstest]
@@ -410,8 +443,8 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 	assert_eq!(head("federation"), ["0033_completion_settlement_v2"]);
 	assert_eq!(head("registry"), ["0094_thread_target_kind_state"]);
 	assert_eq!(head("identity"), ["0122_tenant_embedding_settings_guard"]);
-	assert_eq!(head("execution"), ["0173_authorization_read_model_state"]);
-	assert_eq!(head("knowledge"), ["0059_threads_state"]);
+	assert_eq!(head("execution"), ["0179_drive_tool_contract"]);
+	assert_eq!(head("knowledge"), ["0063_drive_index_state"]);
 	assert_eq!(head("workspaces"), ["0071_completion_messages"]);
 	// Assert: retain the physical graph, model snapshots, and all supported tables.
 	assert!(
@@ -424,7 +457,7 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 			.iter()
 			.filter(|migration| migration.state_only)
 			.count(),
-		141
+		143
 	);
 	let tables = migrations
 		.iter()
@@ -703,14 +736,14 @@ async fn generation_with_existing_sql_assets_preserves_history_and_dependency(
 	);
 	assert_eq!(std::fs::read(history).unwrap(), original);
 	let generated = FilesystemSource::new(fixture.directory.path().join("migrations"))
-		.get_migration("execution", "0174_policy_probe")
+		.get_migration("execution", "0180_policy_probe")
 		.await
 		.unwrap();
 	assert_eq!(
 		generated.dependencies,
 		vec![(
 			"execution".to_owned(),
-			"0173_authorization_read_model_state".to_owned()
+			"0179_drive_tool_contract".to_owned()
 		)]
 	);
 	assert!(generated.operations.is_empty());
@@ -1204,6 +1237,20 @@ impl MigrationFixture {
 	}
 
 	async fn migrate_excluding(&self, excluded: &[(&str, &str)]) {
+		let mut excluded = excluded.to_vec();
+		// Historical fixtures omit the Drive generation when any of its
+		// predecessor app heads are absent.
+		if excluded.iter().any(|migration| {
+			matches!(
+				migration,
+				("execution", "0163_scope_host_debit_state")
+					| ("identity", "0115_suspension_resume_refusal")
+					| ("knowledge", "0059_threads_state")
+					| ("registry", "0082_thread_source_scope")
+			)
+		}) {
+			excluded.extend_from_slice(DRIVE_MIGRATIONS);
+		}
 		let recorder = DatabaseMigrationRecorder::new(self.connection.clone());
 		let before = recorder
 			.get_applied_migrations_if_present()
@@ -1212,7 +1259,7 @@ impl MigrationFixture {
 			.len();
 		let log_path = self.directory.path().join("migrate.log");
 		let log = File::create(&log_path).unwrap();
-		let mut command = deployment_command_excluding(&self.url, self.directory.path(), excluded);
+		let mut command = deployment_command_excluding(&self.url, self.directory.path(), &excluded);
 		command
 			.arg("migrate")
 			.stdin(Stdio::null())
@@ -1312,7 +1359,7 @@ async fn preserved_baseline_does_not_generate_table_recreation(
 			.iter()
 			.filter(|migration| migration.state_only)
 			.count(),
-		139
+		141
 	);
 }
 
@@ -4972,11 +5019,7 @@ async fn node_deletion_history_preserves_deadlines_and_permanent_ownership(
 		.execute(&pool)
 		.await
 		.unwrap();
-	sqlx::query("DELETE FROM nodes WHERE tenant='acme' AND name=$1")
-		.bind(&node)
-		.execute(&pool)
-		.await
-		.unwrap();
+	purge_fixture_node(&pool, "acme", &node).await;
 	let retained: i64 =
 		sqlx::query_scalar("SELECT count(*) FROM node_deletions WHERE tenant='acme' AND node=$1")
 			.bind(&node)
@@ -5222,11 +5265,7 @@ async fn node_administration_audit_preserves_permanent_tenant_ownership(
 		.execute(&pool)
 		.await
 		.unwrap();
-	sqlx::query("DELETE FROM nodes WHERE tenant='acme' AND name=$1")
-		.bind(&name)
-		.execute(&pool)
-		.await
-		.unwrap();
+	purge_fixture_node(&pool, "acme", &name).await;
 	let retained: (String, String) =
 		sqlx::query_as("SELECT tenant,node FROM dashboard_administration_history WHERE id=$1")
 			.bind(id)
@@ -5370,7 +5409,9 @@ async fn node_purge_source_lifetime_migrations_round_trip_without_weakening_prov
 		.iter()
 		.filter(|m| {
 			let key = (m.app_label.as_str(), m.name.as_str());
-			!THREAD_MIGRATIONS.contains(&key) && !GOAL_MIGRATIONS.contains(&key)
+			!THREAD_MIGRATIONS.contains(&key)
+				&& !GOAL_MIGRATIONS.contains(&key)
+				&& !DRIVE_MIGRATIONS.contains(&key)
 		})
 		.cloned()
 		.collect::<Vec<_>>();
@@ -5652,11 +5693,7 @@ async fn node_purge_registration_recovery_ownership_roundtrips_without_a_catalog
 			.execute(&pool)
 			.await
 			.unwrap();
-		sqlx::query("DELETE FROM nodes WHERE tenant='event-owner' AND name=$1")
-			.bind(&node)
-			.execute(&pool)
-			.await
-			.unwrap();
+		purge_fixture_node(&pool, "event-owner", &node).await;
 		let retained: (String, String) =
 			sqlx::query_as("SELECT tenant,node FROM events WHERE id=$1")
 				.bind(id)
@@ -6404,11 +6441,7 @@ async fn scope_egress_rows_are_tenant_bound_and_purged_with_the_node(
 	assert!(empty.is_err(), "a tally counts at least one connection");
 	sqlx::query("INSERT INTO egress_scope_host_debits (id, tenant, node, scope_id, day, sent, bytes) VALUES ($1, 'acme', $2, $3, CURRENT_DATE::text, false, 2)")
 		.bind(Uuid::new_v4()).bind(&node).bind(scope).execute(&pool).await.unwrap();
-	sqlx::query("DELETE FROM nodes WHERE tenant = 'acme' AND name = $1")
-		.bind(&node)
-		.execute(&pool)
-		.await
-		.unwrap();
+	purge_fixture_node(&pool, "acme", &node).await;
 	for table in [
 		"egress_scope_state",
 		"egress_scope_daily",
@@ -7387,6 +7420,47 @@ async fn thread_source_scope_migration_admits_thread_and_reverses(
 	executor.apply_migrations(&[migration]).await.unwrap();
 	assert!(accepts("thread").await);
 	pool.close().await;
+}
+
+#[rstest]
+#[tokio::test]
+async fn drive_tool_contract_admits_seeded_descriptors_and_independent_default_removals(
+	#[future] fresh_database: MigrationFixture,
+) {
+	let fixture = fresh_database.await;
+	fixture.migrate().await;
+	let pool = fixture.connection.clone().into_postgres().unwrap();
+	let accepts_descriptor = async |descriptor| {
+		contract_accepts(&pool, "aidash_descriptor_is_valid", vec![descriptor]).await
+	};
+	for operation in ["drive_publish", "drive_publish_status", "drive_search"] {
+		let descriptor = serde_json::to_value(
+			aidash_domain::tool::providers::core_descriptor("aidash://fixture", operation).unwrap(),
+		)
+		.unwrap();
+		assert!(accepts_descriptor(descriptor.clone()).await, "{operation}");
+		let mut wrong = descriptor;
+		wrong["tier"] = if operation == "drive_search" {
+			json!("sandboxed")
+		} else {
+			json!("builtin")
+		};
+		assert!(!accepts_descriptor(wrong).await, "{operation}");
+	}
+	let agent = |remove_default| {
+		json!({"schema_version":1,"model":{"id":"model","version":"1.0.0"},
+			"instructions":"Work","remove_default":remove_default})
+	};
+	let accepts_agent = async |remove_default| {
+		contract_accepts(
+			&pool,
+			"aidash_agent_bindings_is_valid",
+			vec![agent(remove_default)],
+		)
+		.await
+	};
+	assert!(accepts_agent(json!(["file_search", "drive_search"])).await);
+	assert!(!accepts_agent(json!(["drive_search", "drive_search"])).await);
 }
 
 /// The new write contract is enforced by PostgreSQL, even outside the worker.

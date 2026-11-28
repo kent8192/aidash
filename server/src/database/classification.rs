@@ -130,6 +130,15 @@ use Classification::{DeploymentWide, TenantOwned};
 /// Every table the Community migrations create, grouped by app.
 pub const TABLES: &[Table] = &[
 	// execution
+	table("execution", "drive_job_blobs", TenantOwned),
+	table("execution", "drive_run_reads", TenantOwned),
+	table("execution", "drive_jobs", TenantOwned),
+	table("execution", "drive_upload_parts", TenantOwned),
+	table("execution", "drive_uploads", TenantOwned),
+	table("execution", "drive_trash", TenantOwned),
+	table("execution", "drive_entries", TenantOwned),
+	table("execution", "drive_versions", TenantOwned),
+	table("execution", "drives", TenantOwned),
 	// undecodable activation messages, before any Tenant is known
 	table("execution", "activation_quarantine", DeploymentWide),
 	table("execution", "context_compaction_attempts", TenantOwned),
@@ -360,6 +369,8 @@ pub const TABLES: &[Table] = &[
 	// Tenant root records: the Deployment's list of Tenants (ADR 0050)
 	table("identity", "tenants", DeploymentWide),
 	// knowledge
+	table("knowledge", "drive_index_requests", TenantOwned),
+	table("knowledge", "drive_passages", TenantOwned),
 	table("knowledge", "memory_bank_decay", TenantOwned),
 	table("knowledge", "memory_bank_policy_changes", TenantOwned),
 	table("knowledge", "memory_bank_settings", TenantOwned),

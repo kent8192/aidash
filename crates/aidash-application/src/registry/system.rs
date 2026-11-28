@@ -171,7 +171,7 @@ pub fn legacy_workspace_entries(
 }
 
 /// The declarations of the file tools before they reached the Scratch Space
-/// (#745). A database seeded with them keeps them; new Bindings use 1.0.1.
+/// (#745). The Drive file tools have their own 1.1.0 declarations.
 pub fn legacy_file_entries(validation: &DefinitionValidation, node: &str) -> Result<Vec<Entry>> {
 	let legacy = validation.legacy_node_specifications();
 	let mut old: Vec<Entry> = entries(validation, node)?
@@ -535,6 +535,8 @@ pub fn builtin_reference(reference: &aidash_domain::registry::EntityRef) -> bool
 			}) || (matches!(
 		reference.id.as_str(),
 		"aidash.workspace_read"
+			| "aidash.file_read"
+			| "aidash.file_search"
 			| "aidash.workspace_search"
 			| "aidash.workspace_message"
 			| "aidash.memory_mutate"

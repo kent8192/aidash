@@ -1028,8 +1028,16 @@ An optional spending allowance on a Tenant, Node, Duty or person, per month or i
 _Avoid_: quota, token budget, spend cap
 
 **Drive**:
-The versioned files one Node keeps as its own: what its Tasks published there when they completed and what people put there directly. Everyone in the Tenant may read it unless the Node closes it, only work inside that Node writes to it, and when the Node is deleted its Drive is moved to another Node or deleted with it.
-_Avoid_: Cabinet, Library, Archive, shared drive, Google Drive (an outside tool a Deliverable may be sent to), Reference set (an Agent version's fixed reading material)
+A Node's collection of versioned files. A person who may give work to the Node can publish directly, and a Task can publish during its work. An open Drive is readable within the Tenant, while a private folder is visible only to its owner and the Node's administrators.
+_Avoid_: Cabinet, Library, Archive, shared drive, Google Drive (an outside tool), Reference set (an Agent version's fixed reading material)
+
+**Drive File**:
+A file kept at a path in a Drive. A particular Drive Version identifies the bytes at that path.
+_Avoid_: Working Area File, Thread Attachment, Reference File
+
+**Drive Version**:
+The contents of a Drive after one publication, with its author and the Task when one published it. A Deliverable names its Task's Drive Versions and the paths it changed.
+_Avoid_: Working Area revision, Outside Version
 
 **Instruction precedence** (supersedes the earlier entry, #1010):
 The order in which a model resolves conflicting directions: the Harness Contract, then human answers, then Tenant Instructions, then Node Instructions, then the Agent definition's instructions and Skills, then a Duty's mission and procedure, then the task and its messages, then Repository rules, then data, which never directs. It shapes only how work is done; runtime authorization alone decides what may execute.

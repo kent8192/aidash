@@ -34,6 +34,7 @@ pub const DEFAULT_TOOLS: &[&str] = &[
 	"skill_load",
 	"skill_read",
 	"file_search",
+	"drive_search",
 	"file_read",
 	"task_create",
 	"task_delegate",
@@ -640,6 +641,8 @@ impl QualifiedRef {
 				"workspace_observe"
 					| "thread_read" | "thread_observe"
 					| "task_create" | "task_delegate"
+					// Read Node Drives (#1020).
+					| "file_read" | "file_search"
 			) {
 				"1.1.0"
 			} else if matches!(
@@ -653,7 +656,7 @@ impl QualifiedRef {
 					| "workspace_wait"
 			) {
 				"1.1.0"
-			} else if matches!(operation, "file_read" | "file_search" | "attachment_copy") {
+			} else if matches!(operation, "attachment_copy") {
 				"1.0.1"
 			} else {
 				"1.0.0"

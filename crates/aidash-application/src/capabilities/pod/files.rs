@@ -126,6 +126,7 @@ pub async fn search(
 			exclude: vec![],
 			include: vec![],
 			max_files: 10_000,
+			after: None,
 			missing_ok: false,
 		};
 		let manifest = in_pod!(context, context.runtime.file_manifest(&request))?;
