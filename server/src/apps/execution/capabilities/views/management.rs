@@ -3,7 +3,7 @@ use crate::capabilities::endpoints as api;
 use crate::http::json::Json;
 use api::*;
 use reinhardt::http::ViewResult;
-use reinhardt::{Depends, Path, Query, Request, Response, get, post};
+use reinhardt::{Depends, Path, PathStruct, Query, Request, Response, get, post};
 use uuid::Uuid;
 
 #[post(
@@ -532,6 +532,14 @@ pub async fn reference_download(
 	)
 }
 
+/// The Run, command, and output identifier in the download path.
+#[derive(serde::Deserialize)]
+pub struct CommandOutputPath {
+	pub id: Uuid,
+	pub operation: Uuid,
+	pub file: Uuid,
+}
+
 #[get(
 	"/api/executions/{id}/core-operations/{operation}/files/{file}/download",
 	name = "!command_output_download",
@@ -540,7 +548,11 @@ pub async fn reference_download(
 pub async fn command_output_download(
 	#[inject] service: Depends<CapabilitiesManagement>,
 	#[inject] actor: Actor,
-	Path((id, operation, file)): Path<(Uuid, Uuid, Uuid)>,
+	PathStruct(CommandOutputPath {
+		id,
+		operation,
+		file,
+	}): PathStruct<CommandOutputPath>,
 	Query(input): Query<Offset>,
 ) -> ViewResult<Response> {
 	crate::http::json(
