@@ -133,7 +133,7 @@ fn thread_policy(tenant: &str) -> Value {
             "condition":{"op":"eq","left":{"source":"resource","path":"/owner"},
                 "right":{"source":"literal","value":"alice"}}},
             {"id":"node-use","effect":"allow","subjects":{"ids":["alice"]},"actions":["node.use"],"resources":{"kinds":["node"]}},
-            {"id":"thread-content","effect":"allow","subjects":{"ids":["alice"]},"actions":["task.read","artifact.read","message.read"],"resources":{"kinds":["task","artifact","message"]},"condition":{"op":"eq","left":{"source":"resource","path":"/owner"},"right":{"source":"literal","value":"alice"}}}]})
+            {"id":"thread-content","effect":"allow","subjects":{"ids":["alice"]},"actions":["task.read","message.read"],"resources":{"kinds":["task","message"]},"condition":{"op":"eq","left":{"source":"resource","path":"/owner"},"right":{"source":"literal","value":"alice"}}}]})
 }
 
 #[rstest::rstest]
@@ -292,7 +292,6 @@ async fn subject_credentials_enforce_thread_isolation_and_live_revocation(
 	for key in [
 		"threads",
 		"tasks",
-		"artifacts",
 		"events",
 		"runs",
 		"conversations",

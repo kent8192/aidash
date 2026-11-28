@@ -162,6 +162,7 @@ impl RunGuardScope for Scope {
 			title: "Saved task".into(),
 			description: String::new(),
 			status: TaskStatus::Open,
+			goal: None,
 			requirements: json!({}),
 			owner: None,
 			created_by: "creator".into(),

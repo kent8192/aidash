@@ -1175,6 +1175,7 @@ pub(super) async fn recorded_run(
 			&aidash_domain::NewTask {
 				title: "Large provenance Run".into(),
 				description: "Read the admitted graph".into(),
+				goal: None,
 				requirements: json!({}),
 				dependencies: vec![],
 				parent_id: None,

@@ -83,6 +83,7 @@ impl Scope {
 				title: "Task".into(),
 				description: "Do work".into(),
 				status: TaskStatus::Open,
+				goal: None,
 				requirements: json!({}),
 				owner: None,
 				created_by: "alice".into(),

@@ -161,6 +161,7 @@ async fn peer_prefixed_legacy_output_checks_remote_fence_without_a_local_run(
 			&NewTask {
 				title: "Remote task".into(),
 				description: "Fence stale output".into(),
+				goal: None,
 				requirements: json!({}),
 				dependencies: vec![],
 				parent_id: None,

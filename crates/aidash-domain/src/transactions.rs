@@ -1,5 +1,5 @@
 //! Immutable transaction manifests and monotonic coordinator decisions.
-use crate::{ArtifactInput, Error, nodes::NodeAddress};
+use crate::{Error, nodes::NodeAddress};
 use chrono::{DateTime, Utc};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -25,7 +25,7 @@ pub enum Mutation {
 	CompleteTask {
 		task_id: Uuid,
 		expected_revision: i64,
-		artifact: ArtifactInput,
+		text: String,
 	},
 	FinishRun {
 		run_id: Uuid,
@@ -113,14 +113,14 @@ impl Manifest {
 					Mutation::CompleteTask {
 						task_id,
 						expected_revision,
-						artifact,
+						text,
 					} => {
 						if *expected_revision < 0 {
 							return Err(
 								Error::Invalid("task revision must be nonnegative".into()).into()
 							);
 						}
-						artifact.validate()?;
+						crate::nonempty(text, "Completion Message")?;
 						format!("task:{task_id}")
 					}
 					Mutation::FinishRun {

@@ -31,7 +31,7 @@ const node = (g, id) =>
 const visible = (g, options = {}) =>
   filterMeshGraph(g, { mode: "mesh", kinds: meshKinds, query: "", ...options });
 
-test("projects explicit thread, task hierarchy, dependencies, tools, artifacts and conversation links", () => {
+test("projects explicit thread, task hierarchy, dependencies, tools and conversation links", () => {
   const graph = projectWithPeers(scene());
   for (const kind of meshKinds)
     assert.ok(
@@ -40,7 +40,6 @@ test("projects explicit thread, task hierarchy, dependencies, tools, artifacts a
     );
   for (const relation of [
     "depends",
-    "produces",
     "participates",
     "coordinates",
     "tool",
@@ -118,7 +117,7 @@ test("node budget keeps thread activity alongside a large registry", () => {
   const graph = visible(project(s));
   assert.equal(graph.nodes.length, 180);
   assert.ok(graph.omitted > 0);
-  for (const kind of ["thread", "task", "artifact", "agent", "tool"])
+  for (const kind of ["thread", "task", "agent", "tool"])
     assert.ok(
       graph.nodes.some((n) => n.kind === kind),
       kind,
@@ -227,7 +226,6 @@ test("subject views cannot join discovery or remote runs, and renderers receive 
   const s = scene();
   s.data.access = { kind: "subject", tenant: "acme", subject: "ryota" };
   s.data.registry[0].config.knowledge = { credential: "PRIVATE_SECRET" };
-  s.data.artifacts[0].content = "PRIVATE_CONTENT";
   s.data.runs[0].context = { messages: "PRIVATE_MESSAGES" };
   const g = project(s);
   assert.ok(!g.nodes.some((n) => n.remote || n.kind === "remote"));
@@ -241,7 +239,7 @@ test("an unavailable thread never falls back to another thread's activity", () =
   });
   assert.ok(
     !g.nodes.some((n) =>
-      ["task", "thread", "human", "artifact", "conversation"].includes(n.kind),
+      ["task", "thread", "human", "conversation"].includes(n.kind),
     ),
   );
   assert.ok(
@@ -368,10 +366,9 @@ test("revoked entities remove cached names and remote status", () => {
   assert.ok(!JSON.stringify(g).includes("Builder Agent"));
 });
 
-test("matches server event envelopes for task creation, completion, publication and run creation", () => {
+test("matches server event envelopes for task creation, completion and run creation", () => {
   const s = scene();
   const task = s.data.tasks[0];
-  const artifact = s.data.artifacts[0];
   const run = s.data.runs[0];
   const event = s.data.events[0];
   assert.equal(
@@ -382,19 +379,13 @@ test("matches server event envelopes for task creation, completion, publication 
     eventReferences({
       ...event,
       kind: "task.completed",
-      data: { task, artifact },
+      data: { task_id: task.id, message_id: "completion-message" },
     }),
     {
       task_id: task.id,
-      artifact_id: artifact.id,
       run_id: undefined,
       conversation_id: undefined,
     },
-  );
-  assert.equal(
-    eventReferences({ ...event, kind: "artifact.published", data: artifact })
-      .artifact_id,
-    artifact.id,
   );
   assert.equal(
     eventReferences({ ...event, kind: "execution.created", data: run }).run_id,

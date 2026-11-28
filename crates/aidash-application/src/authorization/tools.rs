@@ -494,6 +494,14 @@ pub async fn authorize(
 					.as_str()
 					.and_then(|s| s.parse::<Uuid>().ok())
 					.ok_or_else(|| Error::Invalid("invalid task id".into()))?;
+				// A Goal-only update still requires task.delegate on the child,
+				// but has no destination Agent or Node to authorize.
+				if call.arguments["goal"].is_string()
+					&& call.arguments.get("node_id").is_none()
+					&& call.arguments.get("agent").is_none()
+				{
+					continue;
+				}
 				let node = call.arguments["node_id"]
 					.as_str()
 					.ok_or_else(|| Error::Invalid("missing node_id".into()))?;
@@ -867,12 +875,6 @@ async fn protected_resource(
 					task?
 				};
 				scope.task_resource(&task).await?
-			}
-			"artifact" => {
-				let creator = scope.subjects().last().ok_or(Error::Forbidden)?.clone();
-				scope
-					.artifact_creation_resource(run.task_id, &creator)
-					.await?
 			}
 			"memory" => scope.memory_resource(run).await?,
 			_ => scope.resource(kind, id, json!({})),

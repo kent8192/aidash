@@ -11,7 +11,7 @@ pub(crate) struct Origin {
 	pub(crate) subject: String,
 }
 
-/// No state, artifact content, registry document or provider argument is sent
+/// No state, message content, registry document or provider argument is sent
 /// during preflight. Resource identifiers and the recipient set are explicit.
 #[derive(
 	Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema, reinhardt::Validate,

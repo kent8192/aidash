@@ -137,40 +137,6 @@ pub async fn admit_tool(
 	admit(scope, run, name, input).await
 }
 
-/// Start one Completion Gate Check (#112). It passes the same Binding,
-/// narrowing and `tool.invoke` checks as the model's own shell calls; only the
-/// operation kind differs, so the Check's files never reach the Working Area.
-pub async fn verify(
-	scope: &mut dyn FileScopePort,
-	run: &RunMetadata,
-	input: Value,
-	key: &str,
-) -> Result<Value> {
-	let input = admit(scope, run, VERIFICATION_CAPABILITY, input).await?;
-	let mut area = scope.for_run(run).await?;
-	scope.execute(Action::Verify, &mut area, input, key).await
-}
-/// The current result of a Check this Run started.
-pub async fn verification(
-	scope: &mut dyn FileScopePort,
-	run: &RunMetadata,
-	operation_id: Uuid,
-	key: &str,
-) -> Result<Value> {
-	let mut area = scope.for_run(run).await?;
-	scope
-		.execute(
-			Action::Control {
-				kind: aidash_domain::capabilities::operations::VERIFICATION,
-				cancel: false,
-			},
-			&mut area,
-			json!({"operation_id": operation_id}),
-			key,
-		)
-		.await
-}
-const VERIFICATION_CAPABILITY: &str = "shell";
 pub async fn invoke(
 	scope: &mut dyn FileScopePort,
 	run: &RunMetadata,

@@ -362,7 +362,7 @@ async fn persisted_identity_and_revision_are_immutable(
 	let mut old = entry();
 	old.deleted = deleted;
 	if origin {
-		old.source = json!({"kind":"artifact","id":Uuid::from_u128(8)});
+		old.source = json!({"kind":"message","id":Uuid::from_u128(8)});
 	}
 	let mut scope = Scope {
 		old: Some(old),

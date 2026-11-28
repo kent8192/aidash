@@ -22,7 +22,7 @@ pub trait SemanticMemoryReadSession: Send {
 		thread: Uuid,
 		source: &aidash_domain::semantic::Source,
 	) -> Result<Option<String>>;
-	/// Resolve an artifact or message while adding its producers to the shared classified walk.
+	/// Resolve a message while adding its producers to the shared classified walk.
 	async fn classified_output_source(
 		&mut self,
 		thread: Uuid,

@@ -246,6 +246,66 @@ pub fn legacy_journal_entries(validation: &DefinitionValidation, node: &str) -> 
 	Ok(old)
 }
 
+/// Keep the bytes of earlier immutable tool declarations already in the Registry.
+pub(crate) fn legacy_goal_entries(
+	validation: &DefinitionValidation,
+	node: &str,
+) -> Result<Vec<Entry>> {
+	let mut old = Vec::new();
+	for mut entry in entries(validation, node)? {
+		match entry.id.as_str() {
+			"aidash.workspace_read" | "aidash.thread_read" => {
+				entry.version = if entry.id == "aidash.workspace_read" {
+					"1.1.0"
+				} else {
+					"1.0.0"
+				}
+				.into();
+				if let Some(kinds) = entry.schema["properties"]["kind"]["enum"].as_array_mut() {
+					kinds.insert(2, json!("artifact"));
+				}
+			}
+			"aidash.workspace_observe" => {
+				entry.version = "1.0.1".into();
+				if let Some(description) = entry.description.get_mut("en") {
+					*description = description.replace(
+						"summary of tasks, messages",
+						"summary of goal, tasks, artifact references, messages",
+					);
+				}
+			}
+			"aidash.thread_observe" => {
+				entry.version = "1.0.0".into();
+				if let Some(description) = entry.description.get_mut("en") {
+					*description = description.replace(
+						"its tasks, messages",
+						"its tasks, artifact references, messages",
+					);
+				}
+			}
+			"aidash.task_create" | "aidash.task_delegate" | "aidash.subnode_task" => {
+				entry.version = if entry.id == "aidash.subnode_task" {
+					"1.1.0"
+				} else {
+					"1.0.0"
+				}
+				.into();
+				if let Some(properties) = entry.schema["properties"].as_object_mut() {
+					properties.remove("goal");
+				}
+				if entry.id == "aidash.task_delegate" {
+					entry.description.insert("en".into(), "Offer an existing workspace task to the explicitly selected local or remote agent.".into());
+					entry.schema["required"] = json!(["task_id", "node_id", "agent"]);
+					entry.schema.as_object_mut().unwrap().remove("anyOf");
+				}
+			}
+			_ => continue,
+		}
+		old.push(entry);
+	}
+	Ok(old)
+}
+
 /// The Node's system definitions, including the private roles used to build
 /// Binding snapshots for built-in Memory.
 pub fn declarations(validation: &DefinitionValidation, node: &str) -> Result<Vec<Entry>> {
@@ -264,6 +324,7 @@ pub fn pinned_declarations(
 	Ok(declarations(validation, node)?
 		.into_iter()
 		.chain(legacy_workspace_entries(validation, node)?)
+		.chain(legacy_goal_entries(validation, node)?)
 		.chain(legacy_journal_entries(validation, node)?)
 		.chain(legacy_file_entries(validation, node)?))
 }
@@ -378,6 +439,7 @@ pub async fn seed(
 	let entries: Vec<_> = entries(validation, node)?
 		.into_iter()
 		.chain(legacy_workspace_entries(validation, node)?)
+		.chain(legacy_goal_entries(validation, node)?)
 		.chain(legacy_journal_entries(validation, node)?)
 		.chain(legacy_file_entries(validation, node)?)
 		.chain(offered)
@@ -463,16 +525,23 @@ pub fn builtin_reference(reference: &aidash_domain::registry::EntityRef) -> bool
 		return true;
 	}
 	(reference.version == "1.0.0"
-		|| (matches!(
-			reference.id.as_str(),
-			"aidash.workspace_read"
-				| "aidash.workspace_search"
-				| "aidash.workspace_message"
-				| "aidash.memory_mutate"
-				| "aidash.subnode_task"
-				| "aidash.task_assign"
-				| "aidash.workspace_wait"
-		) && reference.version == "1.1.0")
+		|| reference
+			.id
+			.strip_prefix("aidash.")
+			.is_some_and(|operation| {
+				reference.version
+					== aidash_domain::registry::bindings::QualifiedRef::builtin("", operation)
+						.version
+			}) || (matches!(
+		reference.id.as_str(),
+		"aidash.workspace_read"
+			| "aidash.workspace_search"
+			| "aidash.workspace_message"
+			| "aidash.memory_mutate"
+			| "aidash.subnode_task"
+			| "aidash.task_assign"
+			| "aidash.workspace_wait"
+	) && reference.version == "1.1.0")
 		|| (reference.version == "1.0.1"
 			&& matches!(
 				reference.id.as_str(),

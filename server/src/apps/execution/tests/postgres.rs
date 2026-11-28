@@ -88,6 +88,7 @@ fn new_task() -> NewTask {
 	NewTask {
 		title: "Research".into(),
 		description: "Compare Rust frameworks".into(),
+		goal: None,
 		requirements: json!({"capability":"web.search","language":"ja"}),
 		dependencies: vec![],
 		parent_id: None,
@@ -161,11 +162,12 @@ async fn concurrent_claims_dependencies_and_idempotent_completion(
 				task.id,
 				&owner,
 				"complete",
-				&ArtifactInput {
-					kind: "text".into(),
-					name: "report".into(),
-					content: json!("result")
-				}
+				&aidash_domain::deliverable::Completion::new(
+					task.id,
+					"complete",
+					"result".into(),
+					None
+				)
 			)
 			.await
 			.is_err()
@@ -181,11 +183,8 @@ async fn concurrent_claims_dependencies_and_idempotent_completion(
 		.await
 		.unwrap();
 	assert_eq!(running.revision, 2);
-	let artifact = ArtifactInput {
-		kind: "text".into(),
-		name: "report".into(),
-		content: json!("result"),
-	};
+	let artifact =
+		aidash_domain::deliverable::Completion::new(task.id, "complete", "result".into(), None);
 	let completed = store
 		.complete(&ACME, task.id, &owner, "complete", &artifact)
 		.await
@@ -196,16 +195,24 @@ async fn concurrent_claims_dependencies_and_idempotent_completion(
 		.unwrap();
 	assert_eq!(completed.revision, replay.revision);
 	assert_eq!(
-		store.snapshot(&ACME, w.id).await.unwrap().artifacts.len(),
+		store
+			.snapshot(&ACME, w.id)
+			.await
+			.unwrap()
+			.messages
+			.into_iter()
+			.filter(|message| message.completion.is_some())
+			.collect::<Vec<_>>()
+			.len(),
 		1
 	);
 	let mut bad = artifact.clone();
-	bad.content = json!("different");
+	bad.text = "different".into();
 	assert!(
 		store
 			.complete(&ACME, task.id, &owner, "complete", &bad)
 			.await
-			.is_err()
+			.is_ok()
 	);
 	assert!(
 		store
@@ -1289,7 +1296,10 @@ async fn parent_can_finish_after_explicit_child_abandonment(
 			.snapshot(&ACME, thread.id)
 			.await
 			.unwrap()
-			.artifacts
+			.messages
+			.into_iter()
+			.filter(|message| message.completion.is_some())
+			.collect::<Vec<_>>()
 			.len(),
 		1
 	);
@@ -1505,8 +1515,16 @@ async fn integration_failures_reach_the_agent_without_replay_or_schema_escape(
 		"each permitted source is fetched once"
 	);
 	assert_eq!(
-		store.snapshot(&ACME, thread.id).await.unwrap().artifacts[0].content,
-		json!("Used alternate evidence")
+		store
+			.snapshot(&ACME, thread.id)
+			.await
+			.unwrap()
+			.messages
+			.into_iter()
+			.filter(|message| message.completion.is_some())
+			.collect::<Vec<_>>()[0]
+			.content,
+		"Used alternate evidence"
 	);
 	assert!(
 		!store
@@ -1559,7 +1577,7 @@ async fn a_run_that_hits_a_statement_timeout_waits_and_completes(
 		.unwrap();
 	let agent = federation.registry.register(&aidash_domain::tenancy::TenantName::new("acme").unwrap(), entry("agent", "web-research", json!({"model":{"id":"web-model","version":"1.0.0"},"instructions":"Use available public evidence","schema_version":1,"bindings":[{"kind":"tool","target":{"registry_deployment":federation.config.deployment,"id":"web-fetch","version":"1.0.0"},"alias":"plugin_0","narrow":{}}],"remove_default":[]}))).await.unwrap();
 	let thread = store.create_thread(&ACME, "alice", "Waits").await.unwrap();
-	// The first artifact of this test fails the way a fired statement limit does.
+	// The first message of this test fails the way a fired statement limit does.
 	let owner = common::owner_pool(store.pool.fixture_driver()).await;
 	for ddl in [
 		"CREATE SEQUENCE statement_timeouts",
@@ -1567,7 +1585,7 @@ async fn a_run_that_hits_a_statement_timeout_waits_and_completes(
 		 IF nextval('statement_timeouts') = 1 THEN \
 		 RAISE EXCEPTION USING ERRCODE = '57014', MESSAGE = 'canceling statement due to statement timeout'; \
 		 END IF; RETURN NEW; END $$",
-		"CREATE TRIGGER fail_once BEFORE INSERT ON artifacts FOR EACH ROW EXECUTE FUNCTION fail_once()",
+		"CREATE TRIGGER fail_once BEFORE INSERT ON messages FOR EACH ROW EXECUTE FUNCTION fail_once()",
 	] {
 		sqlx::query(ddl).execute(&owner).await.unwrap();
 	}
@@ -1604,8 +1622,16 @@ async fn a_run_that_hits_a_statement_timeout_waits_and_completes(
 		"the Run waited instead of failing"
 	);
 	assert_eq!(
-		store.snapshot(&ACME, thread.id).await.unwrap().artifacts[0].content,
-		json!("Used alternate evidence")
+		store
+			.snapshot(&ACME, thread.id)
+			.await
+			.unwrap()
+			.messages
+			.into_iter()
+			.filter(|message| message.completion.is_some())
+			.collect::<Vec<_>>()[0]
+			.content,
+		"Used alternate evidence"
 	);
 	owner.close().await;
 	drop(server);
@@ -1630,11 +1656,8 @@ async fn child_creation_and_parent_completion_are_serialized(
 	let parent = running_task(&f, &agent, thread.id, None).await;
 	let mut input = new_task();
 	input.parent_id = Some(parent.id);
-	let artifact = ArtifactInput {
-		kind: "text".into(),
-		name: "parent".into(),
-		content: json!("done"),
-	};
+	let artifact =
+		aidash_domain::deliverable::Completion::new(parent.id, "parent", "done".into(), None);
 	let (child, completed) = tokio::join!(
 		store.create_task(&ACME, thread.id, &input, "human", Some("child")),
 		store.complete(

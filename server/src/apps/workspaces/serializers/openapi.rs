@@ -162,6 +162,22 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 		200,
 		"application/json",
 	)?;
+	use crate::apps::workspaces::repositories::goals::{Change, Detail};
+	contracts.path(document, views::management::task_goal, &["Uuid"])?;
+	contracts.path(document, views::management::task_goal_change, &["Uuid"])?;
+	contracts.request::<_, Change>(document, views::management::task_goal_change)?;
+	contracts.response::<_, Detail>(
+		document,
+		views::management::task_goal,
+		200,
+		"application/json",
+	)?;
+	contracts.response::<_, Detail>(
+		document,
+		views::management::task_goal_change,
+		200,
+		"application/json",
+	)?;
 	contracts.request::<_, ThreadInput>(document, views::management::thread_create)?;
 	contracts.response::<_, ThreadSnapshot>(
 		document,

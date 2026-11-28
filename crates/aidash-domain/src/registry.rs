@@ -143,8 +143,6 @@ pub struct AgentConfig {
 	pub harness_contract: Option<crate::harness_contract::HarnessContract>,
 	/// As written in the definition; `None` means `off` (ADR 0019).
 	pub prompt_cache: Option<crate::projection::PromptCache>,
-	/// As written in the definition; `None` requires no verification.
-	pub completion: Option<crate::completion::CompletionPolicy>,
 	pub agent_plugins: Vec<crate::agent_plugin::AgentPluginRef>,
 	pub agent_plugin_settings: crate::agent_plugin::PluginSettings,
 	pub core_capabilities: crate::capabilities::CoreCapabilities,

@@ -1057,6 +1057,7 @@ async fn trust_run_backlog(
 					&aidash_server::domain::NewTask {
 						title: "History".into(),
 						description: "Fixture".into(),
+						goal: None,
 						requirements: json!({}),
 						dependencies: vec![],
 						parent_id: None,

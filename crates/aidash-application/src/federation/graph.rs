@@ -46,9 +46,7 @@ async fn linked_candidates(
 	match candidate {
 		Candidate::Thread(_) => {}
 		Candidate::Task(task) if options.scope_thread.is_none() => {
-			if (kind_allowed("thread", options) || kind_allowed("goal", options))
-				&& relation_allowed("contains", options)
-			{
+			if kind_allowed("thread", options) && relation_allowed("contains", options) {
 				thread_ids.push(task.thread_id);
 			}
 			if kind_allowed("task", options) {
@@ -58,11 +56,6 @@ async fn linked_candidates(
 				if relation_allowed("depends", options) {
 					task_ids.extend(task.dependencies.iter().copied());
 				}
-			}
-		}
-		Candidate::Artifact(artifact) if options.scope_thread.is_none() => {
-			if kind_allowed("task", options) && relation_allowed("produces", options) {
-				task_ids.push(artifact.task_id);
 			}
 		}
 		Candidate::Run(run) if relation_allowed("executes", options) => {
@@ -208,8 +201,7 @@ pub async fn project(
 			let before = cursor.offset;
 			cursor.offset += 1;
 			scanned += 1;
-			let allowed_kind = kind_allowed(candidate.kind(), options)
-				|| matches!(&candidate, Candidate::Thread(_)) && kind_allowed("goal", options);
+			let allowed_kind = kind_allowed(candidate.kind(), options);
 			if !allowed_kind {
 				continue;
 			}
@@ -231,7 +223,6 @@ pub async fn project(
 					let row = match &candidate {
 						Candidate::Task(row) => Some((Kind::Task, row.thread_id)),
 						Candidate::Run(row) => Some((Kind::Run, row.thread_id)),
-						Candidate::Artifact(row) => Some((Kind::Artifact, row.thread_id)),
 						_ => None,
 					};
 					if let Some((kind, thread)) = row {

@@ -169,10 +169,7 @@ function SemanticThread({ data, thread }: { data: State; thread: string }) {
     refetchInterval: 5000,
   });
   const available = snapshot.isError ? undefined : snapshot.data;
-  const artifacts = available?.artifacts ?? [];
   const messages = available?.messages ?? [];
-  for (const artifact of artifacts)
-    labels.set(artifact.id, artifact.name || t("artifact"));
   for (const message of messages)
     labels.set(message.id, message.content.slice(0, 100) || t("message"));
   const scopeLabel = (agent: string | null | undefined) =>
@@ -596,7 +593,7 @@ function SemanticThread({ data, thread }: { data: State; thread: string }) {
             data={data}
             thread={thread}
             knownScopes={knownScopes}
-            sources={{ artifacts, messages }}
+            sources={{ messages }}
             entry={editing === "new" ? null : editing}
             busy={busy}
             submit={(draft) => mutate(() => semanticPut(thread, draft))}
@@ -773,7 +770,6 @@ function EntryForm({
   thread: string;
   knownScopes: string[];
   sources: {
-    artifacts: State["artifacts"];
     messages: { id: string; content: string; created_at: string }[];
   };
   entry: SemanticEntry | null;
@@ -855,7 +851,6 @@ function EntryForm({
           onChange={(e) => setKind(e.target.value as EditableKind)}
         >
           <option value="memory">{t("semanticMemoryText")}</option>
-          <option value="artifact">{t("artifact")}</option>
           <option value="message">{t("message")}</option>
         </NativeSelect>
       </Field>
@@ -876,16 +871,11 @@ function EntryForm({
             defaultValue={source && hasRecordId(source) ? source.id : ""}
           >
             <option value="">{t("choose")}</option>
-            {(kind === "artifact"
-              ? sources.artifacts.map((artifact) => ({
-                  id: artifact.id,
-                  label: artifact.name,
-                }))
-              : messages.map((message) => ({
-                  id: message.id,
-                  label: `${message.content.slice(0, 100)} · ${new Date(message.created_at).toLocaleString()}`,
-                }))
-            )
+            {messages
+              .map((message) => ({
+                id: message.id,
+                label: `${message.content.slice(0, 100)} · ${new Date(message.created_at).toLocaleString()}`,
+              }))
               .filter(
                 (option) =>
                   !entry ||
@@ -898,9 +888,9 @@ function EntryForm({
               ))}
             {source &&
               hasRecordId(source) &&
-              !(kind === "artifact" ? sources.artifacts : messages).some(
-                (option) => option.id === source.id,
-              ) && <option value={source.id}>{t("unavailableEntity")}</option>}
+              !messages.some((option) => option.id === source.id) && (
+                <option value={source.id}>{t("unavailableEntity")}</option>
+              )}
           </NativeSelect>
         </Field>
       )}

@@ -50,6 +50,8 @@ pub struct Template {
 	/// The checklist its Agent follows on every Task.
 	#[serde(default)]
 	pub procedure: String,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub goal: Option<String>,
 	/// The script that decides what each event no Task booked does.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub router: Option<Script>,
@@ -325,6 +327,7 @@ impl Template {
 			title: definition.title.trim().to_owned(),
 			mission: definition.mission.clone(),
 			procedure: definition.procedure.clone(),
+			goal: definition.goal.clone(),
 			router: definition.router.clone(),
 			watcher: definition.watcher.clone(),
 			triggers,
@@ -434,6 +437,7 @@ impl Template {
 			title: self.title.trim().to_owned(),
 			mission: self.mission.clone(),
 			procedure: self.procedure.clone(),
+			goal: self.goal.clone(),
 			agent,
 			trigger: self.time_trigger(),
 			approval_mode: None,
@@ -451,6 +455,7 @@ impl Template {
 		Patch {
 			mission: Some(self.mission.clone()),
 			procedure: Some(self.procedure.clone()),
+			goal: Some(self.goal.clone().unwrap_or_default()),
 			router: Some(match &self.router {
 				Some(router) => ScriptChoice::Set(router.clone()),
 				None => ScriptChoice::Remove(super::NoTrigger::None),

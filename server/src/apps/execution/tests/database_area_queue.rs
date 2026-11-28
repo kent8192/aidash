@@ -84,6 +84,7 @@ impl Queue {
 				&NewTask {
 					title: title.into(),
 					description: "Area queue".into(),
+					goal: None,
 					requirements: json!({}),
 					dependencies,
 					parent_id: None,

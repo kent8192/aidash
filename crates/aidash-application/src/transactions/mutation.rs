@@ -35,7 +35,7 @@ pub async fn apply(scope: &mut dyn MutationScope, node: &str, manifest: &Manifes
 			Mutation::CompleteTask {
 				task_id,
 				expected_revision,
-				artifact,
+				text,
 			} => {
 				let task = scope.lock_task(*task_id).await?;
 				rules::validate_task(&task, *expected_revision)?;
@@ -49,17 +49,17 @@ pub async fn apply(scope: &mut dyn MutationScope, node: &str, manifest: &Manifes
 					)?;
 				}
 				let key = format!("atomic:{}:task:{}", manifest.id, task.id);
-				let (saved, created) = scope.complete_task(&task, artifact, &key).await?;
+				let (saved, created) = scope.complete_task(&task, text, &key).await?;
 				if let Some(run) = scope.source_run(task.id).await? {
 					scope
-						.record_output(run, task.thread_id, "artifact", created.id)
+						.record_output(run, task.thread_id, "message", created.id)
 						.await?;
 				}
 				scope
 					.append_event(
 						Some(task.thread_id),
 						"task.completed",
-						json!({"task":saved,"artifact":created}),
+						json!({"task_id":saved.id,"message_id":created.id}),
 					)
 					.await?;
 			}

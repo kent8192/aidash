@@ -794,7 +794,6 @@ pub(crate) async fn refresh_dependencies(
 				}
 				Evidence::Unit { id, revision, .. } => ("unit", *id, *revision),
 				Evidence::Message { id, revision, .. } => ("message", *id, *revision),
-				Evidence::Artifact { id, revision, .. } => ("artifact", *id, *revision),
 				Evidence::Run { id, revision, .. } => ("run", *id, *revision),
 			};
 			if !dependencies.insert((kind, id, revision)) {

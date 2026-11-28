@@ -21,7 +21,6 @@ import {
 } from "lucide-react";
 import { threadGet, threadExecutions } from "../generated/aidash";
 import type {
-  Artifact,
   Discovery,
   HumanRequest,
   MeshEvent,
@@ -30,7 +29,7 @@ import type {
   Task,
   Thread,
 } from "../types";
-import { Badge, JsonView, useI18n, useAgentLabel } from "../ui";
+import { Badge, useI18n, useAgentLabel } from "../ui";
 import { cn } from "../lib/utils";
 import {
   readUnconfirmed,
@@ -46,11 +45,7 @@ import { threadCopy } from "./thread-copy";
 import { taskProgress } from "./model";
 import { entityKey } from "../agent-graph/model";
 import type { Selection } from "./details";
-import {
-  ChannelConversation,
-  MessageText,
-  type SystemLine,
-} from "./conversation";
+import { ChannelConversation, type SystemLine } from "./conversation";
 import { ChannelStatus, useRunControl } from "./status";
 import { channelAgents, terminalRun } from "./thread-model";
 import { ChannelRequests } from "./requests";
@@ -200,76 +195,6 @@ function eventTask(event: MeshEvent, tasks: readonly Task[]) {
   return tasks.find((task) => task.id === id);
 }
 
-export function ArtifactList({
-  artifacts,
-  unconfirmed = [],
-  hasOlder = false,
-}: {
-  artifacts: Artifact[];
-  /** Artifacts a silent Node kept out of `artifacts`. */
-  unconfirmed?: UnconfirmedLine[];
-  hasOlder?: boolean;
-}) {
-  const { locale } = useI18n();
-  const copy = collaborationCopy[locale];
-  return (
-    <section className="grid gap-2" aria-label={copy.results}>
-      <h3 className="text-[11px] font-medium text-faint">{copy.results}</h3>
-      <UnconfirmedNotice lines={unconfirmed} />
-      {hasOlder && (
-        <p className="text-xs text-faint">
-          {locale === "ja-JP"
-            ? "以前の成果物があります"
-            : "Older artifacts exist"}
-        </p>
-      )}
-      {artifacts.length === 0 && unconfirmed.length === 0 && (
-        <p className="text-xs text-faint">{copy.empty}</p>
-      )}
-      {artifacts.length > 0 && (
-        <ul className="grid divide-y divide-border rounded-md border border-border">
-          {artifacts.map((artifact) => (
-            <li key={artifact.id}>
-              <details className="group">
-                <summary className="flex cursor-pointer list-none items-center gap-2.5 px-3 py-2 transition-colors hover:bg-accent [&::-webkit-details-marker]:hidden">
-                  <span className="grid size-7 shrink-0 place-items-center rounded-md bg-raised text-muted-foreground">
-                    <FileText aria-hidden className="size-3.5" />
-                  </span>
-                  <span className="grid min-w-0 flex-1">
-                    <strong className="truncate font-mono text-xs font-medium text-foreground">
-                      {artifact.name}
-                    </strong>
-                    <span className="truncate text-[11px] text-faint">
-                      <ReferenceName id={artifact.created_by} /> ·{" "}
-                      <span className="font-mono tabular">
-                        {new Date(artifact.created_at).toLocaleString(locale)}
-                      </span>
-                    </span>
-                  </span>
-                  <Badge value={artifact.kind} />
-                  <ChevronRight
-                    aria-hidden
-                    className="size-3.5 shrink-0 text-faint transition-transform group-open:rotate-90"
-                  />
-                </summary>
-                <div className="px-3 pb-3">
-                  {artifact.run_id && typeof artifact.content === "string" ? (
-                    <p className="max-h-96 overflow-auto whitespace-pre-wrap rounded-md border border-border bg-background p-3 text-[13px] leading-relaxed text-foreground [overflow-wrap:anywhere]">
-                      <MessageText text={artifact.content} />
-                    </p>
-                  ) : (
-                    <JsonView value={artifact.content} />
-                  )}
-                </div>
-              </details>
-            </li>
-          ))}
-        </ul>
-      )}
-    </section>
-  );
-}
-
 const channelState = {
   active: "RUNNING",
   paused: "PAUSED",
@@ -416,9 +341,8 @@ export function Channel({
         scopedRuns.every((item) => item.run.phase === "COMPLETED")
       ? "completed"
       : "preparing";
-  const artifacts = query.isError ? [] : (query.data?.artifacts ?? []);
   const events = query.isError ? [] : (query.data?.events ?? []);
-  // Tasks, Artifacts and events are read with the snapshot; Runs and requests
+  // Tasks and events are read with the snapshot; Runs and requests
   // come from State. Until the snapshot answers, Tasks fall back to State.
   const missing = (kinds: UnconfirmedKind[], fromSnapshot: boolean) =>
     query.isError
@@ -431,7 +355,6 @@ export function Channel({
           [thread.id],
         );
   const missingTasks = missing(["task"], true);
-  const missingArtifacts = missing(["artifact"], true);
   const missingEvents = missing(["event"], true);
   const missingRuns = missing(["run"], false);
   const missingRequests = missing(["human_request"], false);
@@ -619,11 +542,6 @@ export function Channel({
   );
   const resultPane = (
     <div className="grid min-h-0 flex-1 content-start gap-5 overflow-y-auto p-4">
-      <ArtifactList
-        artifacts={artifacts}
-        unconfirmed={missingArtifacts}
-        hasOlder={data.next_cursors.artifacts !== null}
-      />
       <ChannelFiles thread={thread.id} />
       {data.access.kind === "subject" && (
         <ThreadCapabilities
@@ -804,10 +722,7 @@ export function Channel({
                   {view.tasks}
                   {count(tasks.length)}
                 </TabsTrigger>
-                <TabsTrigger value="results">
-                  {view.results}
-                  {count(artifacts.length)}
-                </TabsTrigger>
+                <TabsTrigger value="results">{view.results}</TabsTrigger>
                 <TabsTrigger value="schedules">{view.schedules}</TabsTrigger>
               </TabsList>
             )}
@@ -855,10 +770,7 @@ export function Channel({
                       {view.tasks}
                       {count(tasks.length)}
                     </TabsTrigger>
-                    <TabsTrigger value="results">
-                      {view.results}
-                      {count(artifacts.length)}
-                    </TabsTrigger>
+                    <TabsTrigger value="results">{view.results}</TabsTrigger>
                     <TabsTrigger value="schedules">
                       {view.schedules}
                     </TabsTrigger>
@@ -922,7 +834,7 @@ export function Channel({
               <TabsList className="flex-1 border-b-0 px-5">
                 <TabsTrigger value="overview">{view.overview}</TabsTrigger>
                 <TabsTrigger value="work">{copy.work}</TabsTrigger>
-                <TabsTrigger value="results">{copy.results}</TabsTrigger>
+                <TabsTrigger value="results">{copy.files}</TabsTrigger>
                 <TabsTrigger value="activity">{copy.activity}</TabsTrigger>
               </TabsList>
               <Button
@@ -1069,11 +981,6 @@ export function Channel({
               value="results"
               className="grid min-h-0 flex-1 content-start gap-5 overflow-y-auto px-5 py-4"
             >
-              <ArtifactList
-                artifacts={artifacts}
-                unconfirmed={missingArtifacts}
-                hasOlder={data.next_cursors.artifacts !== null}
-              />
               <ChannelFiles thread={thread.id} />
             </TabsContent>
             <TabsContent

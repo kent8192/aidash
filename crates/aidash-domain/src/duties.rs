@@ -172,6 +172,8 @@ pub struct Definition {
 	/// every Task (ranked after the Agent's own instructions, ADR 0142).
 	#[serde(default)]
 	pub procedure: String,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub goal: Option<String>,
 	/// The Agent of the Duty's Tenant and the version it is pinned to.
 	pub agent: EntityRef,
 	/// When the Duty wakes by the clock, if it does.
@@ -206,6 +208,7 @@ fn default_pause_after_failures() -> i32 {
 
 impl Definition {
 	pub fn validate(&self, now: DateTime<Utc>) -> Result<()> {
+		crate::goal::validate_goal(self.goal.as_deref())?;
 		let title = self.title.trim();
 		if title.is_empty()
 			|| title.chars().count() > TITLE_MAX
@@ -409,6 +412,8 @@ pub struct Patch {
 	pub mission: Option<String>,
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub procedure: Option<String>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub goal: Option<String>,
 	/// Move to another version of the same Agent, or another Agent.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub agent: Option<EntityRef>,
@@ -487,6 +492,9 @@ impl Patch {
 		}
 		if let Some(procedure) = &self.procedure {
 			next.procedure = procedure.clone();
+		}
+		if let Some(goal) = &self.goal {
+			next.goal = (!goal.trim().is_empty()).then(|| goal.clone());
 		}
 		if let Some(agent) = &self.agent {
 			next.agent = agent.clone();

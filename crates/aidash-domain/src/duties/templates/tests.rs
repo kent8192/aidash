@@ -21,6 +21,7 @@ fn definition() -> Definition {
 		title: "  GitHub CI duty ".into(),
 		mission: "Fix failing CI runs on main.\nKeep the build green.".into(),
 		procedure: "1. Read the failed job.\n2. Open a pull request.".into(),
+		goal: None,
 		agent: EntityRef {
 			id: "ci-fixer".into(),
 			version: "1.2.0".into(),

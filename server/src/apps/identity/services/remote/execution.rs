@@ -35,6 +35,11 @@ pub(crate) async fn control(
 	(task, id): (Uuid, Uuid),
 	input: RemoteExecutionControlInput,
 ) -> Result<RemoteExecutionActivation> {
+	if matches!(input.action, RemoteExecutionControl::ResumeGoal { .. }) {
+		return Err(crate::Error::Invalid(
+			"Resume the Task with a rewritten Goal".into(),
+		));
+	}
 	// Resuming waits behind an Authority Change at the boundary, before the
 	// visibility lease begins; pausing and cancelling do not (ADR 0121).
 	aidash_application::authorization::home::control(

@@ -7,8 +7,7 @@ use crate::apps::execution::services::human_interaction;
 use crate::apps::federation::remote::models::RemoteRunMessageFence;
 use crate::apps::identity::models::AuthorizationRunOutput;
 use crate::apps::workspaces::models::{
-	Artifact as ArtifactRecord, Message as MessageRecord, Task as TaskRecord,
-	Thread as ThreadRecord,
+	Message as MessageRecord, Task as TaskRecord, Thread as ThreadRecord,
 };
 use crate::apps::workspaces::serializers::tasks::TaskPage;
 use crate::apps::workspaces::services::snapshots;
@@ -196,8 +195,8 @@ pub(crate) fn plugin_sessions(
 
 pub use crate::apps::execution::serializers::run_inputs::RunInput;
 
-/// How a Run's Artifact is attributed. `run` is the Run that published it on
-/// this Node, recorded on the Artifact itself; `tracked` also records it for
+/// How a Run's message is attributed. `run` is the Run that published it on
+/// this Node, recorded on the message itself; `tracked` also records it for
 /// Run output visibility, which only scoped execution authority needs.
 #[derive(Clone, Copy, Default)]
 pub(crate) struct Publication {
@@ -1157,6 +1156,7 @@ impl Store {
 	) -> Result<Task> {
 		nonempty(&input.title, "task title")?;
 		nonempty(&input.description, "task description")?;
+		aidash_domain::goal::validate_goal(input.goal.as_deref())?;
 		if !input.requirements.is_object() {
 			return Err(Error::Invalid("requirements must be an object".into()));
 		}
@@ -1263,6 +1263,21 @@ impl Store {
 			Some(DutyTaskStart::Manual(duty)) => (Some(duty), None),
 			None => (None, None),
 		};
+		let goal = match (input.goal.clone(), duty_id) {
+			(Some(goal), _) => Some(goal),
+			(None, Some(duty)) => {
+				crate::database::native::query_scalar(
+					&Query::select()
+						.column(Alias::new("goal"))
+						.from(Alias::new("duties"))
+						.and_where(Expr::col("id").eq(Expr::value(duty)))
+						.to_string(PostgresQueryBuilder),
+				)
+				.scalar_one(&mut **tx)
+				.await?
+			}
+			(None, None) => None,
+		};
 		let task: Option<Task> = {
 			let query_bind_1 = Uuid::new_v4();
 			let query_bind_2 = thread;
@@ -1281,6 +1296,7 @@ impl Store {
 						reinhardt::query::Alias::new("thread_id"),
 						reinhardt::query::Alias::new("title"),
 						reinhardt::query::Alias::new("description"),
+						reinhardt::query::Alias::new("goal"),
 						reinhardt::query::Alias::new("requirements"),
 						reinhardt::query::Alias::new("created_by"),
 						reinhardt::query::Alias::new("dependencies"),
@@ -1308,6 +1324,7 @@ impl Store {
 								"(?)".to_owned(),
 								vec![Expr::value(query_bind_4.to_owned()).into()],
 							))
+							.expr(Expr::value(goal.clone()))
 							.expr(SimpleExpr::CustomWithExpr(
 								"(?)".to_owned(),
 								vec![Expr::value(query_bind_5.to_owned()).into()],
@@ -1994,7 +2011,7 @@ impl Store {
 		id: Uuid,
 		owner: &str,
 		key: &str,
-		artifact: &ArtifactInput,
+		completion: &aidash_domain::deliverable::Completion,
 		abandon: &[Uuid],
 	) -> Result<Task> {
 		self.complete_from_run(
@@ -2002,12 +2019,13 @@ impl Store {
 			id,
 			owner,
 			key,
-			artifact,
+			completion,
 			Publication::default(),
 			None,
 			abandon,
 		)
 		.await
+		.map(|(task, _)| task)
 	}
 	pub async fn complete(
 		&self,
@@ -2015,19 +2033,20 @@ impl Store {
 		id: Uuid,
 		owner: &str,
 		key: &str,
-		artifact: &ArtifactInput,
+		completion: &aidash_domain::deliverable::Completion,
 	) -> Result<Task> {
 		self.complete_from_run(
 			scope,
 			id,
 			owner,
 			key,
-			artifact,
+			completion,
 			Publication::default(),
 			None,
 			&[],
 		)
 		.await
+		.map(|(task, _)| task)
 	}
 	#[allow(clippy::too_many_arguments)] // The tenancy scope joins existing parameters.
 	pub(crate) async fn complete_from_run(
@@ -2036,11 +2055,11 @@ impl Store {
 		id: Uuid,
 		owner: &str,
 		key: &str,
-		artifact: &ArtifactInput,
+		completion: &aidash_domain::deliverable::Completion,
 		publication: Publication,
 		remote_run_fence: Option<(Uuid, i64)>,
 		abandon: &[Uuid],
-	) -> Result<Task> {
+	) -> Result<(Task, aidash_domain::deliverable::Completion)> {
 		let mut tx = self.pool.begin(scope).await?;
 		let result = self
 			.complete_in(
@@ -2048,7 +2067,7 @@ impl Store {
 				id,
 				owner,
 				key,
-				artifact,
+				completion,
 				publication,
 				remote_run_fence,
 				abandon,
@@ -2065,13 +2084,12 @@ impl Store {
 		id: Uuid,
 		owner: &str,
 		key: &str,
-		artifact: &ArtifactInput,
+		completion: &aidash_domain::deliverable::Completion,
 		publication: Publication,
 		remote_run_fence: Option<(Uuid, i64)>,
 		abandon: &[Uuid],
-	) -> Result<Task> {
+	) -> Result<(Task, aidash_domain::deliverable::Completion)> {
 		nonempty(key, "idempotency key")?;
-		artifact.validate()?;
 		let t: Task = {
 			let query_bind_1 = id;
 			aidash_server::database::query_as(
@@ -2093,38 +2111,58 @@ impl Store {
 		if t.owner.as_deref() != Some(owner) {
 			return Err(Error::Unauthorized);
 		}
-		let existing: Option<Artifact> = {
-			let query_bind_1 = key;
-			aidash_server::database::query_as(
-				&reinhardt::query::Query::select()
-					.expr(reinhardt::query::SimpleExpr::from(
-						reinhardt::query::Expr::col(reinhardt::query::ColumnRef::Asterisk),
-					))
-					.from(reinhardt::query::Alias::new("artifacts"))
-					.and_where(SimpleExpr::CustomWithExpr(
-						"(idempotency_key = ?)".to_owned(),
-						vec![Expr::value(query_bind_1.to_owned()).into()],
-					))
-					.to_string(reinhardt::query::PostgresQueryBuilder),
-			)
-			.fetch_optional(&mut **tx)
-			.await?
-		};
-		if let Some(a) = existing {
-			if a.task_id != id
-				|| a.created_by != owner
-				|| a.content != artifact.content
-				|| a.kind != artifact.kind
-				|| a.name != artifact.name
-				|| t.status != crate::domain::TaskStatus::Completed
-			{
+		let existing: Option<crate::apps::workspaces::models::Message> = crate::database::query_as(
+			&Query::select()
+				.expr(Expr::col(reinhardt::query::ColumnRef::Asterisk))
+				.from(Alias::new("messages"))
+				.and_where(Expr::col("id").eq(Expr::value(completion.message_id)))
+				.and_where(Expr::col("thread_id").eq(Expr::value(t.thread_id)))
+				.and_where(Expr::col("idempotency_key").eq(Expr::value(key)))
+				.to_string(PostgresQueryBuilder),
+		)
+		.fetch_optional(&mut **tx)
+		.await?;
+		if let Some(existing) = existing {
+			let completion = existing
+				.completion
+				.ok_or_else(|| Error::Conflict("Message is not a Completion Message".into()))?;
+			let details: aidash_domain::deliverable::CompletionDetails =
+				serde_json::from_value(completion.0)?;
+			if details.task_id != t.id {
+				return Err(Error::Conflict("Completion belongs to another Task".into()));
+			}
+			return Ok((
+				t,
+				aidash_domain::deliverable::Completion {
+					message_id: existing.id,
+					text: existing.content,
+					verdict: details.verdict,
+					attachments: details.attachments,
+					deliverable: details.deliverable,
+				},
+			));
+		}
+		let impossible = completion
+			.verdict
+			.as_ref()
+			.is_some_and(|verdict| verdict.verdict == aidash_domain::goal::Verdict::Impossible);
+		if let Some(goal) = &t.goal {
+			let detail =
+				crate::apps::workspaces::repositories::goals::detail(&mut **tx, &t).await?;
+			let run_id = publication.run.or(remote_run_fence.map(|fence| fence.0));
+			let valid = detail.verdicts.last().is_some_and(|record| {
+				Some(record.run_id) == run_id
+					&& &record.goal == goal
+					&& Some(&record.judgment) == completion.verdict.as_ref()
+					&& record.judgment.verdict != aidash_domain::goal::Verdict::NotYet
+			});
+			if !valid {
 				return Err(Error::Conflict(
-					"completion key reused with different input".into(),
+					"Completion requires a current terminal Goal verdict".into(),
 				));
 			}
-			self.record_output_in(tx, publication.tracked_run(), t.thread_id, "artifact", a.id)
-				.await?;
-			return Ok(t);
+		} else if completion.verdict.is_some() {
+			return Err(Error::Conflict("Goal changed before completion".into()));
 		}
 		if t.status != crate::domain::TaskStatus::Running {
 			return Err(Error::Conflict("only a running task can complete".into()));
@@ -2183,84 +2221,23 @@ impl Store {
 				.await?
 			};
 		}
-		let a: Artifact = {
-			let query_bind_1 = Uuid::new_v4();
-			let query_bind_2 = t.thread_id;
-			let query_bind_3 = id;
-			let query_bind_4 = &artifact.kind;
-			let query_bind_5 = &artifact.name;
-			let query_bind_6 = &artifact.content;
-			let query_bind_7 = owner;
-			let query_bind_8 = key;
-			let query_bind_9 = publication.run;
-			aidash_server::database::query_as(
-				&reinhardt::query::Query::insert()
-					.into_table(reinhardt::query::Alias::new("artifacts"))
-					.columns([
-						reinhardt::query::Alias::new("id"),
-						reinhardt::query::Alias::new("thread_id"),
-						reinhardt::query::Alias::new("task_id"),
-						reinhardt::query::Alias::new("kind"),
-						reinhardt::query::Alias::new("name"),
-						reinhardt::query::Alias::new("content"),
-						reinhardt::query::Alias::new("created_by"),
-						reinhardt::query::Alias::new("idempotency_key"),
-						reinhardt::query::Alias::new("run_id"),
-						reinhardt::query::Alias::new("tenant"),
-					])
-					.from_subquery(
-						reinhardt::query::Query::select()
-							.expr(SimpleExpr::CustomWithExpr(
-								"(?)".to_owned(),
-								vec![Expr::value(query_bind_1.to_owned()).into()],
-							))
-							.expr(SimpleExpr::CustomWithExpr(
-								"(?)".to_owned(),
-								vec![Expr::value(query_bind_2.to_owned()).into()],
-							))
-							.expr(SimpleExpr::CustomWithExpr(
-								"(?)".to_owned(),
-								vec![Expr::value(query_bind_3.to_owned()).into()],
-							))
-							.expr(SimpleExpr::CustomWithExpr(
-								"(?)".to_owned(),
-								vec![Expr::value(query_bind_4.to_owned()).into()],
-							))
-							.expr(SimpleExpr::CustomWithExpr(
-								"(?)".to_owned(),
-								vec![Expr::value(query_bind_5.to_owned()).into()],
-							))
-							.expr(SimpleExpr::CustomWithExpr(
-								"(?)".to_owned(),
-								vec![Expr::value(query_bind_6.to_owned()).into()],
-							))
-							.expr(SimpleExpr::CustomWithExpr(
-								"(?)".to_owned(),
-								vec![Expr::value(query_bind_7.to_owned()).into()],
-							))
-							.expr(SimpleExpr::CustomWithExpr(
-								"(?)".to_owned(),
-								vec![Expr::value(query_bind_8.to_owned()).into()],
-							))
-							.expr(SimpleExpr::CustomWithExpr(
-								"(?)".to_owned(),
-								vec![Expr::value(query_bind_9.to_owned()).into()],
-							))
-							.expr(crate::database::scope::tenant_of(
-								"threads",
-								"id",
-								query_bind_2,
-							))
-							.to_owned(),
-					)
-					.returning_all()
-					.to_string(reinhardt::query::PostgresQueryBuilder),
-			)
-			.fetch_one(&mut **tx)
-			.await?
-		};
-		self.record_output_in(tx, publication.tracked_run(), t.thread_id, "artifact", a.id)
-			.await?;
+		crate::apps::workspaces::models::Message::append_completion(
+			&mut **tx,
+			&t,
+			owner,
+			key,
+			publication.run,
+			completion,
+		)
+		.await?;
+		self.record_output_in(
+			tx,
+			publication.tracked_run(),
+			t.thread_id,
+			"message",
+			completion.message_id,
+		)
+		.await?;
 		let t: Task = {
 			let query_bind_1 = id;
 			let query_bind_2 = key;
@@ -2269,7 +2246,7 @@ impl Store {
 					.table(reinhardt::query::Alias::new("tasks"))
 					.value_expr(
 						reinhardt::query::Alias::new("status"),
-						reinhardt::query::Expr::cust("'COMPLETED'"),
+						Expr::value(if impossible { "FAILED" } else { "COMPLETED" }),
 					)
 					.value_expr(
 						reinhardt::query::Alias::new("completion_key"),
@@ -2295,201 +2272,15 @@ impl Store {
 		self.event(
 			tx,
 			Some(t.thread_id),
-			"task.completed",
-			json!({"task":t,"artifact":a}),
+			if impossible {
+				"task.failed"
+			} else {
+				"task.completed"
+			},
+			json!({"task_id":t.id,"message_id":completion.message_id}),
 		)
 		.await?;
-		Ok(t)
-	}
-
-	pub async fn publish_artifact(
-		&self,
-		scope: &TenancyScope,
-		task_id: Uuid,
-		owner: &str,
-		key: &str,
-		input: &ArtifactInput,
-	) -> Result<Artifact> {
-		self.publish_artifact_from_run(scope, task_id, owner, key, input, Publication::default())
-			.await
-	}
-	pub(crate) async fn publish_artifact_from_run(
-		&self,
-		scope: &TenancyScope,
-		task_id: Uuid,
-		owner: &str,
-		key: &str,
-		input: &ArtifactInput,
-		publication: Publication,
-	) -> Result<Artifact> {
-		let mut tx = self.pool.begin(scope).await?;
-		let result = self
-			.publish_artifact_in(&mut tx, task_id, owner, key, input, publication)
-			.await?;
-		tx.commit().await?;
-		Ok(result)
-	}
-	pub(crate) async fn publish_artifact_in(
-		&self,
-		tx: &mut crate::database::native::Transaction,
-		task_id: Uuid,
-		owner: &str,
-		key: &str,
-		input: &ArtifactInput,
-		publication: Publication,
-	) -> Result<Artifact> {
-		input.validate()?;
-		let thread: Uuid = crate::database::native::query_scalar(
-			&Query::select()
-				.column(Alias::new("thread_id"))
-				.from(Alias::new("tasks"))
-				.and_where(Expr::col("id").eq(Expr::value(task_id)))
-				.to_string(PostgresQueryBuilder),
-		)
-		.scalar_one(&mut **tx)
-		.await?;
-		super::subnodes::require_writable(tx.as_mut(), thread).await?;
-		let task: Task = {
-			let query_bind_1 = task_id;
-			aidash_server::database::query_as(
-				&Query::select()
-					.expr(SimpleExpr::from(Expr::col(ColumnRef::Asterisk)))
-					.from(Alias::new("tasks"))
-					.and_where(SimpleExpr::CustomWithExpr(
-						"(id = ?)".to_owned(),
-						vec![Expr::value(query_bind_1.to_owned()).into()],
-					))
-					.lock(LockType::Update)
-					.to_string(PostgresQueryBuilder),
-			)
-			.fetch_one(&mut **tx)
-			.await?
-		};
-		if task.owner.as_deref() != Some(owner) {
-			return Err(Error::Unauthorized);
-		}
-		let a: Option<Artifact> = {
-			let query_bind_1 = Uuid::new_v4();
-			let query_bind_2 = task.thread_id;
-			let query_bind_3 = task_id;
-			let query_bind_4 = &input.kind;
-			let query_bind_5 = &input.name;
-			let query_bind_6 = &input.content;
-			let query_bind_7 = owner;
-			let query_bind_8 = key;
-			let query_bind_9 = publication.run;
-			aidash_server::database::query_as(
-				&Query::insert()
-					.into_table(Alias::new("artifacts"))
-					.columns([
-						Alias::new("id"),
-						Alias::new("thread_id"),
-						Alias::new("task_id"),
-						Alias::new("kind"),
-						Alias::new("name"),
-						Alias::new("content"),
-						Alias::new("created_by"),
-						Alias::new("idempotency_key"),
-						Alias::new("run_id"),
-						Alias::new("tenant"),
-					])
-					.from_subquery(
-						Query::select()
-							.expr(SimpleExpr::CustomWithExpr(
-								"(?)".to_owned(),
-								vec![Expr::value(query_bind_1.to_owned()).into()],
-							))
-							.expr(SimpleExpr::CustomWithExpr(
-								"(?)".to_owned(),
-								vec![Expr::value(query_bind_2.to_owned()).into()],
-							))
-							.expr(SimpleExpr::CustomWithExpr(
-								"(?)".to_owned(),
-								vec![Expr::value(query_bind_3.to_owned()).into()],
-							))
-							.expr(SimpleExpr::CustomWithExpr(
-								"(?)".to_owned(),
-								vec![Expr::value(query_bind_4.to_owned()).into()],
-							))
-							.expr(SimpleExpr::CustomWithExpr(
-								"(?)".to_owned(),
-								vec![Expr::value(query_bind_5.to_owned()).into()],
-							))
-							.expr(SimpleExpr::CustomWithExpr(
-								"(?)".to_owned(),
-								vec![Expr::value(query_bind_6.to_owned()).into()],
-							))
-							.expr(SimpleExpr::CustomWithExpr(
-								"(?)".to_owned(),
-								vec![Expr::value(query_bind_7.to_owned()).into()],
-							))
-							.expr(SimpleExpr::CustomWithExpr(
-								"(?)".to_owned(),
-								vec![Expr::value(query_bind_8.to_owned()).into()],
-							))
-							.expr(SimpleExpr::CustomWithExpr(
-								"(?)".to_owned(),
-								vec![Expr::value(query_bind_9.to_owned()).into()],
-							))
-							.expr(crate::database::scope::tenant_of(
-								"threads",
-								"id",
-								query_bind_2,
-							))
-							.to_owned(),
-					)
-					.on_conflict(
-						OnConflict::columns([Alias::new("idempotency_key")])
-							.do_nothing()
-							.to_owned(),
-					)
-					.returning_all()
-					.to_string(PostgresQueryBuilder),
-			)
-			.fetch_optional(&mut **tx)
-			.await?
-		};
-		let a = match a {
-			Some(a) => {
-				self.event(tx, Some(task.thread_id), "artifact.published", json!(a))
-					.await?;
-				a
-			}
-			None => {
-				let a: Artifact = {
-					let query_bind_1 = key;
-					aidash_server::database::query_as(
-						&Query::select()
-							.expr(SimpleExpr::from(Expr::col(ColumnRef::Asterisk)))
-							.from(Alias::new("artifacts"))
-							.and_where(SimpleExpr::CustomWithExpr(
-								"(idempotency_key = ?)".to_owned(),
-								vec![Expr::value(query_bind_1.to_owned()).into()],
-							))
-							.to_string(PostgresQueryBuilder),
-					)
-					.fetch_one(&mut **tx)
-					.await?
-				};
-				if a.task_id != task_id
-					|| a.kind != input.kind
-					|| a.name != input.name
-					|| a.content != input.content
-				{
-					return Err(Error::Conflict("artifact idempotency key reused".into()));
-				}
-				a
-			}
-		};
-		self.record_output_in(
-			tx,
-			publication.tracked_run(),
-			task.thread_id,
-			"artifact",
-			a.id,
-		)
-		.await?;
-		Ok(a)
+		Ok((t, completion.clone()))
 	}
 
 	pub async fn events(
@@ -2572,11 +2363,6 @@ impl Store {
 				Ok(ThreadSnapshot {
 					thread: ThreadRecord::read(db, id).await?.into(),
 					tasks: TaskRecord::chronological(db, Some(id))
-						.await?
-						.into_iter()
-						.map(Into::into)
-						.collect(),
-					artifacts: ArtifactRecord::for_thread(db, id)
 						.await?
 						.into_iter()
 						.map(Into::into)
@@ -3045,6 +2831,7 @@ impl Store {
 		}
 		current.state.tool_mut()?.finalizing = true;
 		current.state.tool_mut()?.abandoning = run.state.tool()?.abandoning.clone();
+		current.context.final_completion = run.context.final_completion.clone();
 		let changed = {
 			let query_bind_1 = run.id;
 			let query_bind_2 = worker;
@@ -3059,18 +2846,10 @@ impl Store {
 						vec![Expr::value(query_bind_3.to_owned()).into()],
 					),
 				);
-			// The Completion Gate's progress, with its Completion Basis, becomes
-			// durable before the Task completes: recovery from a cut after the
-			// completion keeps the Run's saved context (#112).
-			if !run.context.completion.is_empty() {
-				update.value_expr(
-					reinhardt::query::Alias::new("context"),
-					SimpleExpr::CustomWithExpr(
-						"(jsonb_set(context, '{completion}', ?::jsonb))".to_owned(),
-						vec![Expr::value(serde_json::to_value(&run.context.completion)?).into()],
-					),
-				);
-			}
+			update.value_expr(
+				Alias::new("context"),
+				Expr::value(serde_json::to_value(&current.context)?),
+			);
 			update.and_where(SimpleExpr::CustomWithExpr(
 				"(id = ? AND lease_owner = ? AND lease_until > CURRENT_TIMESTAMP)".to_owned(),
 				vec![

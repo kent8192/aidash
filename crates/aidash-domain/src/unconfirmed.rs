@@ -42,7 +42,6 @@ pub fn for_tool(result: &mut serde_json::Value) {
 pub enum Kind {
 	Task,
 	Run,
-	Artifact,
 	Event,
 	Message,
 	HumanRequest,

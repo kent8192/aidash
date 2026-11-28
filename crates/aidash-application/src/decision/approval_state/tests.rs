@@ -85,12 +85,12 @@ fn the_state_holds_what_people_said_and_did_never_what_the_run_read_or_the_model
 	context.legacy_summary = "LEGACY_SUMMARY_INSTRUCTION".into();
 	let summary = ExecutionSummary::merge(
 		SummaryContent {
-			goal: "EXECUTION_SUMMARY_INSTRUCTION".into(),
+			intent: "EXECUTION_SUMMARY_INSTRUCTION".into(),
+			artifacts: vec![],
 			constraints: vec![],
 			decisions: vec![],
 			unresolved: vec![],
 			resolved: vec![],
-			artifacts: vec![],
 			verification: vec![],
 		},
 		None,

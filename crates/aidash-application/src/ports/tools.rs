@@ -2,7 +2,7 @@
 use crate::Result;
 use crate::tenant_secrets::{CallSecret, SecretCall};
 use aidash_domain::{
-	Artifact, ArtifactInput, HumanRequest, NewTask, Task,
+	HumanRequest, NewTask, Task,
 	agent_plugin::{ListedTool, PluginFile, PluginName, RemoteServer, ServerName, StdioServer},
 	exposure::DirectSkill,
 	provider::ToolSpec,
@@ -264,6 +264,9 @@ pub trait ToolOperations: Send + Sync {
 		reason: &str,
 		draft: Option<&aidash_domain::generation::policy::Draft>,
 	) -> Result<Value>;
+	async fn set_child_goal(&self, _key: &str, _task: Uuid, _goal: &str) -> Result<()> {
+		Err(crate::Error::Forbidden)
+	}
 	async fn delegate_with_key(
 		&self,
 		key: &str,
@@ -271,7 +274,13 @@ pub trait ToolOperations: Send + Sync {
 		node: &str,
 		agent: &EntityRef,
 	) -> Result<Value>;
-	async fn artifact(&self, key: &str, input: &ArtifactInput) -> Result<Artifact>;
+	async fn deliverable_note(
+		&self,
+		_key: &str,
+		_input: &aidash_domain::deliverable::OutsideVersion,
+	) -> Result<()> {
+		Err(crate::Error::Forbidden)
+	}
 	async fn message(&self, key: &str, content: &str) -> Result<()>;
 	/// `descriptions` holds the Image Description of each attached image, by path.
 	async fn message_with_files(

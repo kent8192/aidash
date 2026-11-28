@@ -1,4 +1,5 @@
 {
+  "taskGoal": "ゴール",
   "workingFiles": "作業ファイル",
   "transactionParticipant": "参加ノード",
   "transactionOperation": "操作",
@@ -52,7 +53,6 @@
   "tools": "ツール",
   "recentEvents": "最近のイベント",
   "errors": "エラー",
-  "artifacts": "成果物",
   "thread": "スレッド",
   "task": "タスク",
   "version": "バージョン",
@@ -353,7 +353,6 @@
   "semanticCleanupPending": "初回の削除確認待ち",
   "semanticCleanupFailed": "直近の処理が失敗",
   "semanticInvalidMetadata": "有効なJSON形式で入力してください。",
-  "artifact": "成果物",
   "semanticBackendFailure": "検索基盤を利用できないか、応答が不正です。索引の状態を確認して再試行してください。",
   "semanticIncomplete": "索引処理が未完了です。元データの状態を確認し、完了後に再試行してください。",
   "semanticDisabled": "索引は無効になっています。",

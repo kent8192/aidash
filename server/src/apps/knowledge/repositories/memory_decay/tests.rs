@@ -18,6 +18,7 @@ async fn run(store: &Store, bank: &Bank) -> Uuid {
 			&aidash_domain::NewTask {
 				title: "Local Delivery".into(),
 				description: "Native Usage".into(),
+				goal: None,
 				requirements: json!({}),
 				dependencies: vec![],
 				parent_id: None,

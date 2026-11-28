@@ -6,7 +6,7 @@ use crate::{
 };
 use aidash_capability::tenant_secret::{Attach, SecretSubject};
 use aidash_domain::{
-	ArtifactInput, NewTask, Run,
+	NewTask, Run,
 	provider::ToolSpec,
 	registry::{EntityRef, Entry, Search},
 	tool::ToolConfig,
@@ -519,6 +519,10 @@ impl Builtin {
 						id: id()?,
 						title: required(&input, "title")?.into(),
 						request: required(&input, "request")?.into(),
+						goal: input
+							.get("goal")
+							.map(|goal| serde_json::from_value(goal.clone()))
+							.transpose()?,
 						journal_range: input
 							.get("journal_range")
 							.map(|value| {
@@ -648,19 +652,39 @@ impl Builtin {
 				let id = required(&input, "task_id")?
 					.parse()
 					.map_err(|_| Error::Invalid("invalid task id".into()))?;
+				let goal = input
+					.get("goal")
+					.map(|goal| {
+						goal.as_str()
+							.ok_or_else(|| Error::Invalid("Goal must be text".into()))
+					})
+					.transpose()?;
+				if input.get("node_id").is_none() && input.get("agent").is_none() {
+					let goal = goal.ok_or_else(|| {
+						Error::Invalid("Goal is required without a delegation target".into())
+					})?;
+					ctx.operations.set_child_goal(key, id, goal).await?;
+					return Ok(json!({"task_id": id, "goal": goal}));
+				}
+				let node = required(&input, "node_id")?;
 				let agent: EntityRef = serde_json::from_value(input["agent"].clone())
 					.map_err(|e| Error::Invalid(e.to_string()))?;
+				if let Some(goal) = goal {
+					ctx.operations.set_child_goal(key, id, goal).await?;
+				}
 				Ok(json!(
 					ctx.operations
-						.delegate_with_key(key, id, required(&input, "node_id")?, &agent)
+						.delegate_with_key(key, id, node, &agent)
 						.await?
 				))
 			}
-			"artifact_publish" => Ok(json!(
-				ctx.operations
-					.artifact(key, &serde_json::from_value::<ArtifactInput>(input)?)
-					.await?
-			)),
+			"deliverable_note" => {
+				let note: aidash_domain::deliverable::OutsideVersion =
+					serde_json::from_value(input)?;
+				note.validate()?;
+				ctx.operations.deliverable_note(key, &note).await?;
+				Ok(json!({"recorded": true}))
+			}
 			"thread_message" => {
 				let files: Vec<String> = serde_json::from_value(
 					input.get("files").cloned().unwrap_or_else(|| json!([])),
@@ -906,7 +930,7 @@ pub fn builtins() -> BTreeMap<String, Builtin> {
 			contract: aidash_domain::tool::builtin_contract("subnode_task")
 				.expect("declared builtin"),
 			description: "Give a task to a Subnode's leader.",
-			schema: json!({"type":"object","required":["subnode_id","title","request"],"properties":{"subnode_id":string,"title":string,"request":string,"journal_range":{"type":"object","required":["from_seq","through_seq"],"properties":{"from_seq":{"type":"integer","minimum":0},"through_seq":{"type":"integer","minimum":0}},"additionalProperties":false}},"additionalProperties":false}),
+			schema: json!({"type":"object","required":["subnode_id","title","request"],"properties":{"subnode_id":string,"title":string,"request":string,"goal":{"type":"string","maxLength":4000},"journal_range":{"type":"object","required":["from_seq","through_seq"],"properties":{"from_seq":{"type":"integer","minimum":0},"through_seq":{"type":"integer","minimum":0}},"additionalProperties":false}},"additionalProperties":false}),
 		},
 		Builtin {
 			name: "subnode_add_member",
@@ -969,7 +993,7 @@ pub fn builtins() -> BTreeMap<String, Builtin> {
 			contract: aidash_domain::tool::builtin_contract("task_create")
 				.expect("declared builtin"),
 			description: "Decompose a goal or task. Create a subtask in this workspace; returns its ID. Delegate it next. A subtask nobody is given is abandoned when this Run finishes.",
-			schema: json!({"type":"object","required":["title","description"],"properties":{"title":string,"description":string,"requirements":{"type":"object"},"dependencies":{"type":"array","items":string},"parent_id":string},"additionalProperties":false}),
+			schema: json!({"type":"object","required":["title","description"],"properties":{"title":string,"description":string,"goal":{"type":"string","maxLength":4000},"requirements":{"type":"object"},"dependencies":{"type":"array","items":string},"parent_id":string},"additionalProperties":false}),
 		},
 		Builtin {
 			name: "task_assign",
@@ -982,15 +1006,15 @@ pub fn builtins() -> BTreeMap<String, Builtin> {
 			name: "task_delegate",
 			contract: aidash_domain::tool::builtin_contract("task_delegate")
 				.expect("declared builtin"),
-			description: "Offer an existing workspace task to the explicitly selected local or remote agent.",
-			schema: json!({"type":"object","required":["task_id","node_id","agent"],"properties":{"task_id":string,"node_id":string,"agent":entity_ref},"additionalProperties":false}),
+			description: "Offer an existing task to a local or remote Agent by providing node_id and agent. You may set the Goal of a child Task you wrote. To edit its Goal alone, provide task_id and goal.",
+			schema: json!({"type":"object","required":["task_id"],"properties":{"task_id":string,"node_id":string,"agent":entity_ref,"goal":{"type":"string","maxLength":4000}},"additionalProperties":false,"anyOf":[{"required":["node_id","agent"]},{"required":["goal"],"not":{"anyOf":[{"required":["node_id"]},{"required":["agent"]}]}}]}),
 		},
 		Builtin {
-			name: "artifact_publish",
-			contract: aidash_domain::tool::builtin_contract("artifact_publish")
+			name: "deliverable_note",
+			contract: aidash_domain::tool::builtin_contract("deliverable_note")
 				.expect("declared builtin"),
-			description: "Publish an intermediate artifact to the shared workspace.",
-			schema: json!({"type":"object","required":["kind","name","content"],"properties":{"kind":{"enum":["text","json","file_reference","code","structured_result"]},"name":string,"content":{}},"additionalProperties":false}),
+			description: "Record the exact version of work kept outside Aidash for this Task’s Completion Message.",
+			schema: json!({"type":"object","required":["system","item","version"],"properties":{"system":string,"item":string,"version":string,"url":string},"additionalProperties":false}),
 		},
 		Builtin {
 			name: "workspace_message",
@@ -1003,7 +1027,7 @@ pub fn builtins() -> BTreeMap<String, Builtin> {
 			name: "workspace_observe",
 			contract: aidash_domain::tool::builtin_contract("workspace_observe")
 				.expect("declared builtin"),
-			description: "Read a bounded summary of goal, tasks, artifact references, messages and recent event metadata. Messages list Thread Attachment metadata without bytes. Use workspace_read for full records. Collections have separate totals and next_offset; events/messages are newest first. Refresh pagination if the workspace changes.",
+			description: "Read a bounded summary of tasks, messages and recent event metadata. Messages list Thread Attachment metadata without bytes. Use workspace_read for full records. Collections have separate totals and next_offset; events/messages are newest first. Refresh pagination if the workspace changes.",
 			schema: json!({"type":"object","properties":{"offset":{"type":"integer","minimum":0},"limit":{"type":"integer","minimum":1,"maximum":50}},"additionalProperties":false}),
 		},
 		Builtin {
@@ -1011,7 +1035,7 @@ pub fn builtins() -> BTreeMap<String, Builtin> {
 			contract: aidash_domain::tool::builtin_contract("workspace_read")
 				.expect("declared builtin"),
 			description: "Read an accessible workspace record or Thread Attachment, or open a matched File using its exact Area, generation, path and digest. Use representation=model_input to select an attachment or image for the next inference; use attachment_copy to save an attachment in the Working Area. To read a Subnode created by this Run, pass its workspace_id. Text records return bounded chunks with next_offset.",
-			schema: json!({"type":"object","required":["kind","id"],"properties":{"kind":{"enum":["workspace","task","artifact","message","event","file","attachment"]},"id":string,"workspace_id":string,"offset":{"type":"integer","minimum":0},"max_chars":{"type":"integer","minimum":0,"maximum":16000},"area_id":{"type":"string"},"generation":{"type":"integer","minimum":1},"path":{"type":"string"},"expected_digest":{"type":"string"},"representation":{"enum":["metadata","model_input"]}},"additionalProperties":false}),
+			schema: json!({"type":"object","required":["kind","id"],"properties":{"kind":{"enum":["workspace","task","message","event","file","attachment"]},"id":string,"workspace_id":string,"offset":{"type":"integer","minimum":0},"max_chars":{"type":"integer","minimum":0,"maximum":16000},"area_id":{"type":"string"},"generation":{"type":"integer","minimum":1},"path":{"type":"string"},"expected_digest":{"type":"string"},"representation":{"enum":["metadata","model_input"]}},"additionalProperties":false}),
 		},
 		Builtin {
 			name: "workspace_search",
@@ -1047,7 +1071,7 @@ pub fn builtins() -> BTreeMap<String, Builtin> {
 			name: "thread_observe",
 			contract: aidash_domain::tool::builtin_contract("thread_observe")
 				.expect("declared builtin"),
-			description: "Read a bounded summary of this Thread: its tasks, artifact references, messages and recent event metadata. Messages list Thread Attachment metadata without bytes. Use thread_read for full records. Collections have separate totals and next_offset; events/messages are newest first. Refresh pagination if the Thread changes.",
+			description: "Read a bounded summary of this Thread: its tasks, messages and recent event metadata. Messages list Thread Attachment metadata without bytes. Use thread_read for full records. Collections have separate totals and next_offset; events/messages are newest first. Refresh pagination if the Thread changes.",
 			schema: json!({"type":"object","properties":{"offset":{"type":"integer","minimum":0},"limit":{"type":"integer","minimum":1,"maximum":50}},"additionalProperties":false}),
 		},
 		Builtin {
@@ -1055,7 +1079,7 @@ pub fn builtins() -> BTreeMap<String, Builtin> {
 			contract: aidash_domain::tool::builtin_contract("thread_read")
 				.expect("declared builtin"),
 			description: "Read an accessible record of this Thread or a Thread Attachment, or open a matched File using its exact Area, generation, path and digest. Use representation=model_input to select an attachment or image for the next inference; use attachment_copy to save an attachment in the Working Area. To read a record in a Subnode created by this Run, pass its thread_id. With kind=thread, the Subnode Thread ID alone also works. Members cannot read the creating Agent's Thread. Text records return bounded chunks with next_offset.",
-			schema: json!({"type":"object","required":["kind","id"],"properties":{"kind":{"enum":["thread","task","artifact","message","event","file","attachment"]},"id":string,"thread_id":string,"offset":{"type":"integer","minimum":0},"max_chars":{"type":"integer","minimum":0,"maximum":16000},"area_id":{"type":"string"},"generation":{"type":"integer","minimum":1},"path":{"type":"string"},"expected_digest":{"type":"string"},"representation":{"enum":["metadata","model_input"]}},"additionalProperties":false}),
+			schema: json!({"type":"object","required":["kind","id"],"properties":{"kind":{"enum":["thread","task","message","event","file","attachment"]},"id":string,"thread_id":string,"offset":{"type":"integer","minimum":0},"max_chars":{"type":"integer","minimum":0,"maximum":16000},"area_id":{"type":"string"},"generation":{"type":"integer","minimum":1},"path":{"type":"string"},"expected_digest":{"type":"string"},"representation":{"enum":["metadata","model_input"]}},"additionalProperties":false}),
 		},
 		Builtin {
 			name: "thread_search",

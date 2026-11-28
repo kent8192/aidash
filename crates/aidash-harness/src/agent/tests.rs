@@ -246,13 +246,8 @@ struct State {
 	/// Serve an `anthropic/` model that declares explicit prompt caching.
 	explicit_cache_model: bool,
 	plan_connection: bool,
-	/// Completed artifacts, in completion order.
-	artifacts: Mutex<Vec<Value>>,
-	completion: Option<aidash_domain::completion::CompletionPolicy>,
-	/// Completion Gate Checks; `None` means the node cannot run them.
-	checks: Option<completion::FakeChecks>,
-	/// The Completion Basis each commit fence persisted.
-	fenced: Mutex<Vec<Option<aidash_domain::completion::CompletionBasis>>>,
+	goal_replies: Mutex<VecDeque<String>>,
+	goal_verdicts: Mutex<Vec<aidash_domain::goal::VerdictRecord>>,
 	/// Input tokens the provider reports; 200 when unset.
 	reported_input_tokens: Option<u64>,
 	/// Calibration samples the store returns, newest first.
@@ -575,16 +570,9 @@ impl ExecutionStore for Backend {
 		let _ = run;
 		Ok(self.0.inputs.lock().unwrap().clone())
 	}
-	async fn begin_final_completion(&self, run: &Run, token: Uuid) -> Result<bool> {
+	async fn begin_final_completion(&self, _run: &Run, token: Uuid) -> Result<bool> {
 		assert_eq!(token, self.0.token);
 		self.record("completion.fence");
-		if self.0.permit_completion {
-			self.0
-				.fenced
-				.lock()
-				.unwrap()
-				.push(run.context.completion.basis);
-		}
 		Ok(self.0.permit_completion)
 	}
 	async fn human_request(
@@ -992,6 +980,7 @@ impl ExecutionHome for Backend {
 				thread_id: self.task_value().thread_id,
 				sender: input.sender.clone(),
 				content: input.content.clone(),
+				completion: None,
 				idempotency_key: Some(input.idempotency_key.clone()),
 				created_at: "2026-10-02T00:00:00Z".parse().unwrap(),
 				run_id: None,
@@ -1061,12 +1050,19 @@ impl ExecutionHome for Backend {
 			..Default::default()
 		})
 	}
+	async fn record_goal_verdict(
+		&self,
+		verdict: &aidash_domain::goal::VerdictRecord,
+	) -> Result<aidash_domain::goal::VerdictRecord> {
+		self.0.goal_verdicts.lock().unwrap().push(verdict.clone());
+		Ok(verdict.clone())
+	}
 	async fn complete(
 		&self,
 		key: &str,
-		artifact: &ArtifactInput,
+		completion: &aidash_domain::deliverable::Completion,
 		abandon: &[Uuid],
-	) -> Result<Task> {
+	) -> Result<aidash_domain::deliverable::Completion> {
 		let _ = key;
 		self.record("home.complete");
 		if let Some(late) = self.0.late_children.lock().unwrap().take() {
@@ -1082,12 +1078,20 @@ impl ExecutionHome for Backend {
 			return Err(error);
 		}
 		self.0
-			.artifacts
+			.published
 			.lock()
 			.unwrap()
-			.push(artifact.content.clone());
-		self.0.task.lock().unwrap().status = TaskStatus::Completed;
-		Ok(self.task_value())
+			.push(completion.text.clone());
+		self.0.task.lock().unwrap().status = if completion
+			.verdict
+			.as_ref()
+			.is_some_and(|verdict| verdict.verdict == aidash_domain::goal::Verdict::Impossible)
+		{
+			TaskStatus::Failed
+		} else {
+			TaskStatus::Completed
+		};
+		Ok(completion.clone())
 	}
 	async fn abandon_unassigned(&self, parent: Uuid, ids: &[Uuid]) -> Result<Vec<Uuid>> {
 		let _ = parent;
@@ -1420,13 +1424,6 @@ impl ExecutionEnvironment for Backend {
 	fn binding_resolver(&self) -> &dyn aidash_application::ports::bindings::BindingResolver {
 		self
 	}
-	fn completion_checks(
-		&self,
-	) -> Option<&dyn aidash_application::ports::execution::completion::CompletionChecks> {
-		self.0.checks.as_ref().map(|checks| {
-			checks as &dyn aidash_application::ports::execution::completion::CompletionChecks
-		})
-	}
 	async fn pin_plugin_tools(
 		&self,
 		run: &Run,
@@ -1610,7 +1607,6 @@ impl ExecutionEnvironment for Backend {
 			tool_parallelism: 1,
 			harness_contract: self.0.harness_contract,
 			prompt_cache: self.0.prompt_cache,
-			completion: self.0.completion.clone(),
 		})
 	}
 	fn provider(&self, model: ModelConfig) -> Result<Arc<dyn ModelProvider>> {
@@ -1676,6 +1672,30 @@ impl ModelProvider for Backend {
 		request: ModelRequest,
 		progress: &dyn InferenceProgressSink,
 	) -> Result<ModelResponse> {
+		if request.instructions
+			== aidash_application::ports::execution::completion::GOAL_JUDGE_PROMPT
+		{
+			let text = self
+				.0
+				.goal_replies
+				.lock()
+				.unwrap()
+				.pop_front()
+				.expect("Goal judge reply");
+			self.0.requests.lock().unwrap().push(request);
+			return Ok(ModelResponse {
+				text,
+				usage_complete: true,
+				reported: ReportedUsage {
+					cost: Some(aidash_domain::provider::usage::ProviderCost {
+						nanocredits: 123,
+						upstream_nanocredits: None,
+					}),
+					..Default::default()
+				},
+				..Default::default()
+			});
+		}
 		if request.response_format.is_some() {
 			request.ensure_fits(1_000_000).unwrap();
 			assert!(request.tools.is_empty());
@@ -1851,6 +1871,7 @@ fn fixture() -> Fixture {
 			title: "Task".into(),
 			description: "Fixture task".into(),
 			status: TaskStatus::Open,
+			goal: None,
 			requirements: json!({}),
 			owner: None,
 			created_by: "human".into(),
@@ -1957,10 +1978,8 @@ fn fixture() -> Fixture {
 		prompt_cache: Default::default(),
 		explicit_cache_model: false,
 		plan_connection: false,
-		artifacts: Mutex::new(vec![]),
-		completion: None,
-		checks: None,
-		fenced: Mutex::new(vec![]),
+		goal_replies: Mutex::new(VecDeque::new()),
+		goal_verdicts: Mutex::new(Vec::new()),
 		reported_input_tokens: None,
 		calibration: Mutex::new(vec![]),
 		url_intents: vec![],
@@ -2868,7 +2887,7 @@ async fn ready_inference_and_completion_use_the_same_durable_executor(mut fixtur
 	);
 	assert_eq!(
 		calls.iter().filter(|&&name| name == "home.output").count(),
-		1
+		0
 	);
 	assert_eq!(
 		calls
@@ -3052,7 +3071,7 @@ fn only_message_reads_among_thread_records_are_summarizable() {
 	assert!(summarizable(&event("renamed_reader", message), &tools));
 	// Each of these records is filtered on its own, and a summary rechecks
 	// only message sources, so the events stay verbatim.
-	for kind in ["task", "artifact", "event", "thread"] {
+	for kind in ["task", "event", "thread"] {
 		let record = json!({"kind":kind,"id":Uuid::from_u128(8)});
 		assert!(
 			!summarizable(&event("renamed_reader", record), &tools),
@@ -3411,7 +3430,7 @@ async fn summary_stage_reduces_history_and_keeps_the_journal(mut fixture: Fixtur
 		.iter()
 		.find(|item| item.source == aidash_domain::projection::native::Source::ExecutionSummary)
 		.unwrap();
-	assert_eq!(summary.content["goal"], "Fixture task");
+	assert_eq!(summary.content["intent"], "Fixture task");
 	assert!(!serde_json::to_string(context).unwrap().contains("old-0"));
 }
 
@@ -4560,6 +4579,7 @@ fn run_message(fixture: &mut Fixture) {
 		is_data: false,
 	}]);
 	state.messages = vec![Message {
+		completion: None,
 		id,
 		thread_id,
 		sender: "human".into(),
@@ -7063,8 +7083,7 @@ async fn catch_up_steps_carry_no_breakpoints() {
 mod unassigned;
 
 mod duty_script;
-
-mod completion;
+mod goal;
 
 impl Backend {
 	async fn skill_context(&self, run: &Run) -> Result<String> {

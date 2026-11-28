@@ -116,10 +116,6 @@ pub async fn checks(
 				let resource = scope.task_resource(&task).await?;
 				if action != "transaction.read" {
 					scope.require(&resource, "task.complete").await?;
-					let artifact = scope
-						.artifact_creation_resource(task.id, task.owner.as_deref().unwrap_or(""))
-						.await?;
-					scope.require(&artifact, "artifact.create").await?;
 				}
 				resource
 			}

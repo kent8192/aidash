@@ -135,12 +135,6 @@ where
 	async fn task_resource(&mut self, task: &Task) -> Result<Resource> {
 		self.access.task_resource(task).await.map_err(Into::into)
 	}
-	async fn artifact_creation_resource(&mut self, task: Uuid, owner: &str) -> Result<Resource> {
-		self.access
-			.artifact_creation_resource(task, owner)
-			.await
-			.map_err(Into::into)
-	}
 }
 
 use reinhardt::query::QueryStatementBuilder as _;

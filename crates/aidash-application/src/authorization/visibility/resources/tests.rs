@@ -12,6 +12,7 @@ fn task() -> Task {
 		title: "Task".into(),
 		description: String::new(),
 		status: aidash_domain::TaskStatus::Open,
+		goal: None,
 		requirements: json!({}),
 		owner: None,
 		created_by: "stored-task-author".into(),
@@ -22,27 +23,13 @@ fn task() -> Task {
 		created_at: chrono::Utc::now(),
 	}
 }
-#[fixture]
-fn artifact() -> Artifact {
-	Artifact {
-		id: Uuid::from_u128(3),
-		thread_id: Uuid::from_u128(2),
-		task_id: Uuid::from_u128(1),
-		kind: "text".into(),
-		name: "Artifact".into(),
-		content: json!({}),
-		created_by: "stored-artifact-author".into(),
-		idempotency_key: "key".into(),
-		created_at: chrono::Utc::now(),
-		run_id: None,
-	}
-}
 fn message(id: u128, sender: &str) -> Message {
 	Message {
 		id: Uuid::from_u128(id),
 		thread_id: Uuid::from_u128(2),
 		sender: sender.into(),
 		content: "same content".into(),
+		completion: None,
 		idempotency_key: None,
 		created_at: chrono::Utc::now(),
 		run_id: None,
@@ -63,7 +50,6 @@ fn human(id: u128) -> HumanRequest {
 }
 struct Scope {
 	task: Option<Task>,
-	artifact: Option<Artifact>,
 	messages: Vec<Message>,
 	humans: Vec<HumanRequest>,
 	cache: BTreeMap<Uuid, bool>,
@@ -80,7 +66,6 @@ struct Scope {
 fn scope() -> Scope {
 	Scope {
 		task: Some(task()),
-		artifact: Some(artifact()),
 		messages: vec![message(4, "stored-sender")],
 		humans: vec![],
 		cache: BTreeMap::new(),
@@ -127,7 +112,6 @@ impl ResourceVisibilityScope for Scope {
 	async fn decide(&mut self, resource: &Resource, action: &str) -> Result<bool> {
 		let name = match action {
 			"task.read" => "task.read",
-			"artifact.read" => "artifact.read",
 			"message.read" => "message.read",
 			"human.read" => "human.read",
 			_ => panic!("unexpected policy action"),
@@ -136,12 +120,6 @@ impl ResourceVisibilityScope for Scope {
 		self.decisions.push(resource.clone());
 		Ok(self.denied != Some(name)
 			&& self.denied_id.map(|id| id.to_string()) != Some(resource.id.clone()))
-	}
-	async fn artifact_task(&mut self, a: &Artifact) -> Result<Option<Task>> {
-		self.touch("artifact_task")?;
-		self.lookups
-			.push(("artifact_task".into(), a.task_id, Some(a.thread_id)));
-		Ok(self.task.clone())
 	}
 	async fn output_visible(&mut self, thread: Uuid, kind: &str, id: Uuid) -> Result<bool> {
 		self.touch("output")?;
@@ -178,11 +156,6 @@ impl ResourceEventScope for Scope {
 		self.lookups.push(("task".into(), id, thread));
 		Ok(self.task.clone())
 	}
-	async fn artifact(&mut self, id: Uuid, thread: Option<Uuid>) -> Result<Option<Artifact>> {
-		self.touch("artifact")?;
-		self.lookups.push(("artifact".into(), id, thread));
-		Ok(self.artifact.clone())
-	}
 	async fn messages_id(&mut self, id: Uuid, thread: Option<Uuid>) -> Result<Vec<Message>> {
 		self.touch("messages_id")?;
 		self.lookups.push(("message".into(), id, thread));
@@ -212,67 +185,6 @@ fn event(kind: &str, data: Value) -> Event {
 		kind: kind.into(),
 		data,
 		created_at: chrono::Utc::now(),
-	}
-}
-
-#[rstest]
-#[tokio::test]
-async fn artifact_disclosure_rechecks_saved_author_parent_task_and_both_output_journals(
-	mut scope: Scope,
-	artifact: Artifact,
-) {
-	assert!(artifact_visible(&mut scope, &artifact).await.unwrap());
-	assert_eq!(
-		scope.decisions[0].attributes,
-		json!({"thread_id":artifact.thread_id,"owner":"stored-owner","created_by":"stored-artifact-author","task_id":artifact.task_id,"kind":"text"})
-	);
-	assert_eq!(
-		scope.decisions[1].attributes["created_by"],
-		json!("stored-task-author")
-	);
-	assert_eq!(
-		scope.lookups,
-		vec![(
-			"artifact_task".into(),
-			artifact.task_id,
-			Some(artifact.thread_id)
-		)]
-	);
-	assert_eq!(
-		scope
-			.calls
-			.iter()
-			.filter(|c| c.as_str() == "output")
-			.count(),
-		2
-	);
-}
-
-#[rstest]
-#[case("artifact.read")]
-#[case("missing_task")]
-#[case("task.read")]
-#[case("output")]
-#[tokio::test]
-async fn artifact_visibility_never_bypasses_a_hidden_parent_or_producer(
-	mut scope: Scope,
-	artifact: Artifact,
-	#[case] gate: &'static str,
-) {
-	match gate {
-		"missing_task" => scope.task = None,
-		"output" => scope.output = false,
-		action => scope.denied = Some(action),
-	}
-	assert!(!artifact_visible(&mut scope, &artifact).await.unwrap());
-	if gate == "artifact.read" {
-		assert!(!scope.calls.contains(&"artifact_task".into()));
-	}
-	if matches!(gate, "artifact.read" | "missing_task" | "task.read") {
-		assert!(!scope.calls.contains(&format!(
-			"output:{}:artifact:{}",
-			artifact.thread_id, artifact.id
-		)));
 	}
 }
 
@@ -388,6 +300,7 @@ async fn related_tasks_must_be_readable_and_in_the_same_thread(mut scope: Scope)
 	let input = NewTask {
 		title: String::new(),
 		description: String::new(),
+		goal: None,
 		requirements: json!({}),
 		dependencies: vec![Uuid::from_u128(1)],
 		parent_id: Some(Uuid::from_u128(7)),
@@ -403,21 +316,6 @@ async fn related_tasks_must_be_readable_and_in_the_same_thread(mut scope: Scope)
 			.filter(|c| c.as_str() == "task_any")
 			.count(),
 		1
-	);
-}
-
-#[rstest]
-#[tokio::test]
-async fn artifact_creation_authorizes_parent_before_using_its_scope(mut scope: Scope) {
-	let resource = artifact_creation_resource(&mut scope, Uuid::from_u128(1), "new-author")
-		.await
-		.unwrap();
-	assert_eq!(resource.kind, "artifact");
-	assert_eq!(resource.id, Uuid::from_u128(1).to_string());
-	assert_eq!(resource.attributes["created_by"], json!("new-author"));
-	assert_eq!(
-		scope.decisions[0].attributes["created_by"],
-		json!("stored-task-author")
 	);
 }
 
@@ -444,27 +342,8 @@ async fn task_event_identifier_precedence_preserves_legacy_envelopes(
 }
 
 #[rstest]
-#[tokio::test]
-async fn task_artifact_events_require_both_resources_even_if_event_claims_an_allowed_author(
-	mut scope: Scope,
-) {
-	scope.denied = Some("artifact.read");
-	let data = json!({"task":{"id":Uuid::from_u128(1)},"artifact":{"id":Uuid::from_u128(3),"created_by":"forged"}});
-	assert_eq!(
-		event_visible(&mut scope, &event("task.updated", data))
-			.await
-			.unwrap(),
-		Some(false)
-	);
-	assert_eq!(
-		scope.decisions[1].attributes["created_by"],
-		json!("stored-artifact-author")
-	);
-}
-
-#[rstest]
 #[case("task.created",json!({}))]
-#[case("artifact.created",json!({"id":"bad"}))]
+#[case("task.completed",json!({"task_id":"bad","message_id":Uuid::from_u128(4)}))]
 #[case("message.thread_opened",json!({"sender":"x","content":"x"}))]
 #[case("message.thread_opened",json!({"id":false}))]
 #[tokio::test]
@@ -560,26 +439,7 @@ async fn explicit_message_event_ids_do_not_fall_back_to_same_content_rows(mut sc
 }
 
 #[rstest]
-#[case("thread")]
-#[case("artifact.read")]
-#[case("artifact_task")]
-#[case("task.read")]
-#[case("output")]
-#[tokio::test]
-async fn resource_adapter_errors_are_preserved_instead_of_becoming_allow_or_deny(
-	mut scope: Scope,
-	artifact: Artifact,
-	#[case] boundary: &'static str,
-) {
-	scope.fail = Some(boundary);
-	let error = artifact_visible(&mut scope, &artifact).await.unwrap_err();
-	assert!(matches!(error,Error::Port(ref e) if e.to_string()=="resource adapter fault"));
-	assert_eq!(scope.calls.last().map(String::as_str), Some(boundary));
-}
-
-#[rstest]
 #[case("event_task", "task.created")]
-#[case("artifact", "artifact.created")]
 #[case("messages_id", "message.created")]
 #[case("messages_legacy", "message.created")]
 #[tokio::test]
@@ -603,7 +463,7 @@ async fn event_membership_errors_stop_disclosure(
 
 #[rstest]
 #[case::message("message.created", json!({"id":Uuid::from_u128(4),"run_id":Uuid::from_u128(9)}))]
-#[case::artifact("artifact.published", json!({"id":Uuid::from_u128(3),"run_id":Uuid::from_u128(9)}))]
+#[case::completion("task.completed", json!({"task_id":Uuid::from_u128(1),"message_id":Uuid::from_u128(4),"run_id":Uuid::from_u128(9)}))]
 #[tokio::test]
 async fn a_publishing_run_in_an_output_event_never_hands_its_disclosure_to_that_run(
 	mut scope: Scope,

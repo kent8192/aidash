@@ -7,11 +7,7 @@ use upstream_fixtures::{reply, upstream};
 #[path = "support/legacy.rs"]
 mod common;
 
-use aidash_server::{
-	domain::{ArtifactInput, qualified_agent},
-	federation::Home,
-	harness::Harness,
-};
+use aidash_server::{domain::qualified_agent, federation::Home, harness::Harness};
 
 use common::{bootstrap, cleanup};
 use serde_json::{Value, json};
@@ -241,11 +237,12 @@ async fn old_worker_cannot_lease_after_input_ledger_admission(
 	} else {
 		task
 	};
-	let artifact = ArtifactInput {
-		kind: "text".into(),
-		name: "stale response".into(),
-		content: json!("stale response"),
-	};
+	let artifact = aidash_domain::deliverable::Completion::new(
+		task.id,
+		"legacy-completion",
+		"stale response".into(),
+		None,
+	);
 	let error = f
 		.store
 		.complete(
@@ -730,11 +727,13 @@ async fn messages_accepted_during_and_after_inference_are_seen_before_completion
 		tracked,
 		"run-directed message must be tracked as an authorized source"
 	);
-	assert_eq!(snapshot.artifacts.len(), 1);
-	assert_eq!(
-		snapshot.artifacts[0].content,
-		"answer with both corrections"
-	);
+	let completions = snapshot
+		.messages
+		.iter()
+		.filter(|message| message.completion.is_some())
+		.collect::<Vec<_>>();
+	assert_eq!(completions.len(), 1);
+	assert_eq!(completions[0].content, "answer with both corrections");
 	assert!(
 		snapshot
 			.messages
@@ -881,8 +880,12 @@ async fn the_commit_fence_persists_the_completion_basis(
 		.await
 		.unwrap();
 	let mut leased = f.store.lease_run(worker, 30).await.unwrap().unwrap();
-	leased.context.completion.attempts = 1;
-	leased.context.completion.basis = Some(aidash_domain::completion::CompletionBasis::Verified);
+	leased.context.final_completion = Some(Box::new(aidash_domain::deliverable::Completion::new(
+		run.task_id,
+		&leased.completion_key(),
+		"Done.".into(),
+		None,
+	)));
 	assert!(
 		f.store
 			.begin_final_completion(&TEST_FIXTURE, &leased, worker)
@@ -890,7 +893,10 @@ async fn the_commit_fence_persists_the_completion_basis(
 			.unwrap()
 	);
 	let stored = f.store.run(&TEST_FIXTURE, run.id).await.unwrap();
-	assert_eq!(stored.context.completion, leased.context.completion);
+	assert_eq!(
+		stored.context.final_completion,
+		leased.context.final_completion
+	);
 	assert_eq!(stored.context.history.len(), leased.context.history.len());
 	if delete_node {
 		use reinhardt::query::{
@@ -969,7 +975,10 @@ async fn the_commit_fence_persists_the_completion_basis(
 		}
 		let completed = f.store.run(&TEST_FIXTURE, run.id).await.unwrap();
 		assert_eq!(completed.phase().as_str(), "COMPLETED");
-		assert_eq!(completed.context.completion, leased.context.completion);
+		assert_eq!(
+			completed.context.final_completion,
+			leased.context.final_completion
+		);
 		assert_eq!(
 			f.store
 				.task(&TEST_FIXTURE, run.task_id)
@@ -986,9 +995,12 @@ async fn the_commit_fence_persists_the_completion_basis(
 			.unwrap();
 		assert_eq!(
 			snapshot
-				.artifacts
+				.messages
+				.into_iter()
+				.filter(|message| message.completion.is_some())
+				.collect::<Vec<_>>()
 				.iter()
-				.filter(|artifact| artifact.content == json!("Done."))
+				.filter(|artifact| artifact.content == "Done.")
 				.count(),
 			1
 		);
@@ -1036,6 +1048,7 @@ async fn a_cancelled_finalizing_run_settles_its_saved_abandonment(
 			&aidash_server::domain::NewTask {
 				title: "Nobody's".into(),
 				description: "Never delegated".into(),
+				goal: None,
 				requirements: json!({}),
 				dependencies: vec![],
 				parent_id: Some(run.task_id),
@@ -1153,9 +1166,12 @@ async fn a_cancelled_finalizing_run_settles_its_saved_abandonment(
 		.unwrap();
 	assert_eq!(
 		snapshot
-			.artifacts
+			.messages
+			.into_iter()
+			.filter(|message| message.completion.is_some())
+			.collect::<Vec<_>>()
 			.iter()
-			.filter(|artifact| artifact.content == json!(sentence))
+			.filter(|artifact| artifact.content == sentence)
 			.count(),
 		1
 	);

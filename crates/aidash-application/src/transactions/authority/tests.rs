@@ -185,6 +185,7 @@ impl TransactionAuthorityScope for Scope {
 			title: String::new(),
 			description: String::new(),
 			status: aidash_domain::TaskStatus::Claimed,
+			goal: None,
 			requirements: json!({}),
 			owner: Some("agent".into()),
 			created_by: "root".into(),
@@ -198,11 +199,6 @@ impl TransactionAuthorityScope for Scope {
 	async fn task_resource(&mut self, task: &Task) -> Result<Resource> {
 		self.call("task_resource".into())?;
 		Ok(self.resource("task", task.id, json!({})))
-	}
-	async fn artifact_creation_resource(&mut self, task: Uuid, owner: &str) -> Result<Resource> {
-		assert_eq!(owner, "agent");
-		self.call("artifact_resource".into())?;
-		Ok(self.resource("artifact", task, json!({})))
 	}
 }
 #[rstest]
@@ -235,8 +231,6 @@ async fn all_origins_precede_mutation_checks_and_disclosures_keep_recipient_orde
 			"task",
 			"task_resource",
 			"task.complete",
-			"artifact_resource",
-			"artifact.create",
 			"transaction.disclose:task:aidash://home/airy-hawk-2lu4as22",
 			"transaction.disclose:task:aidash://peer/airy-hawk-2lu4as22",
 			"run",
@@ -281,7 +275,7 @@ async fn read_checks_inherit_authority_without_mutation_or_disclosure_permission
 #[case::inherit("inherit_local_run")]
 #[case::thread("thread.update")]
 #[case::disclosure("transaction.disclose:thread:aidash://peer/airy-hawk-2lu4as22")]
-#[case::artifact("artifact.create")]
+#[case::completion("task.complete")]
 #[tokio::test]
 async fn errors_stop_authority_checks_before_later_targets_and_preserve_error_identity(
 	mut scope: Scope,

@@ -52,6 +52,7 @@ record!(
 		thread_id,
 		title,
 		description,
+		goal,
 		requirements,
 		owner,
 		created_by,
@@ -63,18 +64,6 @@ record!(
 	},
 	status = |row| text(row, "status")
 );
-record!(Artifact {
-	id,
-	thread_id,
-	task_id,
-	kind,
-	name,
-	content,
-	created_by,
-	idempotency_key,
-	created_at,
-	run_id
-});
 record!(Event {
 	sequence,
 	id,
@@ -106,15 +95,22 @@ record!(
 	},
 	answer_by = |_| NativeResult::Ok(None)
 );
-record!(Message {
-	id,
-	thread_id,
-	sender,
-	content,
-	idempotency_key,
-	created_at,
-	run_id
-});
+record!(
+	Message {
+		id,
+		thread_id,
+		sender,
+		content,
+		idempotency_key,
+		created_at,
+		run_id
+	},
+	completion = |row: &PgRow| row
+		.try_get::<Option<serde_json::Value>>("completion")?
+		.map(serde_json::from_value)
+		.transpose()
+		.map_err(Error::from)
+);
 record!(
 	RunMetadata {
 		id,

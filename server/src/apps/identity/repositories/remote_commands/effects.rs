@@ -96,12 +96,6 @@ impl RemoteCommandEffects for Scope<'_> {
 	async fn thread(&mut self, id: Uuid) -> Result<Resource> {
 		self.access.thread(id).await.map_err(Into::into)
 	}
-	async fn artifact_creation_resource(&mut self, task: Uuid, owner: &str) -> Result<Resource> {
-		self.access
-			.artifact_creation_resource(task, owner)
-			.await
-			.map_err(Into::into)
-	}
 	async fn snapshot(&mut self, thread: Uuid) -> Result<Value> {
 		self.access
 			.thread_snapshot(thread)
@@ -278,56 +272,55 @@ let created_by_grant: bool = { let query_bind_1 = grant; let query_bind_2 = chil
 						.await?;
 					(json!({"abandoned":abandoned}), None)
 				}
-				Effect::Artifact {
-					artifact,
-					complete_through,
+				Effect::ChildGoal { child, goal } => {
+					use crate::apps::workspaces::repositories::goals;
+					let task = goals::locked_task(&mut **self.access.tx, child).await?;
+					goals::change(
+						&mut **self.access.tx,
+						&task,
+						owner,
+						goals::Change {
+							goal: Some(goal.to_owned()),
+							expected_revision: task.revision,
+							resume: false,
+						},
+					)
+					.await?;
+					(json!({"saved":true}), None)
+				}
+				Effect::GoalVerdict { verdict } => {
+					let recorded = crate::apps::workspaces::repositories::goals::record(
+						&mut **self.access.tx,
+						task.id,
+						verdict,
+					)
+					.await?;
+					(json!(recorded), None)
+				}
+				Effect::Complete {
+					completion,
+					through,
 					abandon,
 				} => {
-					if let Some(through) = complete_through {
-						let grant = self.access.read_grant.ok_or(crate::Error::Forbidden)?;
-						self.close_run_questions(task.id, grant, admission).await?;
-						let value = store
-							.complete_in(
-								&mut self.access.tx,
-								task.id,
-								owner,
-								key,
-								artifact,
-								crate::store::Publication::default(),
-								Some((admission, through)),
-								abandon,
-							)
+					let grant = self.access.read_grant.ok_or(crate::Error::Forbidden)?;
+					self.close_run_questions(task.id, grant, admission).await?;
+					let (_, message) = store
+						.complete_in(
+							&mut self.access.tx,
+							task.id,
+							owner,
+							key,
+							completion,
+							crate::store::Publication::default(),
+							Some((admission, through)),
+							abandon,
+						)
+						.await?;
+					for attachment in &message.attachments {
+						self.record_output(grant, task.thread_id, "attachment", *attachment)
 							.await?;
-						let id: Uuid = {
-							let query_bind_1 = key;
-							crate::database::native::query_scalar(
-								&Query::select()
-									.column(Alias::new("id"))
-									.from(Alias::new("artifacts"))
-									.and_where(SimpleExpr::CustomWithExpr(
-										"(idempotency_key=?)".to_owned(),
-										vec![Expr::value(query_bind_1.to_owned()).into()],
-									))
-									.to_string(PostgresQueryBuilder),
-							)
-							.scalar_one(&mut **self.access.tx)
-							.await?
-						};
-						(json!(value), Some(id))
-					} else {
-						let value = store
-							.publish_artifact_in(
-								&mut self.access.tx,
-								task.id,
-								owner,
-								key,
-								artifact,
-								crate::store::Publication::default(),
-							)
-							.await?;
-						let id = value.id;
-						(json!(value), Some(id))
 					}
+					(json!(message), Some(message.message_id))
 				}
 				Effect::CreateTask { task: new } => {
 					let value = store

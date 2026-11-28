@@ -157,16 +157,6 @@ pub fn export_quota_refusal(quota: ExportQuota, path: &str, limit: u64) -> Value
 	json!({"code":WORKING_EXPORT_REFUSED,"message":message,"retryable":false,
 		"details":{"reason":reason,"path":path,"limit":limit}})
 }
-/// Operation kind of a Completion Gate Check (#112). It runs under the bound
-/// shell capability, and its files are never exported into the Working Area.
-pub const VERIFICATION: &str = "verification";
-/// The bound operation whose authority an operation kind runs under.
-pub fn capability_of(kind: &str) -> &str {
-	match kind {
-		VERIFICATION => "shell",
-		_ => kind,
-	}
-}
 /// A lost outcome leaves the last saved Area intact. It remains fenced while
 /// the original writer may still run, and reopens once its stop is proven.
 pub fn lost_area_state(_kind: &str, writer_held: bool) -> &'static str {

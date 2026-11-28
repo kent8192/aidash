@@ -44,6 +44,7 @@ pub(crate) fn domain(row: DutyRecord) -> Result<Duty> {
 			title: row.title,
 			mission: row.mission,
 			procedure: row.procedure,
+			goal: row.goal,
 			agent: EntityRef {
 				id: row.agent_id,
 				version: row.agent_version,
@@ -97,6 +98,7 @@ fn write(row: &mut DutyRecord, duty: &Duty) -> Result<()> {
 	row.title = definition.title.trim().to_owned();
 	row.mission = definition.mission.clone();
 	row.procedure = definition.procedure.clone();
+	row.goal = definition.goal.clone();
 	row.agent_id = definition.agent.id.clone();
 	row.agent_version = definition.agent.version.clone();
 	row.trigger = definition
@@ -153,6 +155,7 @@ pub(crate) async fn insert(
 		.title(String::new())
 		.mission(String::new())
 		.procedure(String::new())
+		.goal(None)
 		.agent_id(String::new())
 		.agent_version(String::new())
 		.trigger(None)

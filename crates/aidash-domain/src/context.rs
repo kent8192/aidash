@@ -137,13 +137,21 @@ pub struct Context {
 	/// Load/Unload changes of a `deferred@1` Run; empty and absent for legacy Runs.
 	#[serde(default, skip_serializing_if = "ExposureState::is_empty")]
 	pub exposure: ExposureState,
-	/// Completion Gate progress of a Run whose Agent names a Completion
-	/// Policy; empty and absent otherwise. Never part of a model request.
 	#[serde(
 		default,
-		skip_serializing_if = "crate::completion::CompletionProgress::is_empty"
+		skip_serializing_if = "crate::goal::JudgingProgress::is_empty"
 	)]
-	pub completion: crate::completion::CompletionProgress,
+	pub goal_judging: crate::goal::JudgingProgress,
+	// Keep Goal payloads off the stack of every worker step, including steps
+	// that run deep tool calls without ever judging or completing the Task.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub goal_transcript: Option<Box<crate::provider::ModelContext>>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub final_completion: Option<Box<crate::deliverable::Completion>>,
+	#[serde(default, skip_serializing_if = "is_zero_u32")]
+	pub completion_attempt: u32,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub goal_resume_message: Option<uuid::Uuid>,
 	/// The plugin tools the Run pinned at its first step (ADR 0073). `None` means not pinned yet;
 	/// a Run without Agent Plugins never sets it.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
@@ -207,7 +215,15 @@ struct StoredContext {
 	#[serde(default)]
 	exposure: ExposureState,
 	#[serde(default)]
-	completion: crate::completion::CompletionProgress,
+	goal_judging: crate::goal::JudgingProgress,
+	#[serde(default)]
+	goal_transcript: Option<Box<crate::provider::ModelContext>>,
+	#[serde(default)]
+	final_completion: Option<Box<crate::deliverable::Completion>>,
+	#[serde(default)]
+	completion_attempt: u32,
+	#[serde(default)]
+	goal_resume_message: Option<uuid::Uuid>,
 	#[serde(default)]
 	plugin_tools: Option<crate::agent_plugin::PluginTools>,
 	#[serde(default)]
@@ -306,17 +322,16 @@ impl<'de> Deserialize<'de> for Context {
 			message_read_coverage: stored.message_read_coverage,
 			message_inference_coverage: stored.message_inference_coverage,
 			exposure: stored.exposure,
-			completion: stored.completion,
+			goal_judging: stored.goal_judging,
+			goal_transcript: stored.goal_transcript,
+			final_completion: stored.final_completion,
+			completion_attempt: stored.completion_attempt,
+			goal_resume_message: stored.goal_resume_message,
 			plugin_tools: stored.plugin_tools,
 			standing_instructions: stored.standing_instructions,
 		})
 	}
 }
-
-/// What an earlier repair request's diagnostics become once a later repair
-/// supersedes it.
-const SUPERSEDED_DIAGNOSTICS: &str =
-	"[superseded by a later Check run; the full diagnostics remain in the execution journal]";
 
 impl Context {
 	/// Append an event to the projection with the next Context Journal sequence.
@@ -324,33 +339,6 @@ impl Context {
 		self.journal.head += 1;
 		self.history
 			.push(HistoryEntry::new(self.journal.head, event));
-	}
-
-	/// Append a Completion Gate repair request. Each repair reruns its Check,
-	/// so earlier requests' diagnostics are obsolete: the projection keeps only
-	/// that they happened (the journal keeps the originals), and repeated
-	/// repairs cannot fill a window that neither Jev nor the Summary Stage
-	/// compacts.
-	pub fn push_repair(
-		&mut self,
-		checks: Vec<crate::completion::RepairNote>,
-		instruction: String,
-		through_seq: i64,
-	) {
-		for entry in &mut self.history {
-			if let ContextEvent::CompletionRepairRequired { checks, .. } = &mut entry.event {
-				for note in checks {
-					if note.diagnostics.len() > SUPERSEDED_DIAGNOSTICS.len() {
-						note.diagnostics = SUPERSEDED_DIAGNOSTICS.into();
-					}
-				}
-			}
-		}
-		self.push(ContextEvent::CompletionRepairRequired {
-			checks,
-			instruction,
-			through_seq,
-		});
 	}
 
 	pub fn events(&self) -> impl DoubleEndedIterator<Item = &ContextEvent> + ExactSizeIterator {
@@ -436,10 +424,9 @@ pub struct InspectionContext<'a> {
 	/// The Run's pinned Estimate Snapshot, without its sample count.
 	#[serde(skip_serializing_if = "Option::is_none")]
 	pub estimate: Option<crate::provider::estimate::EstimateView>,
-	/// Completion Gate state with its Verification Evidence, so a person
-	/// answering a Completion Review sees each Check's exit code and output.
+	/// The most recent Goal verdict and the current no-progress count.
 	#[serde(skip_serializing_if = "Option::is_none")]
-	pub completion: Option<&'a crate::completion::CompletionProgress>,
+	pub goal_judging: Option<&'a crate::goal::JudgingProgress>,
 	/// The plugin tools the Run pinned, with everything left out.
 	#[serde(skip_serializing_if = "Option::is_none")]
 	pub plugin_tools: Option<&'a crate::agent_plugin::PluginTools>,
@@ -463,7 +450,7 @@ impl Context {
 			message_inference_coverage: &self.message_inference_coverage,
 			exposure: &self.exposure,
 			estimate: self.estimate.view(),
-			completion: Some(&self.completion).filter(|progress| !progress.is_empty()),
+			goal_judging: Some(&self.goal_judging).filter(|progress| !progress.is_empty()),
 			plugin_tools: self.plugin_tools.as_ref(),
 			standing_instructions: self.standing_instructions.as_ref(),
 		}
@@ -881,13 +868,8 @@ pub enum ContextEvent {
 		tasks: Vec<ToldTask>,
 		instruction: String,
 	},
-	/// The Completion Gate refused a final answer because a Check did not pass
-	/// on the current files. Each one spends the Repair Allowance of the input
-	/// at `through_seq`.
-	CompletionRepairRequired {
-		checks: Vec<crate::completion::RepairNote>,
+	GoalFeedback {
 		instruction: String,
-		through_seq: i64,
 	},
 	/// The bookkeeping of a Native step (#942): the Agent's state, this
 	/// step's instructions and deferred reads, and open markers. It holds no
@@ -1080,3 +1062,7 @@ mod journal_tests;
 mod plugin_tools_tests;
 
 pub mod source;
+
+fn is_zero_u32(value: &u32) -> bool {
+	*value == 0
+}

@@ -1664,7 +1664,10 @@ async fn stop_commits_during_inflight_inference_and_discards_its_result(
 			.snapshot(&TEST_FIXTURE, run.thread_id)
 			.await
 			.unwrap()
-			.artifacts
+			.messages
+			.into_iter()
+			.filter(|message| message.completion.is_some())
+			.collect::<Vec<_>>()
 			.is_empty()
 	);
 	let (_, policies) = request(

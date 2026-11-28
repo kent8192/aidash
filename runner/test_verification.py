@@ -1,4 +1,4 @@
-"""A Completion Gate Check ("verify") runs like shell but never exports /work."""
+"""Verify Runner command admission, recovery and output collection."""
 import base64
 import contextlib
 import hashlib
@@ -242,12 +242,12 @@ class VerificationTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as root:
             runner = self.runner(root)
             output = b'a' * 20000 + b'failure at the end'
-            record = {'status':'finishing', 'request':request('verify'),
+            record = {'status':'finishing', 'request':request('shell'),
                       'stdout':base64.b64encode(output).decode(), 'truncated':False, 'output_fetched_at':123}
             public = runner.public(record)
             preview = base64.b64decode(public['stdout'])
             self.assertEqual(len(preview), 16384)
-            self.assertTrue(preview.endswith(b'failure at the end'))
+            self.assertEqual(preview, output[:16384])
             self.assertTrue(public['truncated'])
             self.assertEqual(public['output_fetched_at'], 123)
             self.assertEqual(base64.b64decode(record['stdout']), output)
@@ -576,12 +576,12 @@ class VerificationTest(unittest.TestCase):
             runner = self.runner(root)
             runner.lock = threading.RLock()
             runner.kube_json = Mock(side_effect=Admitted)
-            for kind in ("shell", "verify"):
-                with self.assertRaises(Admitted):
+            with self.assertRaises(Admitted):
+                runner.accept(request("shell"))
+            for kind in ("verify", "publish"):
+                with self.subTest(kind=kind), self.assertRaises(Rejected) as rejected:
                     runner.accept(request(kind))
-            with self.assertRaises(Rejected) as rejected:
-                runner.accept(request("publish"))
-            self.assertEqual(rejected.exception.args[0], 400)
+                self.assertEqual(rejected.exception.args[0], 400)
 
     def stopped(self, kind):
         with tempfile.TemporaryDirectory() as root:
@@ -1087,41 +1087,34 @@ class VerificationTest(unittest.TestCase):
             self.assertEqual(recorded['error']['code'], 'WORKING_EXPORT_REFUSED')
             self.assertTrue(recorded['deadline_expired'])
 
-    def test_a_stopped_check_records_its_output_without_exporting_files(self):
-        calls, recorded = self.stopped("verify")
-        self.assertNotIn("export", calls)
-        self.assertEqual(recorded["files"], [])
-        self.assertEqual(recorded["status"], "failed")
-
     def test_a_stopped_shell_still_exports_its_files(self):
         calls, _ = self.stopped("shell")
         self.assertIn("export", calls)
 
 
-class OutputTailTest(unittest.TestCase):
-    def logs(self, *arguments):
+class CommandOutputTest(unittest.TestCase):
+    def logs(self):
         stdout = io.StringIO()
-        with patch.object(collector.sys, "argv", ["collector.py", "logs", "1000", "final", *arguments]), \
+        with patch.object(collector.sys, "argv", ["collector.py", "logs", "1000", "final"]), \
                 contextlib.redirect_stdout(stdout):
             collector.logs(1000)
         captured = json.loads(stdout.getvalue())
         return base64.b64decode(captured["stdout"]), captured["truncated"]
 
-    def test_a_check_reads_the_end_of_output_the_stored_prefix_dropped(self):
+    def test_final_output_reports_when_the_stored_prefix_is_truncated(self):
         with tempfile.TemporaryDirectory() as root:
             root = Path(root)
             with patch.multiple(collector, OUTPUT=root / "output.bin", OUTPUT_STATE=root / "output.state",
-                                OUTPUT_TAIL=root / "output.tail", OUTPUT_LIMIT=8, TAIL_LIMIT=12):
+                                OUTPUT_LIMIT=8):
                 collector.append_output(b"compiling crates\n")
                 collector.append_output(b"test result: FAILED")
-                self.assertEqual(self.logs("tail"), (b"sult: FAILED", True))
                 self.assertEqual(self.logs(), (b"compilin", True))
 
     def test_a_running_preview_returns_the_end_of_the_stored_output_with_its_offset(self):
         with tempfile.TemporaryDirectory() as root:
             root = Path(root)
             with patch.multiple(collector, OUTPUT=root / "output.bin", OUTPUT_STATE=root / "output.state",
-                                OUTPUT_TAIL=root / "output.tail", OUTPUT_LIMIT=64, TAIL_LIMIT=64):
+                                OUTPUT_LIMIT=64):
                 collector.append_output(b"abcdef")
                 stdout = io.StringIO()
                 with patch.object(collector.sys, "argv", ["collector.py", "logs", "3", "window"]), \
@@ -1135,7 +1128,7 @@ class OutputTailTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as root:
             root = Path(root)
             with patch.multiple(collector, OUTPUT=root / "output.bin", OUTPUT_STATE=root / "output.state",
-                                OUTPUT_TAIL=root / "output.tail", OUTPUT_LIMIT=64, TAIL_LIMIT=64):
+                                OUTPUT_LIMIT=64):
                 collector.append_output("aébc".encode())
                 stdout = io.StringIO()
                 with patch.object(collector.sys, "argv", ["collector.py", "logs", "3", "window"]), \
@@ -1148,7 +1141,7 @@ class OutputTailTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as root:
             root = Path(root)
             with patch.multiple(collector, OUTPUT=root / "output.bin", OUTPUT_STATE=root / "output.state",
-                                OUTPUT_TAIL=root / "output.tail", OUTPUT_LIMIT=64, TAIL_LIMIT=64):
+                                OUTPUT_LIMIT=64):
                 collector.append_output(b"a\x80b")
                 stdout = io.StringIO()
                 with patch.object(collector.sys, "argv", ["collector.py", "logs", "2", "window"]), \
@@ -1164,17 +1157,17 @@ class OutputTailTest(unittest.TestCase):
         offset, data = python_cells.output_window("aébc".encode(), 3)
         self.assertEqual((offset, data.decode()), (3, "bc"))
 
-    def test_a_short_check_output_is_returned_whole(self):
+    def test_short_output_is_returned_whole(self):
         with tempfile.TemporaryDirectory() as root:
             root = Path(root)
             with patch.multiple(collector, OUTPUT=root / "output.bin", OUTPUT_STATE=root / "output.state",
-                                OUTPUT_TAIL=root / "output.tail", OUTPUT_LIMIT=64, TAIL_LIMIT=64):
+                                OUTPUT_LIMIT=64):
                 collector.append_output(b"ok\n")
-                self.assertEqual(self.logs("tail"), (b"ok\n", False))
+                self.assertEqual(self.logs(), (b"ok\n", False))
 
 
 class DeadlineTest(unittest.TestCase):
-    """Whether a Check timed out is what its liveness deadline did, not its runtime."""
+    """Command deadlines and cancellation use the recorded timeout result."""
 
     def probe(self, root, control):
         handler = object.__new__(collector.Health)
@@ -1200,10 +1193,10 @@ class DeadlineTest(unittest.TestCase):
             self.assertEqual(self.probe(root, {"cancelled": True, "deadline": 0}), 503)
             self.assertFalse((root / "deadline.expired").exists())
 
-    def watch(self, root, control, kind="verify", connections=0):
+    def watch(self, root, control, kind="shell", connections=0):
         with patch.multiple(collector, CONTROL=root / "control.json", REQUEST=root / "request.json",
                             EXPIRED=root / "deadline.expired", OUTPUT=root / "output.bin",
-                            OUTPUT_STATE=root / "output.state", OUTPUT_TAIL=root / "output.tail"):
+                            OUTPUT_STATE=root / "output.state"):
             collector.save(collector.CONTROL, control)
             collector.save(collector.REQUEST, {"kind": kind})
             collector.save(collector.OUTPUT_STATE, {"total": 0, "stored": 0, "connections": connections})
@@ -1222,7 +1215,7 @@ class DeadlineTest(unittest.TestCase):
             root = Path(root)
             with patch.multiple(collector, CONTROL=root / "control.json", REQUEST=root / "request.json",
                                 EXPIRED=root / "deadline.expired"):
-                collector.save(collector.REQUEST, {"kind": "verify"})
+                collector.save(collector.REQUEST, {"kind": "shell"})
                 collector.save(collector.CONTROL, {"deadline": time.monotonic() + 60, "cancelled": False})
                 collector.expire_if_late()
                 self.assertFalse((root / "deadline.expired").exists())
@@ -1240,7 +1233,7 @@ class DeadlineTest(unittest.TestCase):
             self.assertFalse((root / "deadline.expired").exists())
 
     def test_the_watcher_records_no_timeout_for_cancellations_or_python_sessions(self):
-        for control, kind in (({"deadline": 0, "cancelled": True}, "verify"),
+        for control, kind in (({"deadline": 0, "cancelled": True}, "shell"),
                               ({"deadline": time.monotonic() - 1, "cancelled": False}, "python")):
             with tempfile.TemporaryDirectory() as root:
                 root = Path(root)
@@ -1251,13 +1244,13 @@ class DeadlineTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as root:
             root = Path(root)
             with patch.multiple(collector, OUTPUT=root / "output.bin", OUTPUT_STATE=root / "output.state",
-                                OUTPUT_TAIL=root / "output.tail", EXPIRED=root / "deadline.expired"):
+                                EXPIRED=root / "deadline.expired"):
                 collector.append_output(b"slow\n")
                 for expired in (False, True):
                     if expired:
                         (root / "deadline.expired").touch()
                     stdout = io.StringIO()
-                    with patch.object(collector.sys, "argv", ["collector.py", "logs", "1000", "final", "tail"]), \
+                    with patch.object(collector.sys, "argv", ["collector.py", "logs", "1000", "final"]), \
                             contextlib.redirect_stdout(stdout):
                         collector.logs(1000)
                     self.assertEqual(json.loads(stdout.getvalue())["deadline_expired"], expired)
@@ -1268,7 +1261,7 @@ if __name__ == "__main__":
 
 
 class TerminationTimeTest(unittest.TestCase):
-    """A Check is charged until its command stopped, not until the controller saw it."""
+    """A late observation preserves the command’s recorded stop time."""
 
     STARTED = 1_800_000_000.4  # 2027-01-15T08:00:00.4Z
 
@@ -1291,7 +1284,7 @@ class TerminationTimeTest(unittest.TestCase):
 
 
 class StartStampTest(unittest.TestCase):
-    """A Check is charged from when its command was published, also after a restart."""
+    """The command start stamp survives a controller restart."""
 
     def hydrate(self, root, incoming):
         stdout = io.StringIO()
@@ -1305,7 +1298,7 @@ class StartStampTest(unittest.TestCase):
     def test_a_repeated_hydrate_returns_the_original_start(self):
         with tempfile.TemporaryDirectory() as root:
             root = Path(root)
-            incoming = {"digest": "d", "kind": "verify", "code": "make test", "processes": 16,
+            incoming = {"digest": "d", "kind": "shell", "code": "make test", "processes": 16,
                         "files": [], "working_bytes": 1 << 20, "seconds": 60}
             first = self.hydrate(root, incoming)
             self.assertTrue(first["accepted"])

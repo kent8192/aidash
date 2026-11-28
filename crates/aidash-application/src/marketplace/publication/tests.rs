@@ -682,6 +682,7 @@ mod duty_templates {
 			title: "GitHub CI duty".into(),
 			mission: "Fix failing CI runs.".into(),
 			procedure: "1. Read the failed job.".into(),
+			goal: None,
 			agent: EntityRef {
 				id: "ci-fixer".into(),
 				version: "1.0.0".into(),

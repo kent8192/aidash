@@ -1,5 +1,5 @@
 //! Transaction-bound records used by authorization and factual inspection.
-use super::{Artifact, Conversation, Message, Task, Thread};
+use super::{Conversation, Message, Task, Thread};
 use crate::domain;
 use crate::{Error, Result};
 use reinhardt::core::exception::Error as FrameworkError;
@@ -61,39 +61,6 @@ async fn rows_by_id<T: serde::de::DeserializeOwned>(
 		.into_iter()
 		.map(|row| serde_json::from_value(QueryRow::from_backend_row(row).data).map_err(Into::into))
 		.collect()
-}
-
-impl Artifact {
-	/// See [`Task::read_many_in`].
-	pub(crate) async fn read_many_in(
-		tx: &mut dyn TransactionExecutor,
-		ids: &[Uuid],
-	) -> Result<Vec<domain::Artifact>> {
-		rows_by_id(tx, Self::table_name(), ids).await
-	}
-
-	pub(crate) async fn read_in(
-		tx: &mut dyn TransactionExecutor,
-		id: Uuid,
-		thread: Uuid,
-		lock: bool,
-	) -> Result<Option<domain::Artifact>> {
-		let mut query = Query::select();
-		query
-			.column(ColumnRef::Asterisk)
-			.from(Alias::new(Self::table_name()))
-			.and_where(Expr::col("id").eq(Expr::value(id)))
-			.and_where(Expr::col("thread_id").eq(Expr::value(thread)));
-		if lock {
-			query.lock(LockType::Share);
-		}
-		let (sql, values) = query.build(PostgresQueryBuilder);
-		Ok(tx
-			.fetch_optional(&sql, convert_values(values))
-			.await?
-			.map(|row| serde_json::from_value(QueryRow::from_backend_row(row).data))
-			.transpose()?)
-	}
 }
 
 impl Message {
@@ -165,7 +132,7 @@ impl Thread {
 		collection: &str,
 		after: Option<Uuid>,
 	) -> Result<Vec<(Uuid, Value)>> {
-		if !matches!(collection, "tasks" | "artifacts" | "events" | "messages") {
+		if !matches!(collection, "tasks" | "events" | "messages") {
 			return Err(Error::Invalid("unknown snapshot collection".into()));
 		}
 		let mut source = Query::select();

@@ -25,8 +25,7 @@ pub enum Action<'a> {
 	Share,
 	Skill(&'a str),
 	Patch,
-	/// A Completion Gate Check: shell admission, no file publication (#112).
-	Verify,
+
 	Control {
 		kind: &'static str,
 		cancel: bool,

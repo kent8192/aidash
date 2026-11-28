@@ -16,10 +16,6 @@ import {
 import { useI18n } from "./ui";
 import { Alert, Hint, Loading } from "./components/patterns";
 import type { State } from "./types";
-import { useQuery } from "@tanstack/react-query";
-import { threadGet } from "./generated/aidash";
-import { ArtifactList } from "./collaboration/channel";
-import { readUnconfirmed, unconfirmedFor } from "./unconfirmed";
 import { ChannelFiles } from "./collaboration/attachments";
 const WorkingFileSettings = lazy(() =>
   import("./capabilities/management").then((m) => ({
@@ -253,34 +249,5 @@ export function ConversationTools({
 }
 
 function RequestFiles({ thread }: { thread: string }) {
-  const { locale } = useI18n();
-  const query = useQuery({
-    queryKey: ["thread", thread],
-    queryFn: ({ signal }) => threadGet(thread, { signal }),
-    retry: false,
-  });
-  return (
-    <div className="grid min-w-0 gap-4 [&>*+*]:border-t [&>*+*]:border-border [&>*+*]:pt-4">
-      {query.isError ? (
-        <Alert
-          retry={() => void query.refetch()}
-          retryLabel={locale === "ja-JP" ? "再試行" : "Retry"}
-        >
-          {locale === "ja-JP"
-            ? "成果物を読み込めません。"
-            : "Could not load results."}
-        </Alert>
-      ) : (
-        <ArtifactList
-          artifacts={query.data?.artifacts ?? []}
-          unconfirmed={unconfirmedFor(
-            readUnconfirmed(query.data),
-            ["artifact"],
-            [thread],
-          )}
-        />
-      )}
-      <ChannelFiles thread={thread} />
-    </div>
-  );
+  return <ChannelFiles thread={thread} />;
 }

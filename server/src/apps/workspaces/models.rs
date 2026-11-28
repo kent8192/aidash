@@ -4,9 +4,7 @@ pub(crate) mod child_flags;
 mod inspection;
 mod mutations;
 
-mod artifacts;
-pub use artifacts::Artifact;
-mod channel_attachments;
+pub(crate) mod channel_attachments;
 pub use channel_attachments::ChannelAttachment;
 mod channel_message_context;
 pub use channel_message_context::ChannelMessageContext;

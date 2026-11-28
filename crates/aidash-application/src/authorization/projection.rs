@@ -148,13 +148,11 @@ pub async fn snapshot_untracked(
 	};
 	let thread_row = scope.thread_row(id).await?;
 	let thread_tasks = scope.thread_tasks(id).await?;
-	let thread_artifacts = scope.thread_artifacts(id).await?;
 	let (messages, left_out) = latest_visible_messages_counted(scope, id).await?;
 	unconfirmed.merge(left_out);
 	let mut snapshot = ThreadSnapshot {
 		thread: thread_row,
 		tasks: thread_tasks,
-		artifacts: thread_artifacts,
 		messages,
 		events,
 		unconfirmed: vec![],
@@ -169,16 +167,6 @@ pub async fn snapshot_untracked(
 		}
 	}
 	snapshot.tasks = tasks;
-	let mut artifacts = vec![];
-	for artifact in snapshot.artifacts {
-		scope.begin_row();
-		let visible = scope.artifact_visible(&artifact).await?;
-		let silence = scope.take_row_silence();
-		if unconfirmed.settle(silence, Kind::Artifact, artifact.thread_id, visible) {
-			artifacts.push(artifact);
-		}
-	}
-	snapshot.artifacts = artifacts;
 	// Each message was judged by `latest_visible_messages` and is judged again
 	// here. Messages dropped by the first pass are not in the list, so a message
 	// dropped now, because a Node stopped answering in between, is counted once.
@@ -270,13 +258,6 @@ where
 		thread: snapshot.thread.clone(),
 		tasks: snapshot
 			.tasks
-			.iter()
-			.skip(offset)
-			.take(fitted_limit)
-			.cloned()
-			.collect(),
-		artifacts: snapshot
-			.artifacts
 			.iter()
 			.skip(offset)
 			.take(fitted_limit)

@@ -104,6 +104,10 @@ pub(crate) fn before_threads(
 			policy.actions.insert((*from).to_owned());
 		}
 	}
+	// These grants were part of the stored defaults before the Goal cutover.
+	policy
+		.actions
+		.extend(["artifact.create", "artifact.read"].map(str::to_owned));
 	policy
 }
 

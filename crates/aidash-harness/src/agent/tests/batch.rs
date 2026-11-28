@@ -456,6 +456,7 @@ fn bench(
 			title: "Task".into(),
 			description: "Fixture task".into(),
 			status: TaskStatus::Running,
+			goal: None,
 			requirements: json!({}),
 			owner: None,
 			created_by: "human".into(),
@@ -912,9 +913,9 @@ impl ExecutionHome for Bench {
 	async fn complete(
 		&self,
 		_key: &str,
-		_artifact: &ArtifactInput,
+		_completion: &aidash_domain::deliverable::Completion,
 		_abandon: &[Uuid],
-	) -> Result<Task> {
+	) -> Result<aidash_domain::deliverable::Completion> {
 		unexpected("ExecutionHome.complete")
 	}
 	async fn abandon_unassigned(&self, _parent: Uuid, _ids: &[Uuid]) -> Result<Vec<Uuid>> {
@@ -1116,7 +1117,6 @@ impl ExecutionEnvironment for Bench {
 			tool_parallelism: self.0.parallelism,
 			harness_contract: Default::default(),
 			prompt_cache: Default::default(),
-			completion: None,
 		})
 	}
 	fn tool_slots(&self) -> Option<&ToolSlots> {

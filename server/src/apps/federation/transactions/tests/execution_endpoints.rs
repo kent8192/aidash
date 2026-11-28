@@ -8,7 +8,7 @@ use aidash_server::apps::{
 		states::{AtomicHistoryRole, AtomicParticipantPhase},
 	},
 	identity::models::{AuthorizationRunOutput, AuthorizationRunRead},
-	workspaces::models::{Artifact, Message, Task},
+	workspaces::models::{Message, Task},
 };
 use aidash_server::{
 	harness::Harness,
@@ -109,7 +109,7 @@ async fn prepared_completion_rolls_back_outputs_and_commit_retains_source_revoca
 		"deadline":Utc::now()+Duration::minutes(5),
 		"participants":[{"node_id":node(&app.runtime).await,"mutations":[
 			{"kind":"complete_task","task_id":task.id,"expected_revision":task.revision,
-			 "artifact":{"kind":"text","name":"Atomic output","content":"derived protected result"}},
+			 "text":"derived protected result"},
 			{"kind":"finish_run","run_id":run.id,"task_id":task.id,"expected_revision":run.revision}
 		]}]
 	}))
@@ -134,8 +134,11 @@ async fn prepared_completion_rolls_back_outputs_and_commit_retains_source_revoca
 		.unwrap();
 	assert_eq!(prepared.phase, AtomicParticipantPhase::Prepared);
 	assert!(
-		Artifact::objects()
-			.filter(Artifact::field_task_id().eq(task.id))
+		Message::objects()
+			.filter(
+				Message::field_idempotency_key()
+					.eq(Some(format!("atomic:{}:task:{}", manifest.id, task.id)))
+			)
 			.all_with_db(&mut app.database.lease.handle())
 			.await
 			.unwrap()
@@ -183,7 +186,7 @@ async fn prepared_completion_rolls_back_outputs_and_commit_retains_source_revoca
 		["RESERVED", "PREPARED"]
 	);
 
-	// Commit and replay must persist exactly one artifact and its provenance.
+	// Commit and replay must persist exactly one Completion Message and its provenance.
 	let mut completed = false;
 	for _ in 0..8 {
 		if coordinator::advance(&app.runtime, id)
@@ -210,22 +213,25 @@ async fn prepared_completion_rolls_back_outputs_and_commit_retains_source_revoca
 			"COMMITTED"
 		);
 	}
-	let artifacts = Artifact::objects()
-		.filter(Artifact::field_task_id().eq(task.id))
+	let completions = Message::objects()
+		.filter(
+			Message::field_idempotency_key()
+				.eq(Some(format!("atomic:{}:task:{}", manifest.id, task.id))),
+		)
 		.all_with_db(&mut app.database.lease.handle())
 		.await
 		.unwrap();
-	assert_eq!(artifacts.len(), 1);
+	assert_eq!(completions.len(), 1);
 	let outputs = AuthorizationRunOutput::objects()
 		.filter(AuthorizationRunOutput::field_run_id().eq(run.id))
 		.all_with_db(&mut app.database.lease.handle())
 		.await
 		.unwrap();
 	assert_eq!(outputs.len(), 1);
-	assert_eq!(outputs[0].resource_id, artifacts[0].id);
+	assert_eq!(outputs[0].resource_id, completions[0].id);
 	let reads = AuthorizationRunRead::objects()
 		.filter(AuthorizationRunRead::field_run_id().eq(run.id))
-		.filter(AuthorizationRunRead::field_resource_id().eq(artifacts[0].id))
+		.filter(AuthorizationRunRead::field_resource_id().eq(completions[0].id))
 		.all_with_db(&mut app.database.lease.handle())
 		.await
 		.unwrap();
@@ -251,10 +257,24 @@ async fn prepared_completion_rolls_back_outputs_and_commit_retains_source_revoca
 	);
 	let path = format!("/api/threads/{}", task.thread_id);
 	let visible = assert_json(execution.subject.get(&path).await.unwrap(), 200);
-	assert_eq!(visible["artifacts"].as_array().unwrap().len(), 1);
-	assert_eq!(visible["artifacts"][0]["id"], json!(artifacts[0].id));
+	assert_eq!(
+		visible["messages"]
+			.as_array()
+			.unwrap()
+			.iter()
+			.filter(|item| item["completion"].is_object())
+			.count(),
+		1
+	);
+	assert!(
+		visible["messages"]
+			.as_array()
+			.unwrap()
+			.iter()
+			.any(|item| item["id"] == json!(completions[0].id))
+	);
 
-	// Revoking a source hides its derived output even while artifact.read is allowed.
+	// Revoking a source hides its derived output even while the Completion Message has no direct deny.
 	let mut policy = execution.policy.clone();
 	policy["policies"].as_array_mut().unwrap().push(json!({
 		"id":"revoke-source","effect":"deny","subjects":{"ids":["alice"]},
@@ -272,8 +292,14 @@ async fn prepared_completion_rolls_back_outputs_and_commit_retains_source_revoca
 		200,
 	);
 	let hidden = assert_json(execution.subject.get(&path).await.unwrap(), 200);
-	assert_eq!(hidden["artifacts"], json!([]));
+	assert!(
+		!hidden["messages"]
+			.as_array()
+			.unwrap()
+			.iter()
+			.any(|item| item["id"] == json!(completions[0].id))
+	);
 	// A Deployment Administrator holds no Tenant content authority (#484).
 	let refused = assert_json(app.deployment_administrator.get(&path).await.unwrap(), 403);
-	assert!(refused.get("artifacts").is_none(), "{refused}");
+	assert!(refused.get("messages").is_none(), "{refused}");
 }

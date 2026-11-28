@@ -32,7 +32,6 @@ pub(super) fn subnode_thread_write(action: &str) -> bool {
 			| "task.execute"
 			| "task.complete"
 			| "task.abandon"
-			| "artifact.create"
 			| "message.create"
 			| "message.update"
 			| "run.message"

@@ -53,7 +53,7 @@ pub trait AgentToolScope: Send {
 	async fn task_read(&mut self, task: Uuid, delegating_run: Option<&RunMetadata>)
 	-> Result<Task>;
 	async fn task_resource(&mut self, task: &Task) -> Result<Resource>;
-	async fn artifact_creation_resource(&mut self, task: Uuid, creator: &str) -> Result<Resource>;
+
 	async fn memory_resource(&mut self, run: &RunMetadata) -> Result<Resource>;
 
 	async fn human_request(&mut self, run: &RunMetadata, id: Uuid) -> Result<Option<HumanRequest>>;

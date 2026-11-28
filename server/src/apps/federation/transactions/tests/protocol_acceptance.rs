@@ -972,7 +972,9 @@ async fn overlapping_coordinators_use_the_same_node_order_without_lost_updates(
 
 #[rstest::rstest]
 #[tokio::test]
-async fn thread_task_execution_and_artifact_commit_together_once(#[future(awt)] pair: Pair) {
+async fn thread_task_execution_and_completion_message_commit_together_once(
+	#[future(awt)] pair: Pair,
+) {
 	use aidash_server::{
 		domain::{NewTask, qualified_agent},
 		registry::Entry,
@@ -1004,6 +1006,7 @@ async fn thread_task_execution_and_artifact_commit_together_once(#[future(awt)] 
 				&NewTask {
 					title: "Atomic task".into(),
 					description: "Finish with the remote execution".into(),
+					goal: None,
 					requirements: json!({}),
 					dependencies: vec![],
 					parent_id: None,
@@ -1083,7 +1086,7 @@ async fn thread_task_execution_and_artifact_commit_together_once(#[future(awt)] 
         .execute(b.f.store.pool.fixture_driver())
         .await }
         .unwrap();
-	manifest.participants[0].mutations.push(serde_json::from_value(json!({"kind":"complete_task","task_id":task.id,"expected_revision":task.revision,"artifact":{"kind":"text","name":"Atomic result","content":"one committed result"}})).unwrap());
+	manifest.participants[0].mutations.push(serde_json::from_value(json!({"kind":"complete_task","task_id":task.id,"expected_revision":task.revision,"text":"one committed result"})).unwrap());
 	manifest.participants[1].mutations.push(
 		serde_json::from_value(
 			json!({"kind":"finish_run","run_id":run.id,"task_id":task.id,"expected_revision":run.revision}),
@@ -1129,7 +1132,10 @@ async fn thread_task_execution_and_artifact_commit_together_once(#[future(awt)] 
 			.snapshot(&TEST_FIXTURE, wa)
 			.await
 			.unwrap()
-			.artifacts
+			.messages
+			.into_iter()
+			.filter(|message| message.completion.is_some())
+			.collect::<Vec<_>>()
 			.is_empty()
 	);
 	{
@@ -1181,14 +1187,17 @@ async fn thread_task_execution_and_artifact_commit_together_once(#[future(awt)] 
 			.as_str(),
 		"COMPLETED"
 	);
-	let artifacts =
+	let completions =
 		a.f.store
 			.snapshot(&TEST_FIXTURE, wa)
 			.await
 			.unwrap()
-			.artifacts;
-	assert_eq!(artifacts.len(), 1);
-	assert_eq!(artifacts[0].created_by, owner);
+			.messages
+			.into_iter()
+			.filter(|message| message.completion.is_some())
+			.collect::<Vec<_>>();
+	assert_eq!(completions.len(), 1);
+	assert_eq!(completions[0].sender, owner);
 	a.cleanup().await;
 	b.cleanup().await;
 }

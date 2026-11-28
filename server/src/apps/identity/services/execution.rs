@@ -1797,38 +1797,6 @@ impl WorkerAuthority {
 		Ok(json!(started))
 	}
 
-	/// Start a Completion Gate Check (#112) under the worker's current
-	/// authority lease, exactly as the model's own shell calls are admitted.
-	pub async fn check(&self, store: &Store, run: &Run, input: Value, key: &str) -> Result<Value> {
-		let outer = self.access.read().await;
-		let mut access = Access::under_lease(&outer).await?;
-		let result =
-			crate::capabilities::service::verify(store, &mut access, run, input, key).await;
-		access.finish(result).await
-	}
-
-	/// The current result of a Completion Gate Check this Run started.
-	pub async fn check_status(&self, store: &Store, run: &Run, operation: Uuid) -> Result<Value> {
-		let outer = self.access.read().await;
-		let mut access = Access::under_lease(&outer).await?;
-		let result =
-			crate::capabilities::service::verification(store, &mut access, run, operation).await;
-		access.finish(result).await
-	}
-
-	/// The Run's Working Area as the Completion Gate reads it; `None` when the
-	/// Run has none.
-	pub async fn working_area(
-		&self,
-		store: &Store,
-		run: &Run,
-	) -> Result<Option<aidash_domain::capabilities::sessions::Area>> {
-		let outer = self.access.read().await;
-		let mut access = Access::under_lease(&outer).await?;
-		let result = crate::capabilities::service::working_area(store, &mut access, run).await;
-		access.finish(result).await
-	}
-
 	/// Admit one exact call of a Tenant's HTTP or MCP tool or of page reading, or open the Tool call
 	/// approval the Run waits for, under the worker's current authority lease. It
 	/// shares the capability approval records, decision API and Run waiting.
@@ -2496,19 +2464,44 @@ impl WorkerAuthority {
 				id,
 				title,
 				request,
+				goal,
 				journal_range,
-			} => subnodes::task(
-				&mut scope,
-				&run.metadata(),
-				*id,
-				key,
-				title,
-				request,
-				*journal_range,
-			)
-			.await
-			.map(|task| json!({"task_id":task}))
-			.map_err(Into::into),
+			} => {
+				async {
+					aidash_domain::goal::validate_goal(goal.as_deref())?;
+					let task = subnodes::task(
+						&mut scope,
+						&run.metadata(),
+						*id,
+						key,
+						title,
+						request,
+						*journal_range,
+					)
+					.await?;
+					if let Some(goal) = goal {
+						let child = crate::apps::workspaces::repositories::goals::locked_task(
+							&mut **scope.access.tx,
+							task,
+						)
+						.await?;
+						let creator = child.created_by.clone();
+						crate::apps::workspaces::repositories::goals::change(
+							&mut **scope.access.tx,
+							&child,
+							&creator,
+							crate::apps::workspaces::repositories::goals::Change {
+								goal: Some(goal.clone()),
+								expected_revision: child.revision,
+								resume: false,
+							},
+						)
+						.await?;
+					}
+					Ok(json!({"task_id":task}))
+				}
+				.await
+			}
 			Command::Add { id, agent } => {
 				subnodes::add_member(&mut scope, &run.metadata(), *id, agent)
 					.await
@@ -3594,3 +3587,90 @@ pub(crate) mod safety_stop;
 mod plugin_stdio;
 #[path = "execution/subnodes.rs"]
 pub(crate) mod subnodes;
+
+impl WorkerAuthority {
+	pub(crate) async fn completion_attachments(
+		&self,
+		store: &Store,
+		run: &Run,
+		home: &Home,
+		message: Uuid,
+		paths: &[String],
+	) -> Result<Vec<Uuid>> {
+		use crate::apps::execution::repositories::{deliverables, operations::pods};
+		use reinhardt::query::{
+			Alias, Expr, ExprTrait, PostgresQueryBuilder, Query, QueryStatementBuilder,
+		};
+
+		let mut outer = self.access.write().await;
+		if home.local() {
+			let thread = outer.thread(run.thread_id).await?;
+			outer.require(&thread, "message.create").await?;
+		}
+		let tenant = outer.identity.tenant.clone();
+		let pod = pods::tool_context(store, &mut outer, &run.metadata())
+			.await?
+			.ok_or_else(|| Error::Conflict("Scratch Space Execution Pod is unavailable".into()))?;
+		let ((staged, uploads), _visibility) = self
+			.without_pod_file_authority(&mut outer, store, run, async {
+				deliverables::stage_attachments(store, &tenant, &pod, message, paths)
+					.await
+					.map_err(Into::into)
+			})
+			.await?;
+		if !home.local() {
+			drop(outer);
+			let ids = home
+				.deliver_completion_attachments(&tenant, message, &staged)
+				.await?;
+			uploads.commit().await?;
+			return Ok(ids);
+		}
+		let mut access = Access::under_lease(&outer).await?;
+		let result = async {
+			let thread = access.thread(run.thread_id).await?;
+			access.require(&thread, "message.create").await?;
+			let current = pods::settle_file_context(store, &mut access, &run.metadata())
+				.await?
+				.ok_or(Error::Forbidden)?;
+			if pod.scratch_space_id() != current.scratch_space_id() {
+				return Err(Error::Conflict("Task Scratch Space changed".into()));
+			}
+			let mut ids = Vec::with_capacity(staged.len());
+			let sender = run.executor_subject(store.deployment.as_str());
+			for attachment in staged {
+				let exists: Option<Uuid> = crate::database::native::query_scalar(
+					&Query::select()
+						.column(Alias::new("id"))
+						.from(Alias::new("channel_attachments"))
+						.and_where(Expr::col("id").eq(Expr::value(attachment.id)))
+						.and_where(Expr::col("thread_id").eq(Expr::value(run.thread_id)))
+						.and_where(Expr::col("uploaded_by").eq(sender.clone()))
+						.to_string(PostgresQueryBuilder),
+				)
+				.scalar_optional(&mut **access.tx)
+				.await?;
+				if exists.is_none() {
+					let (object, digest) = attachment.object.publish(&mut access).await?;
+					if digest != attachment.digest {
+						return Err(Error::Conflict("Attachment digest changed".into()));
+					}
+					crate::apps::workspaces::models::ChannelAttachment::stage_completion(
+						&mut **access.tx,
+						crate::apps::workspaces::models::channel_attachments::CompletionAttachment {
+							id: attachment.id, thread: run.thread_id, sender: &sender, message,
+							filename: &attachment.filename, media_type: &attachment.media_type,
+							digest: &digest, size: attachment.size, object,
+						}
+					).await?;
+				}
+				ids.push(attachment.id);
+			}
+			Ok(ids)
+		}
+		.await;
+		let ids = access.finish(result).await?;
+		uploads.commit().await?;
+		Ok(ids)
+	}
+}

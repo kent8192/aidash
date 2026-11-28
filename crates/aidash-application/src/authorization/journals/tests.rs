@@ -1,5 +1,5 @@
 use super::*;
-use aidash_domain::{Artifact, Event, Message, Task, TaskStatus, Thread};
+use aidash_domain::{Event, Message, Task, TaskStatus, Thread};
 use async_trait::async_trait;
 use chrono::Utc;
 use rstest::{fixture, rstest};
@@ -21,6 +21,7 @@ fn snapshot() -> ThreadSnapshot {
 			title: "task".into(),
 			description: "task".into(),
 			status: TaskStatus::Open,
+			goal: None,
 			requirements: json!({}),
 			owner: None,
 			created_by: "saved".into(),
@@ -30,23 +31,12 @@ fn snapshot() -> ThreadSnapshot {
 			revision: 1,
 			created_at: Utc::now(),
 		}],
-		artifacts: vec![Artifact {
-			id: Uuid::from_u128(6),
-			thread_id: Uuid::from_u128(1),
-			task_id: Uuid::from_u128(7),
-			kind: "text".into(),
-			name: "artifact".into(),
-			content: json!("immutable"),
-			created_by: "saved".into(),
-			idempotency_key: "artifact".into(),
-			created_at: Utc::now(),
-			run_id: None,
-		}],
 		messages: vec![Message {
 			id: Uuid::from_u128(5),
 			thread_id: Uuid::from_u128(1),
 			sender: "saved".into(),
 			content: "saved".into(),
+			completion: None,
 			idempotency_key: None,
 			created_at: Utc::now(),
 			run_id: None,
@@ -244,7 +234,6 @@ async fn snapshot_records_one_sorted_unique_membership_commit(
 			},
 			Uuid::from_u128(1),
 			vec![
-				("artifact".into(), Uuid::from_u128(6)),
 				("message".into(), Uuid::from_u128(5)),
 				("task".into(), Uuid::from_u128(7)),
 				("workspace_events".into(), Uuid::from_u128(1))
@@ -345,7 +334,7 @@ async fn malformed_event_references_keep_workspace_events_without_inventing_sour
 	let mut snapshot = snapshot();
 	snapshot.events = vec![event("conversation.started", data)];
 	track_snapshot(&mut scope, &snapshot).await.unwrap();
-	assert_eq!(scope.records[0].2.len(), 4);
+	assert_eq!(scope.records[0].2.len(), 3);
 	assert!(
 		scope.records[0]
 			.2
@@ -438,7 +427,7 @@ async fn message_runs_are_looked_up_once_for_the_whole_page(mut scope: Scope) {
 async fn other_events_keep_their_run_without_a_thread_lookup(mut scope: Scope) {
 	let mut snapshot = snapshot();
 	snapshot.events = vec![event(
-		"artifact.published",
+		"task.progress",
 		json!({"id":Uuid::from_u128(6),"run_id":Uuid::from_u128(13)}),
 	)];
 	track_snapshot(&mut scope, &snapshot).await.unwrap();
@@ -477,7 +466,7 @@ async fn legacy_message_membership_keeps_every_matching_immutable_row(mut scope:
 			.2
 			.contains(&("message".into(), Uuid::from_u128(15)))
 	);
-	assert_eq!(scope.records[0].2.len(), 6);
+	assert_eq!(scope.records[0].2.len(), 5);
 }
 #[rstest]
 #[tokio::test]
@@ -501,14 +490,13 @@ async fn thread_open_events_without_a_message_id_do_not_use_legacy_content_match
 	)];
 	track_snapshot(&mut scope, &snapshot).await.unwrap();
 	assert!(scope.lookups.is_empty());
-	assert_eq!(scope.records[0].2.len(), 4);
+	assert_eq!(scope.records[0].2.len(), 3);
 }
 #[rstest]
 #[tokio::test]
 async fn empty_membership_sources_keep_the_existing_commit_boundary(mut scope: Scope) {
 	let mut snapshot = snapshot();
 	snapshot.tasks.clear();
-	snapshot.artifacts.clear();
 	snapshot.messages.clear();
 	track_snapshot(&mut scope, &snapshot).await.unwrap();
 	assert_eq!(scope.calls, vec!["sources_commit"]);

@@ -256,9 +256,6 @@ impl TransactionAuthorityScope for Control {
 	async fn task_resource(&mut self, _: &Task) -> Result<Resource> {
 		Err(Error::Forbidden)
 	}
-	async fn artifact_creation_resource(&mut self, _: Uuid, _: &str) -> Result<Resource> {
-		Err(Error::Forbidden)
-	}
 }
 
 #[async_trait]

@@ -22,6 +22,7 @@ fn scope() -> Scope {
 			title: String::new(),
 			description: String::new(),
 			status: TaskStatus::Claimed,
+			goal: None,
 			requirements: json!({}),
 			owner: Some(aidash_domain::agent_subject("aidash://peer", "agent", "1")),
 			created_by: "root".into(),

@@ -60,6 +60,7 @@ impl Catalog {
 					| "workspace_message"
 					| "memory_mutate"
 					| "subnode_task"
+					| "task_create" | "task_delegate"
 			) {
 				result.insert(entry(
 					&format!("aidash.{operation}"),
@@ -268,6 +269,8 @@ async fn previously_normalized_agent_resolves_without_rewriting_its_builtin_bind
 				| "aidash.workspace_message"
 				| "aidash.memory_mutate"
 				| "aidash.subnode_task"
+				| "aidash.task_create"
+				| "aidash.task_delegate"
 				| "aidash.file_read"
 				| "aidash.file_search"
 				| "aidash.workspace_wait"
@@ -1466,8 +1469,8 @@ async fn sent_tool_definitions(bindings: [&str; 3]) -> String {
 /// depend on the order an Agent declares its Bindings (ADR 0019).
 #[tokio::test]
 async fn tool_definitions_are_byte_identical_for_any_binding_order() {
-	let declared = sent_tool_definitions(["workspace_read", "file_read", "artifact_publish"]).await;
-	let reversed = sent_tool_definitions(["artifact_publish", "file_read", "workspace_read"]).await;
+	let declared = sent_tool_definitions(["workspace_read", "file_read", "deliverable_note"]).await;
+	let reversed = sent_tool_definitions(["deliverable_note", "file_read", "workspace_read"]).await;
 	assert_eq!(declared, reversed);
 }
 

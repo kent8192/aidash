@@ -221,8 +221,7 @@ async fn prepare_reads(
 		if agent_controls.is_some_and(|agent| match &source {
 			Source::Unit { .. } => true,
 			Source::Memory { .. } => bound_provider(agent) || !agent.semantic_memory,
-			Source::Artifact { .. }
-			| Source::Message { .. }
+			Source::Message { .. }
 			| Source::WorkingImage { .. }
 			| Source::AttachmentImage { .. } => !agent.thread_context,
 		}) {

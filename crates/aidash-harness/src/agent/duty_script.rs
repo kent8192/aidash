@@ -275,20 +275,16 @@ impl Executor<'_> {
 			.full_output(run, guard, &tools, invocation.language, &output)
 			.await?;
 		let stdout = scripts::script_output(&text).map_err(Error::Invalid)?;
-		let task = home.task().await?;
-		let artifact = ArtifactInput {
-			kind: "text".into(),
-			name: result_artifact_name(&task.title),
-			content: json!(stdout),
-		};
+		let key = run.completion_key();
+		let mut completion =
+			aidash_domain::deliverable::Completion::new(run.task_id, &key, stdout, None);
+		self.environment
+			.collect_deliverable(run, &mut completion, &[])
+			.await?;
 		if let Some(guard) = guard {
-			guard
-				.action("artifact.create", "artifact", run.task_id)
-				.await?;
 			guard.action("task.complete", "task", run.task_id).await?;
 		}
-		home.complete(&format!("{}:complete", run.id), &artifact, &[])
-			.await?;
+		home.complete(&key, &completion, &[]).await?;
 		run.state = RunState::Completed(TerminalState {});
 		store.save_run(run, token, "execution.completed").await
 	}

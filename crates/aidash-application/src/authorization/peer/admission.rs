@@ -496,7 +496,10 @@ pub async fn control<R: PeerAdmissionRepository>(
 	if run.home_node != source || run_grant(repository, &run.metadata).await? != Some(grant) {
 		return Err(Error::Forbidden);
 	};
-	if matches!(action, RemoteExecutionControl::Resume) {
+	if matches!(
+		action,
+		RemoteExecutionControl::Resume | RemoteExecutionControl::ResumeGoal { .. }
+	) {
 		let (scope, _) = worker_lease(repository, &run.metadata)
 			.await?
 			.ok_or(Error::Forbidden)?;

@@ -27,7 +27,6 @@ const meshIcons = {
   run: Play,
   agent: Bot,
   tool: Wrench,
-  artifact: FileText,
   cluster: Network,
   remote: Server,
   model: Cpu,

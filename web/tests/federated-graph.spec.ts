@@ -265,7 +265,7 @@ test("subject expands only direct authorized peers and clears remote details on 
   const inspector = page.getByRole("complementary", { name: "Node details" });
   await expect(inspector).toContainText("B Thread");
   const search = page.getByRole("searchbox", {
-    name: "Search nodes, tasks, agents, or artifacts…",
+    name: "Search nodes, tasks, or agents…",
   });
   await search.fill("B Thread");
   await expect(list).toContainText("B Thread");

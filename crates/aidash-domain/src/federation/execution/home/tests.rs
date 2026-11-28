@@ -33,6 +33,7 @@ fn task() -> crate::Task {
 		title: "original title".into(),
 		description: "original intent".into(),
 		status: crate::TaskStatus::Open,
+		goal: None,
 		requirements: json!({}),
 		owner: None,
 		created_by: "requester".into(),

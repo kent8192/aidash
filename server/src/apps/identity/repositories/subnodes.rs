@@ -581,6 +581,7 @@ impl aidash_application::ports::subnodes::ManageScope for Management<'_> {
 		let input = aidash_domain::NewTask {
 			title: title.into(),
 			description: request.into(),
+			goal: None,
 			requirements: json!({}),
 			dependencies: vec![],
 			parent_id: None,

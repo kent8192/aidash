@@ -69,6 +69,7 @@ fn task() -> Task {
 		title: "title 東京".into(),
 		description: "description".into(),
 		status: TaskStatus::Open,
+		goal: None,
 		requirements: json!({}),
 		owner: None,
 		created_by: "deployment_administrator".into(),

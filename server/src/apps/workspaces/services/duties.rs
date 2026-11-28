@@ -1440,6 +1440,7 @@ pub async fn agent_tool(
 					title: input.title,
 					mission: input.mission,
 					procedure: input.procedure.unwrap_or_default(),
+					goal: input.goal,
 					agent: input.agent.unwrap_or_else(|| EntityRef {
 						id: run.agent_id.clone(),
 						version: run.agent_version.clone(),
@@ -1484,6 +1485,7 @@ pub async fn agent_tool(
 					title: input.title,
 					mission: input.mission,
 					procedure: input.procedure,
+					goal: input.goal,
 					agent: input.agent,
 					trigger: input.trigger,
 					approval_mode: input.approval_mode,

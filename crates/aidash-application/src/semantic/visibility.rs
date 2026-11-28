@@ -67,15 +67,6 @@ pub async fn source(
 		// Images are disclosed only as pointers, through their own read paths.
 		Source::WorkingImage { .. } | Source::AttachmentImage { .. } => Ok(None),
 		Source::Memory { text } => Ok(Some(text.clone())),
-		Source::Artifact { id } => {
-			let Some(row) = scope.artifact(*id, thread).await? else {
-				return Ok(None);
-			};
-			if scope.scoped() && !scope.artifact_visible(&row).await? {
-				return Ok(None);
-			}
-			Ok(Some(serde_json::to_string(&row.content)?))
-		}
 		Source::Message { id } => {
 			let Some(row) = scope.message(*id, thread).await? else {
 				return Ok(None);

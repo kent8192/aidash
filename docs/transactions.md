@@ -30,9 +30,9 @@ Visibility is defined per application operation. Separate reads do not form a gl
 
 A Deployment Administrator holds no Tenant authority (ADR 0102): it reads the local participant inventory (`GET /api/transactions/participants`) and a Tenant's transaction revocations, and is refused with 403 when it submits, lists, reads or aborts a transaction. Subjects submit Thread updates, Task completion and paired Run finalization, and read and abort the transactions their authority covers.
 
-Scoped submission requires `transaction.submit` plus the underlying read/mutation permissions. Task completion also requires `artifact.create` using the stored Task owner. Run finalization inherits the stored execution chain; intersecting permissions cannot be replaced by the caller's root subject alone. Source policies additionally authorize `transaction.submit` or `transaction.read` on foreign resources identified as `<Node address>:<resource UUID>`. Each receiver requires an explicit Peer Mapping of the source Node and subject, at the receiving Node, to a live local credential and independently evaluates its local policy.
+Scoped submission requires `transaction.submit` plus the underlying read/mutation permissions. Task completion uses the stored Task owner and requires `task.complete`. Run finalization inherits the stored execution chain; intersecting permissions cannot be replaced by the caller's root subject alone. Source policies additionally authorize `transaction.submit` or `transaction.read` on foreign resources identified as `<Node address>:<resource UUID>`. Each receiver requires an explicit Peer Mapping of the source Node and subject, at the receiving Node, to a live local credential and independently evaluates its local policy.
 
-The complete manifest is shared with every participant. Metadata-only preflight contains the transaction ID/digest, origin identifiers, recipient list and local target identifiers, without Thread state or Artifact content. Every participant must authorize `transaction.disclose` for each local target and each `recipient_node` attribute before the coordinator persists or sends the full manifest. A denied recipient rejects the whole submission. Immutable preflight bindings prevent changing the identity, recipient set or target definition under the same ID.
+The complete manifest is shared with every participant. Metadata-only preflight contains the transaction ID/digest, origin identifiers, recipient list and local target identifiers, without Thread state or Completion Message text. Every participant must authorize `transaction.disclose` for each local target and each `recipient_node` attribute before the coordinator persists or sends the full manifest. A denied recipient rejects the whole submission. Immutable preflight bindings prevent changing the identity, recipient set or target definition under the same ID.
 
 Preflight and coordinator submission are not Participant admission. Each new reservation rechecks live source authority, the mapped receiver's credential/policy/chain and the Node Registration's `atomic_transactions` trust. The receiver commits its reservation while retaining the local authority locks. Source authority attempts are durable before Federation I/O; the receiver retrieves a proof bound to the exact origin and manifest metadata. A lost reply remains an unknown outcome until a durable participant result or abort tombstone is reconciled.
 
@@ -52,11 +52,11 @@ An abort atomically competes with commit for the first durable decision. It can 
 
 Register the participating Nodes on each other, with `atomic_transactions` set, before submitting. Scoped participants also need explicit mappings and the permissions above. The coordinator must participate, participant Node addresses must be unique and sorted, and a new deadline must be within the next hour. Use the exact current revisions for thread, task and execution changes. Submission returns HTTP 202 after durable coordinator registration; it does not mean Participant admission, commit or completion. Poll the transaction details until `complete` is true and inspect its decision.
 
-| Mutation        | Preconditions and outcome                                                           |
-| --------------- | ----------------------------------------------------------------------------------- |
-| `thread_state`  | Replace object state at the expected thread revision                                |
-| `complete_task` | Complete an owned running task with no unfinished children and publish one artifact |
-| `finish_run`    | Finalize an idle execution at its expected revision, with no outstanding tool calls |
+| Mutation        | Preconditions and outcome                                                                                       |
+| --------------- | --------------------------------------------------------------------------------------------------------------- |
+| `thread_state`  | Replace object state at the expected thread revision                                                            |
+| `complete_task` | Complete an owned running Task with no Goal or unfinished children and post one Completion Message using `text` |
+| `finish_run`    | Finalize an idle execution at its expected revision, with no outstanding tool calls                             |
 
 Delegated task completion must include the corresponding execution finalization on its recorded execution Node; execution finalization must include completion on the recorded home Node. Preparation invokes only the same SQL mutation code used at commit. Ordinary tool calls, provider requests and nonparticipating A2A side effects cannot be embedded in a manifest.
 

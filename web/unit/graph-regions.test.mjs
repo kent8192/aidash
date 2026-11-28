@@ -198,52 +198,51 @@ test("All Threads keeps Home-qualified ownership and Node-qualified execution se
 });
 
 test("All Threads retains authorized continuation resources without their Thread vertex", () => {
-  for (const kind of ["run", "artifact"]) {
-    const nodes = [
-      shared(home, "thread", "work", "work"),
-      shared(b, "task", "page-task", "peer-work"),
-      shared(b, kind, "page-resource", "peer-work"),
-      agent(b, "worker"),
-      shared(c, "task", "page-task", "peer-work"),
-      agent(c, "unrelated"),
-    ];
-    const page = {
-      nodes,
-      edges: [
-        edge(key(b, "task", "page-task"), entity(b, "worker"), "assigned"),
-        edge(
-          key(b, "task", "page-task"),
-          key(b, kind, "page-resource"),
-          kind === "run" ? "executes" : "produces",
-        ),
-      ],
-      omitted: 0,
-      omittedEdges: 0,
-    };
-    const scoped = threadGraph(page, home, "", state);
-    assert.deepEqual(
-      scoped.nodes.map((node) => node.id).sort(),
-      nodes
-        .slice(0, -1)
-        .map((node) => node.id)
-        .sort(),
-      kind,
-    );
-    assert.deepEqual(
-      graphRegions(scoped, home)
-        .filter((region) => region.kind === "shared")
-        .map((region) => [region.nodeId, region.threadId]),
-      [
-        [home, "work"],
-        [b, "peer-work"],
-        [c, "peer-work"],
-      ],
-      kind,
-    );
-    assert.deepEqual(
-      threadGraph(page, home, "work", state).nodes.map((node) => node.id),
-      [key(home, "thread", "work")],
-      kind,
-    );
-  }
+  const kind = "run";
+  const nodes = [
+    shared(home, "thread", "work", "work"),
+    shared(b, "task", "page-task", "peer-work"),
+    shared(b, kind, "page-resource", "peer-work"),
+    agent(b, "worker"),
+    shared(c, "task", "page-task", "peer-work"),
+    agent(c, "unrelated"),
+  ];
+  const page = {
+    nodes,
+    edges: [
+      edge(key(b, "task", "page-task"), entity(b, "worker"), "assigned"),
+      edge(
+        key(b, "task", "page-task"),
+        key(b, kind, "page-resource"),
+        "executes",
+      ),
+    ],
+    omitted: 0,
+    omittedEdges: 0,
+  };
+  const scoped = threadGraph(page, home, "", state);
+  assert.deepEqual(
+    scoped.nodes.map((node) => node.id).sort(),
+    nodes
+      .slice(0, -1)
+      .map((node) => node.id)
+      .sort(),
+    kind,
+  );
+  assert.deepEqual(
+    graphRegions(scoped, home)
+      .filter((region) => region.kind === "shared")
+      .map((region) => [region.nodeId, region.threadId]),
+    [
+      [home, "work"],
+      [b, "peer-work"],
+      [c, "peer-work"],
+    ],
+    kind,
+  );
+  assert.deepEqual(
+    threadGraph(page, home, "work", state).nodes.map((node) => node.id),
+    [key(home, "thread", "work")],
+    kind,
+  );
 });

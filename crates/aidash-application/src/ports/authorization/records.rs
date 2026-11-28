@@ -1,8 +1,6 @@
 //! Single records and child summaries keep the caller's authority and read journal.
 use crate::{Error, Result};
-use aidash_domain::{
-	Artifact, Event, Message, Task, TaskStatus, Thread, ThreadSnapshot, policy::Resource,
-};
+use aidash_domain::{Event, Message, Task, TaskStatus, Thread, ThreadSnapshot, policy::Resource};
 use async_trait::async_trait;
 use uuid::Uuid;
 #[async_trait]
@@ -16,7 +14,7 @@ pub trait ThreadRecordScope: Send {
 	}
 	async fn thread_row(&mut self, thread_id: Uuid) -> Result<Thread>;
 	async fn task_record(&mut self, thread_id: Uuid, id: Uuid) -> Result<Option<Task>>;
-	async fn artifact_record(&mut self, thread_id: Uuid, id: Uuid) -> Result<Option<Artifact>>;
+
 	async fn message_record(&mut self, thread_id: Uuid, id: Uuid) -> Result<Option<Message>>;
 	async fn attachment_record(
 		&mut self,
@@ -26,7 +24,7 @@ pub trait ThreadRecordScope: Send {
 
 	async fn event_record(&mut self, thread_id: Uuid, id: Uuid) -> Result<Option<Event>>;
 	async fn task_visible(&mut self, row: &Task) -> Result<bool>;
-	async fn artifact_visible(&mut self, row: &Artifact) -> Result<bool>;
+
 	async fn message_visible(&mut self, row: &Message) -> Result<bool>;
 	/// Attachment metadata for already authorized messages, never bytes.
 	async fn message_attachments(

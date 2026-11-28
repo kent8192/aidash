@@ -27,6 +27,7 @@ impl Fixture {
             })).unwrap(),
             operations: vec![], denied: None, delegated_agent: None, memory: None, index: None, thread_scratch: None,
             task: Task {
+				goal: None,
                 id: Uuid::from_u128(3), thread_id: Uuid::from_u128(1), title:"Title".into(), description:"Goal".into(),
                 status:TaskStatus::Open, requirements:json!({}), owner:None, created_by:"subject:fixture".into(),
                 dependencies:vec![], parent_id:None, started_by_duty:None, revision:0, created_at:chrono::Utc::now(),
@@ -166,6 +167,7 @@ fn request<'a>(reference: &'a EntityRef, kind: &'a str) -> ConversationRequest<'
 	ConversationRequest {
 		title: "Title",
 		request: "Goal",
+		goal: None,
 		target: reference,
 		target_kind: kind,
 		node: None,

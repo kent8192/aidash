@@ -43,7 +43,7 @@ async fn check_run(
 		let mut check = access.rechecking(run_id);
 		let run = check.recheck_run_reads(run_id).await?;
 		// A list change acts like a withdrawal (ADR 0139).
-		let tool = aidash_domain::capabilities::operations::capability_of(kind);
+		let tool = kind;
 		if super::remote_tools::withdrawn(check.tx.as_mut(), run.id, tool).await? {
 			return Err(Error::Forbidden);
 		}

@@ -464,9 +464,12 @@ test("a deadline shows with its date, since it can be days away", () => {
 test("both locales explain the Answer Deadline and its limits", () => {
   const english = approvalCopy["en-US"].deadline;
   const japanese = approvalCopy["ja-JP"].deadline;
-  assert.match(english.help, /continues on its own judgment/);
-  assert.match(english.help, /never applies to Completion Reviews/);
-  assert.match(japanese.help, /Completion Review/);
+  assert.match(english.help, /continues on the Agent's judgment/);
+  assert.match(english.help, /paused by Goal judgment waits for a reply/);
+  assert.match(
+    japanese.help,
+    /ゴールの判定で一時停止した Run は、回答があるまで待機/,
+  );
   assert.deepEqual(
     Object.keys(english.problems),
     Object.keys(japanese.problems),

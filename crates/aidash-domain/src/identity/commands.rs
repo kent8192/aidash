@@ -14,31 +14,52 @@ pub struct Metadata {
 pub fn prepare(operation: &str, data: &Value) -> Result<Metadata> {
 	if matches!(
 		operation,
-		"delegate" | "task_assign" | "connection_request" | "outbound_request" | "memory_mutate"
+		"delegate"
+			| "child_goal"
+			| "task_assign"
+			| "connection_request"
+			| "outbound_request"
+			| "memory_mutate"
+			| "goal_verdict"
 	) && data["key"].as_str().is_none()
 	{
 		return Err(Error::Invalid("missing command key".into()));
 	}
-	let mutation =
-		matches!(
-			operation,
-			"claim"
-				| "transition"
-				| "run_message_terminal_transition"
-				| "run_message_complete"
-				| "run_abandon_unassigned"
-				| "artifact" | "create_task"
-				| "delegate" | "message"
-				| "run_message_output"
-				| "event" | "run_queued"
-				| "human_request"
-				| "mcp.connection_call"
-				| "task_assign"
-				| "connection_request"
-				| "outbound_request"
-				| "memory_mutate"
-		);
-	let digest = registry::rules::digest(&json!({"operation":operation,"data":data}));
+	let mutation = matches!(
+		operation,
+		"claim"
+			| "transition"
+			| "run_message_terminal_transition"
+			| "run_message_complete"
+			| "goal_verdict"
+			| "child_goal"
+			| "run_abandon_unassigned"
+			| "create_task"
+			| "delegate"
+			| "message"
+			| "run_message_output"
+			| "event" | "run_queued"
+			| "human_request"
+			| "mcp.connection_call"
+			| "task_assign"
+			| "connection_request"
+			| "outbound_request"
+			| "memory_mutate"
+	);
+	let digest = if operation == "run_message_complete" {
+		registry::rules::digest(
+			&json!({"operation":operation,"run_id":data["run_id"],"settlement_version":data["settlement_version"]}),
+		)
+	} else if operation == "goal_verdict" {
+		registry::rules::digest(&json!({
+		 "operation": operation,
+		 "run_id": data["run_id"],
+		 "response_epoch": data["verdict"]["response_epoch"],
+		 "goal": data["verdict"]["goal"],
+		}))
+	} else {
+		registry::rules::digest(&json!({"operation":operation,"data":data}))
+	};
 	// Personal calls use their logical invocation key. `not_personal` is an internal
 	// fallback outcome, and pre-execution connection causes must never enter replay.
 	let key = if operation == "mcp.connection_call" {
@@ -72,10 +93,9 @@ pub fn builtin(operation: &str) -> Option<&'static str> {
 	match operation {
 		"human_request" | "human_read" => Some("human_request"),
 		"thread_record" | "thread_record_chunk" => Some("thread_read"),
-		"artifact" => Some("artifact_publish"),
 		"message" => Some("thread_message"),
 		"create_task" => Some("task_create"),
-		"delegate" => Some("task_delegate"),
+		"delegate" | "child_goal" => Some("task_delegate"),
 		"discover" => Some("agent_discover"),
 		"created_task" => Some("task_delegate"),
 		// Home-forwarded tools (ADR 0139): each op is named as its tool so the
@@ -96,7 +116,7 @@ pub fn builtin(operation: &str) -> Option<&'static str> {
 /// Whether the Home checks its own Federation Tool Request for `operation` before it serves it
 /// (ADR 0139, decision 1): the Home-forwarded tools, whose ops a receiving Node sends only when
 /// the Run called that tool. The older ops also carry traffic of the Run itself that no list
-/// names (a person asked about a tool approval or a Completion Review, records read for the
+/// names (a person asked about a tool approval or for Goal guidance, records read for the
 /// Run's context, tasks an Agent tool creates), so only the Binding is checked for them.
 /// `delegate` and `discover` come only from a remote Run's `task_delegate` and `agent_discover`,
 /// which hand work on through the Home (#654, #1013), so they are checked too. `created_task`
@@ -105,6 +125,7 @@ pub fn requested(operation: &str) -> bool {
 	matches!(
 		operation,
 		"delegate"
+			| "child_goal"
 			| "discover"
 			| "task_assign"
 			| "thread_search"

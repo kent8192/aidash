@@ -79,7 +79,7 @@ async fn paired_subject_completion_preserves_the_stored_execution_chain(
 	}
 	let manifest: Manifest = serde_json::from_value(json!({"id":Uuid::new_v4(),"coordinator":node(&f).await,"isolation":"serializable","deadline":Utc::now()+Duration::minutes(5),
 		"participants":[{"node_id":node(&f).await,"mutations":[
-			{"kind":"complete_task","task_id":task_id,"expected_revision":task.revision,"artifact":{"kind":"text","name":"Answer","content":"Atomic answer"}},
+			{"kind":"complete_task","task_id":task_id,"expected_revision":task.revision,"text":"Atomic answer"},
 			{"kind":"finish_run","run_id":run.id,"task_id":task_id,"expected_revision":run.revision}]}]})).unwrap();
 	let (status, body) = common::post(&app, &token, "/api/transactions", json!(manifest)).await;
 	assert_eq!(status, if denied { 403 } else { 202 }, "{body}");
@@ -102,7 +102,10 @@ async fn paired_subject_completion_preserves_the_stored_execution_chain(
 				.snapshot(&TEST_FIXTURE, task.thread_id)
 				.await
 				.unwrap()
-				.artifacts
+				.messages
+				.into_iter()
+				.filter(|message| message.completion.is_some())
+				.collect::<Vec<_>>()
 				.is_empty()
 		);
 	} else {
@@ -141,14 +144,17 @@ async fn paired_subject_completion_preserves_the_stored_execution_chain(
 				.as_str(),
 			"COMPLETED"
 		);
-		let artifacts = f
+		let completions = f
 			.store
 			.snapshot(&TEST_FIXTURE, task.thread_id)
 			.await
 			.unwrap()
-			.artifacts;
-		assert_eq!(artifacts.len(), 1);
-		assert_eq!(artifacts[0].created_by, task.owner.unwrap());
+			.messages
+			.into_iter()
+			.filter(|message| message.completion.is_some())
+			.collect::<Vec<_>>();
+		assert_eq!(completions.len(), 1);
+		assert_eq!(completions[0].sender, task.owner.unwrap());
 	}
 	cleanup(f, &url, &schema).await;
 }

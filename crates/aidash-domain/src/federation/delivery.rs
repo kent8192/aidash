@@ -41,6 +41,9 @@ pub enum Purpose {
 		#[serde(default)]
 		descriptions: BTreeMap<String, String>,
 	},
+	CompletionAttachments {
+		message_id: Uuid,
+	},
 }
 impl Purpose {
 	/// The tool of the Run's Binding the Home checks.
@@ -48,6 +51,7 @@ impl Purpose {
 		match self {
 			Self::FileShare => "file_share",
 			Self::Message { .. } => "thread_message",
+			Self::CompletionAttachments { .. } => "completion_attachments",
 		}
 	}
 }
@@ -72,6 +76,11 @@ impl Limits {
 	pub fn of(purpose: &Purpose, share: Limits) -> Self {
 		match purpose {
 			Purpose::FileShare => share,
+			Purpose::CompletionAttachments { .. } => Self {
+				files: crate::deliverable::MAX_COMPLETION_ATTACHMENTS,
+				file_bytes: crate::deliverable::MAX_COMPLETION_ATTACHMENT_BYTES,
+				bytes: crate::deliverable::MAX_COMPLETION_ATTACHMENT_BYTES,
+			},
 			Purpose::Message { .. } => Self {
 				files: MESSAGE_FILES.min(share.files),
 				file_bytes: MESSAGE_BYTES.min(share.file_bytes),

@@ -224,7 +224,7 @@ fn existing_agent_normalization_keeps_its_original_system_bindings() {
 			.any(|b| b.binding.target.id == "aidash.thread_search")
 	);
 	assert!(current.iter().any(
-		|b| b.binding.target.id == "aidash.thread_read" && b.binding.target.version == "1.0.0"
+		|b| b.binding.target.id == "aidash.thread_read" && b.binding.target.version == "1.1.0"
 	));
 }
 

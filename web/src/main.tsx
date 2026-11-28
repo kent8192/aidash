@@ -589,14 +589,6 @@ function Dashboard({
           [...projected.tasks, ...snapshot.tasks].map((row) => [row.id, row]),
         ).values(),
       ],
-      artifacts: [
-        ...new Map(
-          [...projected.artifacts, ...snapshot.artifacts].map((row) => [
-            row.id,
-            row,
-          ]),
-        ).values(),
-      ],
     };
   }, [projected, selectedSnapshot, remembered.selected?.name]);
   const channelNode = route.channel

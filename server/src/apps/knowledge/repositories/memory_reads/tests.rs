@@ -74,6 +74,7 @@ async fn bound_run(store: &Store, bank: &Bank, provider: &str, read: Option<Uuid
 			&aidash_domain::NewTask {
 				title: "Reader".into(),
 				description: "Read one Unit".into(),
+				goal: None,
 				requirements: json!({}),
 				dependencies: vec![],
 				parent_id: None,
@@ -507,6 +508,7 @@ async fn owning_and_recorded_run_task_producer_deletion_is_invalidation(
 			&aidash_domain::NewTask {
 				title: "Produced task".into(),
 				description: "Continue the producer work".into(),
+				goal: None,
 				requirements: json!({}),
 				dependencies: vec![],
 				parent_id: None,
@@ -525,6 +527,7 @@ async fn owning_and_recorded_run_task_producer_deletion_is_invalidation(
 			&aidash_domain::NewTask {
 				title: "Root task".into(),
 				description: "Read the dependency".into(),
+				goal: None,
 				requirements: json!({}),
 				dependencies: vec![],
 				parent_id: None,

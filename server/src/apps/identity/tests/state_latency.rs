@@ -229,16 +229,16 @@ async fn state_latency_with_665_threads_and_670_runs(
 			.await
 			.unwrap();
 	}
-	// Artifacts on the newest Tasks.
+	// Messages on the newest Tasks.
 	let tasks: Vec<(Uuid, Uuid)> = sqlx::query_as(
 		"SELECT id, thread_id FROM tasks WHERE tenant = 'acme' ORDER BY created_at DESC LIMIT 20",
 	)
 	.fetch_all(db)
 	.await
 	.unwrap();
-	for (task, thread) in &tasks {
-		sqlx::query("INSERT INTO artifacts (id,tenant,thread_id,task_id,kind,name,content,created_by,idempotency_key) VALUES ($1,'acme',$2,$3,'json','Measured','{}','alice',$1::text)")
-			.bind(Uuid::new_v4()).bind(thread).bind(task).execute(db).await.unwrap();
+	for (_, thread) in &tasks {
+		sqlx::query("INSERT INTO messages (id,tenant,thread_id,sender,content,idempotency_key) VALUES ($1,'acme',$2,'alice','Measured',$1::text)")
+			.bind(Uuid::new_v4()).bind(thread).execute(db).await.unwrap();
 	}
 	let mut shape = vec![];
 	for table in [
@@ -246,7 +246,6 @@ async fn state_latency_with_665_threads_and_670_runs(
 		"tasks",
 		"task_executions",
 		"human_requests",
-		"artifacts",
 		"conversations",
 		"events",
 		"authorization_decisions",
@@ -304,7 +303,6 @@ async fn state_latency_with_665_threads_and_670_runs(
 			"threads",
 			"tasks",
 			"runs",
-			"artifacts",
 			"human_requests",
 			"conversations",
 			"events",

@@ -63,7 +63,7 @@ COMPARISON_AGENT_FIELDS = ("projection_version", "prompt_cache", "exposure", "ha
 # exposure.rs `default_tools` and `skill_support_tools`). test_fixed_task_evaluation.py checks
 # them against the Rust lists.
 DEFAULT_TOOLS = ("connection_request", "thread_observe", "thread_search", "task_wait", "skill_list", "skill_load", "skill_read", "file_search",
-                 "file_read", "task_create", "task_delegate", "agent_discover", "artifact_publish",
+                 "file_read", "task_create", "task_delegate", "agent_discover", "deliverable_note",
                  "thread_message", "attachment_copy", "memory_mutate", "memory_recall", "memory_reflect",
                  "duty_create", "duty_list", "duty_update", "duty_delete")
 SKILL_TOOLS = ("skill_list", "skill_load", "skill_read")

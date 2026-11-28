@@ -59,6 +59,7 @@ impl CollaborationManagement {
 					aidash_application::threads::ConversationRequest {
 						title: &input.title,
 						request,
+						goal: input.goal.as_deref(),
 						target,
 						target_kind: target_kind.as_str(),
 						node: input.node.as_ref(),
@@ -71,7 +72,7 @@ impl CollaborationManagement {
 			(None, None) => {
 				// A request is the description of a Root Task for an Agent or
 				// Node; a Thread opened without one has no request.
-				if input.request.is_some() {
+				if input.request.is_some() || input.goal.is_some() {
 					return Err(Error::Invalid(
 						"a request names the Agent or Node it is for".into(),
 					));
@@ -168,5 +169,19 @@ impl CollaborationManagement {
 			return Err(Error::Forbidden);
 		};
 		interaction::abandon(&f, &identity, id, input.revision, &input.reason).await
+	}
+}
+
+impl CollaborationManagement {
+	pub(crate) async fn task_goal(
+		&self,
+		actor: Actor,
+		id: Uuid,
+		change: Option<crate::apps::workspaces::repositories::goals::Change>,
+	) -> Result<crate::apps::workspaces::repositories::goals::Detail> {
+		let Actor::Subject(identity) = actor else {
+			return Err(Error::Forbidden);
+		};
+		interaction::task_goal(&self.runtime, &identity, id, change).await
 	}
 }

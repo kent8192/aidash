@@ -229,12 +229,6 @@ impl AgentToolScope for Scope<'_> {
 	async fn task_resource(&mut self, task: &Task) -> Result<Resource> {
 		self.access.task_resource(task).await.map_err(Into::into)
 	}
-	async fn artifact_creation_resource(&mut self, task: Uuid, creator: &str) -> Result<Resource> {
-		self.access
-			.artifact_creation_resource(task, creator)
-			.await
-			.map_err(Into::into)
-	}
 	async fn memory_resource(&mut self, run: &RunMetadata) -> Result<Resource> {
 		self.access
 			.memory_resource(run.clone())

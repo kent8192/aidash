@@ -520,3 +520,51 @@ pub async fn recipient_list(
 		json!({"protocol":"file-transfer/1","items":items,"next_cursor":next_cursor,"versions_truncated":versions_truncated}),
 	)
 }
+
+/// The receiver owns immutable, bounded-size staging objects. Completion
+/// attachments can be larger than memory, so the caller receives their parts.
+pub enum Parts {
+	Committed(Value),
+	Ready {
+		description: Box<Description>,
+		files: Vec<Vec<FileEntry>>,
+	},
+}
+
+pub async fn staged_parts(
+	repository: &dyn ReceiverRepository,
+	source: &str,
+	input: Identity,
+) -> Result<Parts> {
+	let (scope, area, record, description) = current(repository, source, &input).await?;
+	let result = (|| {
+		if record.state == "committed" {
+			return Ok(Parts::Committed(view(&record)));
+		}
+		if area.is_some() || record.state != "staging" || description.expires_at <= Utc::now() {
+			return Err(Error::Conflict("TRANSFER_UNAVAILABLE".into()));
+		}
+		let mut files = Vec::with_capacity(description.files.len());
+		for (index, file) in description.files.iter().enumerate() {
+			let mut parts = Vec::new();
+			let mut offset = 0;
+			while offset < file.size {
+				let part: FileEntry = serde_json::from_value(
+					record.data["chunks"][format!("{index}:{offset}")].clone(),
+				)
+				.map_err(|_| Error::Conflict("TRANSFER_INCOMPLETE".into()))?;
+				if part.size == 0 || part.size > file.size - offset {
+					return Err(Error::Conflict("TRANSFER_INCOMPLETE".into()));
+				}
+				offset += part.size;
+				parts.push(part);
+			}
+			files.push(parts);
+		}
+		Ok(Parts::Ready {
+			description: Box::new(description),
+			files,
+		})
+	})();
+	finish(scope, result).await
+}

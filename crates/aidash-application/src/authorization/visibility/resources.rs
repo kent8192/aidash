@@ -6,9 +6,7 @@ use crate::{
 		resources::{ResourceAccessScope, ResourceEventScope, ResourceVisibilityScope},
 	},
 };
-use aidash_domain::{
-	Artifact, Conversation, Event, HumanRequest, Message, NewTask, Task, policy::Resource,
-};
+use aidash_domain::{Conversation, Event, HumanRequest, Message, NewTask, Task, policy::Resource};
 use serde_json::json;
 use uuid::Uuid;
 pub async fn task_resource(
@@ -20,17 +18,6 @@ pub async fn task_resource(
 	a["created_by"] = json!(task.created_by);
 	a["task_id"] = json!(task.id);
 	Ok(scope.resource("task", &task.id.to_string(), a))
-}
-pub async fn artifact_resource(
-	scope: &mut dyn ResourceVisibilityScope,
-	artifact: &Artifact,
-) -> Result<Resource> {
-	let thread = scope.thread(artifact.thread_id).await?;
-	let mut a = thread.attributes;
-	a["created_by"] = json!(artifact.created_by);
-	a["task_id"] = json!(artifact.task_id);
-	a["kind"] = json!(artifact.kind);
-	Ok(scope.resource("artifact", &artifact.id.to_string(), a))
 }
 pub async fn message_resource(
 	scope: &mut dyn ResourceVisibilityScope,
@@ -83,33 +70,6 @@ pub async fn task_summary_visible(
 	let resource = scope.resource("task", &task_id.to_string(), a);
 	Ok(scope.decide(&resource, "task.read").await?
 		&& scope.output_visible(thread_id, "task", task_id).await?)
-}
-pub async fn artifact_visible(
-	scope: &mut dyn ResourceVisibilityScope,
-	artifact: &Artifact,
-) -> Result<bool> {
-	let resource = artifact_resource(scope, artifact).await?;
-	if !scope.decide(&resource, "artifact.read").await? {
-		return Ok(false);
-	}
-	let Some(task) = scope.artifact_task(artifact).await? else {
-		return Ok(false);
-	};
-	if !task_visible(scope, &task).await? {
-		// The Task's check may have stopped at a silent Node. The artifact's own
-		// provenance is still judged, so a refusal there is not counted (#770).
-		let held = scope.take_row_silence();
-		if held.is_some() {
-			let rest = scope
-				.output_visible(artifact.thread_id, "artifact", artifact.id)
-				.await?;
-			conclude_chain(scope, held, rest);
-		}
-		return Ok(false);
-	}
-	scope
-		.output_visible(artifact.thread_id, "artifact", artifact.id)
-		.await
 }
 pub async fn message_visible(
 	scope: &mut dyn ResourceVisibilityScope,
@@ -191,27 +151,6 @@ pub async fn related_tasks(
 	}
 	Ok(())
 }
-pub async fn artifact_creation_resource(
-	scope: &mut dyn ResourceAccessScope,
-	task: Uuid,
-	creator: &str,
-) -> Result<Resource> {
-	let task = task_read(scope, task).await?;
-	let mut resource = task_resource(scope, &task).await?;
-	resource.kind = "artifact".into();
-	resource.attributes["created_by"] = json!(creator);
-	Ok(resource)
-}
-pub async fn artifact_id_visible(
-	scope: &mut dyn ResourceEventScope,
-	id: Uuid,
-	thread: Option<Uuid>,
-) -> Result<bool> {
-	match scope.artifact(id, thread).await? {
-		Some(artifact) => artifact_visible(scope, &artifact).await,
-		None => Ok(false),
-	}
-}
 pub async fn event_visible(
 	scope: &mut dyn ResourceEventScope,
 	event: &Event,
@@ -227,35 +166,21 @@ pub async fn event_visible(
 		let Some(task) = scope.event_task(task_id, event.thread_id).await? else {
 			return Ok(Some(false));
 		};
-		let artifact = id(&event.data["artifact"]["id"]);
-		if !task_visible(scope, &task).await? {
-			// A silent Node stopped the Task's check; the artifact the event
-			// names is judged too, so a refusal there is not counted (#770).
-			let held = scope.take_row_silence();
-			if held.is_some()
-				&& let Some(artifact) = artifact
-			{
-				let rest = artifact_id_visible(scope, artifact, event.thread_id).await?;
-				conclude_chain(scope, held, rest);
+		let task_allowed = task_visible(scope, &task).await?;
+		let held = scope.take_row_silence();
+		let mut message_allowed = true;
+		if let Some(message) = id(&event.data["message_id"]) {
+			let rows = scope.messages_id(message, event.thread_id).await?;
+			message_allowed = if let Some(message) = rows.first() {
+				message_visible(scope, message).await?
 			} else {
-				conclude_chain(scope, held, true);
-			}
-			return Ok(Some(false));
+				false
+			};
 		}
-		if let Some(artifact) = artifact {
-			return Ok(Some(
-				artifact_id_visible(scope, artifact, event.thread_id).await?,
-			));
+		if !task_allowed {
+			conclude_chain(scope, held, message_allowed);
 		}
-		return Ok(Some(true));
-	}
-	if event.kind.starts_with("artifact.") {
-		let Some(artifact) = id(&event.data["id"]) else {
-			return Ok(Some(false));
-		};
-		return Ok(Some(
-			artifact_id_visible(scope, artifact, event.thread_id).await?,
-		));
+		return Ok(Some(task_allowed && message_allowed));
 	}
 	// No reply thread is opened since #1008; an event recorded before then is
 	// visible exactly when its root message is.

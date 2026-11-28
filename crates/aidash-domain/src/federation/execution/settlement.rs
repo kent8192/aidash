@@ -12,14 +12,13 @@ pub fn has_saved_continuation(raw: &RawRun) -> bool {
 
 /// This does not replace Home authorization. The remote owner still checks its
 /// original grant, current policy and revision before applying a callback.
-pub fn allows(
-	raw: &RawRun,
-	inputs: &[RunInput],
-	result_name: &str,
-	operation: &str,
-	data: &Value,
-) -> bool {
+pub fn allows(raw: &RawRun, inputs: &[RunInput], operation: &str, data: &Value) -> bool {
 	let decoded = crate::run_state::decode(raw.metadata.phase, raw.pending.clone()).ok();
+	let completion = raw.context.get("final_completion");
+	let completion_key = match raw.context["completion_attempt"].as_u64().unwrap_or(0) {
+		0 => format!("{}:complete", raw.metadata.id),
+		attempt => format!("{}:complete:{attempt}", raw.metadata.id),
+	};
 	let finalizing = decoded
 		.as_ref()
 		.and_then(|(state, recovery)| state.tool().ok().map(|tool| (tool, recovery)))
@@ -100,26 +99,33 @@ pub fn allows(
 		}
 		"run_message_complete" => {
 			original_run
-				&& finalizing.is_some_and(|(tool, recovery)| {
-					// The saved continuation already chose which Tasks it abandons.
-					// Without any, the command keeps exactly its earlier shape.
+				&& finalizing.is_some_and(|(tool, _)| {
 					let saved = &tool.abandoning;
 					let abandon_ids: Vec<_> = saved.iter().map(|task| task.id).collect();
 					let shape: &[&str] = if saved.is_empty() {
-						&["run_id", "through_seq", "key", "artifact"]
+						&[
+							"run_id",
+							"through_seq",
+							"key",
+							"completion",
+							"settlement_version",
+						]
 					} else {
-						&["run_id", "through_seq", "key", "artifact", "abandon"]
+						&[
+							"run_id",
+							"through_seq",
+							"key",
+							"completion",
+							"settlement_version",
+							"abandon",
+						]
 					};
 					keys_only(shape)
+						&& data["settlement_version"] == 2
 						&& (saved.is_empty() || data["abandon"] == json!(abandon_ids))
-						&& data["key"] == json!(format!("{}:complete", raw.metadata.id))
+						&& data["key"] == json!(completion_key)
 						&& data["through_seq"].as_i64() == Some(tool.included_input_seq)
-						&& data["artifact"]
-							== json!({
-								"kind":"text",
-								"name":result_name,
-								"content":crate::unassigned::completion_answer(&tool.response.text, &recovery.early_abandoned_tasks, saved)
-							})
+						&& completion.is_some_and(|saved| saved == &data["completion"])
 				})
 		}
 		// Home::transition_terminal/complete read only their original bound Task.
@@ -166,27 +172,14 @@ mod tests {
 		.unwrap();
 		let mut data = json!({"revision":4,"status":target,"run_id":run,"keys":[],"through_seq":0});
 		assert_eq!(
-			allows(
-				&raw,
-				&[],
-				"result",
-				"run_message_terminal_transition",
-				&data
-			),
+			allows(&raw, &[], "run_message_terminal_transition", &data),
 			allowed
 		);
 		data["run_id"] = json!(Uuid::from_u128(9));
+		assert!(!allows(&raw, &[], "run_message_terminal_transition", &data));
 		assert!(!allows(
 			&raw,
 			&[],
-			"result",
-			"run_message_terminal_transition",
-			&data
-		));
-		assert!(!allows(
-			&raw,
-			&[],
-			"result",
 			"message",
 			&json!({"content":"new work"})
 		));
@@ -212,7 +205,10 @@ mod tests {
 			"agent_id":"producer","agent_version":"1","phase":"TOOL_CALL","control":"CANCELLED",
 			"step":3,"revision":7,"observed_input_seq":0,"ledger_worker_ready":true,"error":null,
 			"lease_owner":null,"lease_until":null,"updated_at":"2030-01-01T00:00:00Z",
-			"context":crate::context::Context::default(),"pending":pending
+			"context":{"final_completion": crate::deliverable::Completion::new(
+				Uuid::from_u128(2), &format!("{run}:complete"),
+				crate::unassigned::completion_answer(text, &[], &state.tool().unwrap().abandoning), None,
+			)},"pending":pending
 		}))
 		.unwrap()
 	}
@@ -229,7 +225,7 @@ mod tests {
 	fn completion(text: &str, abandon: Option<Vec<Uuid>>) -> Value {
 		let mut data = json!({
 			"run_id":Uuid::from_u128(1),"through_seq":4,"key":format!("{}:complete", Uuid::from_u128(1)),
-			"artifact":{"kind":"text","name":"result","content":text}
+			"settlement_version":2,"completion":crate::deliverable::Completion::new(Uuid::from_u128(2), &format!("{}:complete", Uuid::from_u128(1)), text.to_owned(), None)
 		});
 		if let Some(abandon) = abandon {
 			data["abandon"] = json!(abandon);
@@ -245,17 +241,12 @@ mod tests {
 		recovery.early_abandoned_tasks = vec![task(5), task(6)];
 		raw.pending = crate::run_state::encode(&state, &recovery).unwrap();
 		let text = "Done.\n\nNobody was given these subtasks, so they were abandoned during this Run: \"Task 5\", \"Task 6\".";
-		assert!(allows(
-			&raw,
-			&[],
-			"result",
-			"run_message_complete",
-			&completion(text, Some(vec![Uuid::from_u128(6)]))
-		));
+		let prepared = completion(text, Some(vec![Uuid::from_u128(6)]));
+		raw.context["final_completion"] = prepared["completion"].clone();
+		assert!(allows(&raw, &[], "run_message_complete", &prepared));
 		assert!(!allows(
 			&raw,
 			&[],
-			"result",
 			"run_message_complete",
 			&completion("Done.", Some(vec![Uuid::from_u128(6)]))
 		));
@@ -264,7 +255,7 @@ mod tests {
 	#[test]
 	fn a_saved_completion_without_abandonment_keeps_its_exact_shape() {
 		let raw = finalizing_run("Done.", vec![]);
-		let complete = |data: &Value| allows(&raw, &[], "result", "run_message_complete", data);
+		let complete = |data: &Value| allows(&raw, &[], "run_message_complete", data);
 		assert!(complete(&completion("Done.", None)));
 		// An invented abandonment is refused when none was saved.
 		assert!(!complete(&completion(
@@ -278,7 +269,7 @@ mod tests {
 	fn a_saved_completion_with_abandonment_accepts_exactly_its_list_and_sentence() {
 		let saved = vec![task(5), task(6)];
 		let raw = finalizing_run("Done.", saved.clone());
-		let complete = |data: &Value| allows(&raw, &[], "result", "run_message_complete", data);
+		let complete = |data: &Value| allows(&raw, &[], "run_message_complete", data);
 		let ids = vec![Uuid::from_u128(5), Uuid::from_u128(6)];
 		let sentence = crate::unassigned::answer_with_abandoned("Done.", &saved);
 		assert!(sentence.contains("Task 5"));

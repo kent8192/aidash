@@ -8,6 +8,7 @@ fn task() -> Task {
 		title: String::new(),
 		description: String::new(),
 		status: TaskStatus::Open,
+		goal: None,
 		requirements: json!({}),
 		owner: None,
 		created_by: "parent".into(),

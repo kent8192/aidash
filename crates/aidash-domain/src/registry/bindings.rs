@@ -38,7 +38,7 @@ pub const DEFAULT_TOOLS: &[&str] = &[
 	"task_create",
 	"task_delegate",
 	"agent_discover",
-	"artifact_publish",
+	"deliverable_note",
 	"thread_message",
 	"attachment_copy",
 	"memory_mutate",
@@ -235,10 +235,6 @@ pub struct AgentBindings {
 	/// Omitted means `off` and is not serialized, like `projection_version`.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub prompt_cache: Option<crate::projection::PromptCache>,
-	/// Completion Policy every Run of this Agent version pins (#112). Omitted
-	/// means no verification and is not serialized, like `prompt_cache`.
-	#[serde(default, skip_serializing_if = "Option::is_none")]
-	pub completion: Option<crate::completion::CompletionPolicy>,
 	/// The Agent Plugin copies this Agent version takes in (ADR 0072). Omitted when empty, so
 	/// definitions without plugins keep their bytes and digests.
 	#[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -314,9 +310,6 @@ impl AgentBindings {
 			return Err(Error::Invalid(
 				"bound Skills require Skill support tools".into(),
 			));
-		}
-		if let Some(policy) = &self.completion {
-			policy.validate()?;
 		}
 		self.validate_agent_plugins()?;
 		Ok(())
@@ -640,23 +633,27 @@ impl QualifiedRef {
 		Self {
 			registry_deployment: node.into(),
 			id: format!("aidash.{operation}"),
-			version: if matches!(
+			version: if matches!(operation, "workspace_read" | "subnode_task") {
+				"1.2.0"
+			} else if matches!(
 				operation,
-				"workspace_read"
-					| "workspace_search"
+				"workspace_observe"
+					| "thread_read" | "thread_observe"
+					| "task_create" | "task_delegate"
+			) {
+				"1.1.0"
+			} else if matches!(
+				operation,
+				"workspace_search"
 					| "workspace_message"
 					| "memory_mutate"
-					| "subnode_task"
 					// Gained `draft` for free-form generation (#1012).
 					| "task_assign"
 					// Gained `on_trigger` and a 30-day wait (#1011).
 					| "workspace_wait"
 			) {
 				"1.1.0"
-			} else if matches!(
-				operation,
-				"workspace_observe" | "file_read" | "file_search" | "attachment_copy"
-			) {
+			} else if matches!(operation, "file_read" | "file_search" | "attachment_copy") {
 				"1.0.1"
 			} else {
 				"1.0.0"
@@ -1333,7 +1330,7 @@ impl BindingSnapshot {
 				names.iter().any(|name| {
 					let identity = QualifiedRef::builtin(&self.agent.registry_deployment, name);
 					(binding.identity == identity
-						|| (*name == "workspace_read"
+						|| (matches!(*name, "workspace_read" | "thread_read")
 							&& binding.identity.registry_deployment
 								== identity.registry_deployment
 							&& binding.identity.id == identity.id

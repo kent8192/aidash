@@ -238,6 +238,7 @@ async fn ancestor_dependencies_and_invalid_local_executor_are_rejected(
 	let input = NewTask {
 		title: "task".into(),
 		description: "work".into(),
+		goal: None,
 		requirements: json!({}),
 		dependencies: vec![],
 		parent_id: None,

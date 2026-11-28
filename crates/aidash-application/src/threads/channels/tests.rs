@@ -16,6 +16,7 @@ fn message(id: u128) -> Message {
 		thread_id: thread(),
 		sender: "fixture".into(),
 		content: "content".into(),
+		completion: None,
 		idempotency_key: None,
 		created_at: DateTime::from_timestamp(id as i64, 0).unwrap(),
 		run_id: None,

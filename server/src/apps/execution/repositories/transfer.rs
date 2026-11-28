@@ -57,6 +57,7 @@ pub(crate) struct HomeDelivery {
 	pub(crate) grant: Uuid,
 	pub(crate) description: Description,
 	pub(crate) mode: aidash_application::ports::capabilities::transfer::receiver::DeliveryMode,
+	pub(crate) completion: bool,
 }
 /// The Node a transfer arrives at.
 pub(crate) struct Receiver {
@@ -182,7 +183,17 @@ impl From<NativeDescription> for Description {
 #[async_trait]
 impl TransferRepository for Repository<'_> {
 	fn limits(&self) -> Limits {
-		limits(&self.federation.store)
+		let mut limits = limits(&self.federation.store);
+		if self
+			.delivery
+			.as_ref()
+			.is_some_and(|delivery| delivery.completion)
+		{
+			limits.share_files = aidash_domain::deliverable::MAX_COMPLETION_ATTACHMENTS;
+			limits.share_file_bytes = aidash_domain::deliverable::MAX_COMPLETION_ATTACHMENT_BYTES;
+			limits.share_bytes = aidash_domain::deliverable::MAX_COMPLETION_ATTACHMENT_BYTES;
+		}
+		limits
 	}
 	async fn snapshot(&self, id: Uuid) -> Result<Record> {
 		let result: NativeResult<NativeRecord> = async {

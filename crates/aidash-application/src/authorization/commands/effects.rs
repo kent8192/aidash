@@ -7,7 +7,7 @@ use crate::{
 	},
 };
 use aidash_domain::{
-	ArtifactInput, NewTask, TaskStatus,
+	NewTask, TaskStatus,
 	federation::Delegation,
 	identity::commands::{
 		self, Metadata,
@@ -422,36 +422,78 @@ pub async fn execute(
 				.await?
 				.value
 		}
-		"run_message_complete" | "artifact" => {
-			let resource = scope.artifact_creation_resource(task.id, &owner).await?;
-			scope.require(&resource, "artifact.create").await?;
-			let artifact: ArtifactInput = serde_json::from_value(data["artifact"].clone())?;
+		"child_goal" => {
+			let id: Uuid = serde_json::from_value(data["child"].clone())?;
+			let child = scope.task(id).await?;
+			if child.parent_id != Some(task.id)
+				|| child.thread_id != task.thread_id
+				|| child.created_by != owner
+				|| !scope.created_by_grant(input.grant_id, child.id).await?
+			{
+				return Err(Error::Forbidden);
+			}
+			let resource = scope.task_resource(&child).await?;
+			scope.require(&resource, "task.delegate").await?;
+			scope
+				.apply(
+					context(),
+					Effect::ChildGoal {
+						child: id,
+						goal: field(data, "goal")?,
+					},
+				)
+				.await?
+				.value
+		}
+		"goal_verdict" => {
+			scope.require(&task_resource, "task.complete").await?;
+			let verdict: aidash_domain::goal::VerdictRecord =
+				serde_json::from_value(data["verdict"].clone())?;
+			if verdict.run_id != input.admission_id
+				|| task.goal.as_deref() != Some(verdict.goal.as_str())
+			{
+				return Err(Error::Conflict(
+					"Verdict belongs to another Goal or execution".into(),
+				));
+			}
+			scope
+				.apply(context(), Effect::GoalVerdict { verdict: &verdict })
+				.await?
+				.value
+		}
+		"run_message_complete" => {
+			if data["settlement_version"] != 2 {
+				return Err(Error::Invalid(
+					"Unsupported completion settlement version".into(),
+				));
+			}
+			scope.require(&task_resource, "task.complete").await?;
+			let completion: aidash_domain::deliverable::Completion =
+				serde_json::from_value(data["completion"].clone())?;
+			let through: i64 = serde_json::from_value(data["through_seq"].clone())?;
+			if through < 0
+				|| completion.message_id
+					!= aidash_domain::deliverable::Completion::message_id(
+						task.id,
+						field(data, "key")?,
+					) {
+				return Err(Error::Invalid(
+					"Invalid completion settlement identity".into(),
+				));
+			}
 			let abandon = abandon_list(data)?;
-			let complete_through = if input.operation == "run_message_complete" {
-				scope.require(&task_resource, "task.complete").await?;
-				let seq: i64 = serde_json::from_value(data["through_seq"].clone())?;
-				if seq < 0 {
-					return Err(Error::Invalid("invalid input sequence".into()));
-				}
-				Some(seq)
-			} else {
-				if !abandon.is_empty() {
-					return Err(Error::Invalid("only a completion can abandon tasks".into()));
-				}
-				None
-			};
 			require_abandonment(scope, &task, &abandon).await?;
 			let result = scope
 				.apply(
 					context(),
-					Effect::Artifact {
-						artifact: &artifact,
-						complete_through,
+					Effect::Complete {
+						completion: &completion,
+						through,
 						abandon: &abandon,
 					},
 				)
 				.await?;
-			track(scope, &result, input.grant_id, task.thread_id, "artifact").await?;
+			track(scope, &result, input.grant_id, task.thread_id, "message").await?;
 			result.value
 		}
 		"run_abandon_unassigned" => {

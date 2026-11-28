@@ -70,12 +70,13 @@ pub enum RemoteExecutionControl {
 	Pause,
 	Resume,
 	Cancel,
+	ResumeGoal { message_id: Uuid },
 }
 impl RemoteExecutionControl {
 	pub fn action(&self) -> crate::RunControlAction {
 		match self {
 			Self::Pause => crate::RunControlAction::Pause,
-			Self::Resume => crate::RunControlAction::Resume,
+			Self::Resume | Self::ResumeGoal { .. } => crate::RunControlAction::Resume,
 			Self::Cancel => crate::RunControlAction::Cancel,
 		}
 	}

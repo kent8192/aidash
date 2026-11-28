@@ -663,18 +663,11 @@ fn the_unassigned_notice_survives_turns_that_delegate_some_of_the_tasks() {
 }
 
 #[test]
-fn a_completion_repair_survives_turns_that_repair_the_files() {
+fn goal_feedback_survives_turns_with_tools() {
 	// Arrange: the refused candidate opened no Model Turn; the model edits
 	// files before it answers again.
-	let repair = ContextEvent::CompletionRepairRequired {
-		checks: vec![crate::completion::RepairNote {
-			check: "tests".into(),
-			outcome: crate::completion::CheckOutcome::Failed,
-			exit_code: Some(101),
-			diagnostics: "test result: FAILED".into(),
-		}],
+	let repair = ContextEvent::GoalFeedback {
 		instruction: "Repair the files, then answer again.".into(),
-		through_seq: 3,
 	};
 	let repairing = context(vec![
 		assistant(1, "", &["a"]),
@@ -1350,7 +1343,6 @@ fn thread_with_own_events(own: uuid::Uuid, own_events: u128) -> crate::ThreadSna
 			created_at: at,
 		},
 		tasks: vec![],
-		artifacts: vec![],
 		events,
 		messages: vec![],
 		unconfirmed: vec![],

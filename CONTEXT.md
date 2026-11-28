@@ -131,7 +131,7 @@ The rule that repeating a check with the same outcome adds no new Authorization 
 _Avoid_: audit dedupe, audit sampling, deduplication
 
 **Read dependency**:
-Something a Run read, recorded with the Run: a Task, Artifact, Message, memory record or definition, or an Agent it found on another Node. A Run's outputs are shown only to a reader who may still read every Read dependency of that Run and of the Runs it read from, and one held by another Node is confirmed with that Node, except an Agent found on another Node of the same Tenant, which that Tenant's policy decides without asking. When that Node does not answer, the output stays hidden and the reader is told the Node could not be reached; that is not a refusal. The exception is the Run that produced the output: it always sees its own outputs, because its own Read Recheck is what checks its Read dependencies.
+Something a Run read, recorded with the Run: a Task, Message, memory record or definition, or an Agent it found on another Node. A Run's outputs are shown only to a reader who may still read every Read dependency of that Run and of the Runs it read from, and one held by another Node is confirmed with that Node, except an Agent found on another Node of the same Tenant, which that Tenant's policy decides without asking. When that Node does not answer, the output stays hidden and the reader is told the Node could not be reached; that is not a refusal. The exception is the Run that produced the output: it always sees its own outputs, because its own Read Recheck is what checks its Read dependencies.
 _Avoid_: provenance, taint, dependency (unqualified)
 
 **Unconfirmed item**:
@@ -330,7 +330,7 @@ An open Task that nobody is working on or can start: none of its Runs is under w
 _Avoid_: orphan Task, unstarted child, undelegated Task
 
 **Run**:
-One attempt by one agent version at one Task. Authority, budgets, cancellation, recovery and the Completion Gate all apply per Run. A Task can have several Runs, such as a follow-up after new input or a delegated attempt elsewhere. A Run is not tied to any container: the place its commands execute outlives it.
+One attempt by one agent version at one Task. Authority, budgets, cancellation and recovery all apply per Run. A Task can have several Runs, such as a follow-up after new input or a delegated attempt elsewhere. A Run is not tied to any container: the place its commands execute outlives it.
 _Avoid_: session, job, execution (unqualified), container
 
 **Sandboxed**:
@@ -537,10 +537,6 @@ _Avoid_: sandbox (unqualified), runner pod, container, workstation
 A process that an Agent's command leaves running in the Execution Pod after the command returns, whether started on purpose or left behind by a command that finished. One started on purpose has a time limit and keeps its Execution Pod running until it ends or the limit passes; one left behind has no limit and keeps nothing running. It belongs to the Run that started it, is listed with that Run, and its output can be read later. A person or an Agent can stop it, and it stops when that Run is cancelled or its authority to read what it read is revoked, but not when the Run completes.
 _Avoid_: daemon, detached job, orphan process
 
-**Check Pod**:
-A disposable, gVisor-isolated Pod in which Aidash runs one Check against a Working Area's registered content, with its Scratch Space readable but unchanged. Its file changes are discarded.
-_Avoid_: Execution Pod (the long-running Pod of a Scratch Space), verifier pod
-
 **External service**:
 A definition of one secure Web address with a Tenant Secret that Sandboxed code may reach through the Egress gateway, with the methods it allows; the secret is attached on the way. A Tenant defines its own and makes it available to a Scratch Space, whose users' Agents may then all use it; no Agent definition names one, and only code in an Execution Pod can reach one. It is usable there only through a Catalog Approval that covers the Scratch Space's Node and is not limited to certain users or Agents, and always in the newest version so approved. Withdrawing that approval, or taking the service off the Scratch Space, also stops requests already under way. Approving one admits anything the code sends to it.
 _Avoid_: egress allowlist, allowed domain, proxy target, Agent's External service binding
@@ -688,15 +684,15 @@ One provider call, owned by exactly one Stint (for a step of its Run) or one Mod
 _Avoid_: attempt (unqualified), request, claim
 
 **Model Call**:
-One model request made for a purpose other than a step of a Run: a compaction summary, a memory role, a Workbench test or an MCP sampling. It is sent in the Native form and is to these purposes what a Stint is to a Run's steps: the owner of their Inference Attempts. One made during a Run belongs to the Stint awake at the time and counts against that Run's Budgets; one made outside a Run belongs to its Tenant and Node. It records its purpose, owner, model version, a digest of what was sent (never the content), its outcome, usage and cost, and when it started and ended. A Compaction Attempt keeps its own record and names the Model Call it used; an Approval Judge request is a Decision Attempt.
+One model request made for a purpose other than a step of a Run: a compaction summary, a Goal judgment, a memory role, a Workbench test or MCP sampling. It is sent in the Native form and is to these purposes what a Stint is to a Run's steps: the owner of their Inference Attempts. One made during a Run belongs to the Stint awake at the time and counts against that Run's Budgets; one made outside a Run belongs to its Tenant and Node. It records its purpose, owner, model version, a digest of what was sent (never the content), its outcome, usage and cost, and when it started and ended. A Compaction Attempt keeps its own record and names the Model Call it used; an Approval Judge request is a Decision Attempt.
 _Avoid_: Call (unqualified; a Call is a tool call), auxiliary request, side call, Inference Attempt
 
 **Accepted Response**:
-The single complete model response of an Inference Attempt that passed the same validation as a non-streamed response and ended with an accepted finish reason. Only an Accepted Response enters ToolCall state, accepted context or the completion gate.
+The single complete model response of an Inference Attempt that passed the same validation as a non-streamed response and ended with an accepted finish reason. Only an Accepted Response enters ToolCall state or accepted context. A final Accepted Response without tool calls can trigger Goal judgment.
 _Avoid_: final delta, completed stream
 
 **Inference Progress**:
-Bounded, sanitized, tentative display data from one Inference Attempt: text deltas and tool-call identity, name and argument size. It never carries partial tool arguments or provider reasoning, is never executed, never enters context and never becomes an Artifact.
+Bounded, sanitized, tentative display data from one Inference Attempt: text deltas and tool-call identity, name and argument size. It never carries partial tool arguments or provider reasoning, is never executed, never enters context and never becomes a Completion Message.
 _Avoid_: partial response, delta journal, streaming output
 
 **Progress Outcome**:
@@ -752,7 +748,7 @@ The pipeline step that folds older Context Journal events into the Execution Sum
 _Avoid_: Summarization fallback, auto-summary
 
 **Execution Summary**:
-The bounded, structured summary in a Context Projection. It records goal, constraints, decisions, unresolved work, artifacts and verification references, the exact journal range it covers and that range's source dependencies.
+The bounded, structured summary in a Context Projection. It records intent, constraints, decisions, unresolved work and references, the exact journal range it covers and that range's source dependencies.
 _Avoid_: Summary (unqualified), run message summary
 
 **Offloaded Result**:
@@ -929,42 +925,6 @@ _Avoid_: workspace (a different thing), sandbox, area (unqualified)
 A named, disposable place where Agents actually work: they install tools, download data and keep build output there across commands, Runs and conversations. Every Workspace uses one Scratch Space, chosen when it is created or made just for it, and never changes it; everyone allowed to use the space shares its content. It has its own settings, such as its capacity, how long it may go unused and which hosts it may reach. Nothing in it is kept as a File version. After going unused for its set period its content is wiped the next time it is used, and someone can clear the content at any time; the space itself disappears only when someone deletes it. Only what is registered into a Working Area outlives its content.
 _Avoid_: shared workspace (a Workspace is a different thing), scratch (unqualified), temp folder, sandbox
 
-**Completion Policy**:
-The versioned rule in an Agent definition, fixed with a Run's Binding snapshot, that names the Checks a Completion Candidate must pass and the bounds on verifying and repairing it. An Agent definition that names none requires no verification.
-_Avoid_: completion settings, acceptance criteria, done policy
-
-**Check**:
-One entry of a Completion Policy: a bound capability that Aidash itself invokes, with arguments the policy fixes, to test a Completion Candidate. Its file changes are discarded, so it never changes the Working Area, and the model can neither choose its arguments nor stand in for its outcome.
-_Avoid_: verifier (also an OAuth term), test, validation
-
-**Completion Candidate**:
-An Accepted Response without tool calls, offered to complete its Run, together with the exact content of the files mounted in the Run's Working Area at that moment. It is identified by its Run, that content and the Completion Policy, never by its text.
-_Avoid_: final answer, draft, result
-
-**Verification Evidence**:
-The record of one Check's actual invocation against exact Working Area content, with its outcome and bounded diagnostics. It counts only for the same Run, Check, capability version and content; a model's statement that something passed is never Verification Evidence.
-_Avoid_: test result, proof, verification claim
-
-**Completion Gate**:
-The deterministic decision, taken before a Run's Task is completed, that lets a Completion Candidate complete only when current Verification Evidence supports it, its Completion Policy requires none, or a Completion Exception is recorded. A probabilistic judgment may send a candidate back or escalate it, but never lets through one that the deterministic decision refused.
-_Avoid_: verify-on-stop, acceptance check, done check
-
-**Completion Basis**:
-How a Task came to be completed: verified, not required, or excepted. Only verified means that current Verification Evidence supported the Completion Candidate.
-_Avoid_: verification outcome (the result of one Check), completion status, verification status
-
-**Completion Exception**:
-A permitted person's recorded decision, with a reason, to complete one exact Completion Candidate that its Checks did not support. Only a Completion Policy that allows it admits one; it never restores revoked authority and leaves failed Verification Evidence failed.
-_Avoid_: human exception, override, waiver, force-complete
-
-**Repair Allowance**:
-How many times a Run may send a refused Completion Candidate back to its model for repair before it pauses for a person. Each accepted human input renews it; the Completion Policy's time and cost bounds still cover the whole Run.
-_Avoid_: retry count, attempts (unqualified)
-
-**Completion Review**:
-The request for a person that a Run raises when its Completion Gate can neither let its Completion Candidate through nor send it back for repair. A person answers it by asking for the Checks to run again or, where the Completion Policy allows, with a Completion Exception; new input or cancelling the Run also ends it.
-_Avoid_: completion approval, verification pause, escalation (unqualified)
-
 ### Collaboration
 
 **Thread**:
@@ -992,8 +952,8 @@ A Tenant Administrator's confirmed change to the Tenant Embedding Model after se
 _Avoid_: reindex (same model), migration (schema)
 
 **Deliverable**:
-The File versions one completed Task presents as its result, shown as complete only when the Task passed its Completion Gate and always with its Completion Basis; a Task completed without required verification shows its Deliverable as unchecked.
-_Avoid_: artifact (an existing record with no versions), output, result (unqualified)
+The Drive versions, Completion Message attachments and Outside Versions that a Task presents as its result.
+_Avoid_: artifact, output, result (unqualified)
 
 **Correction Request**:
 A person's request in a Thread to change one Deliverable, naming the exact File versions it concerns. It starts a new Task that records what it corrects; the corrected File versions stay as they were, and nothing the earlier Task did outside Aidash is repeated or approved again without a fresh approval.
@@ -1076,16 +1036,16 @@ The order in which a model resolves conflicting directions: the Harness Contract
 _Avoid_: priority, override order, trust order
 
 **Goal**:
-The completion condition of one Task, written by the person who requested it, by the Duty that started it or by the Agent that split it off. Each time the Task's Agent stops with an answer, a model other than the one doing the work judges it as met, not yet met or impossible; a Task without a Goal completes when its Agent says it is done.
-_Avoid_: Completion Condition, Duty Goal, Completion Policy (removed), acceptance criteria, Root Task (a Task, not its condition)
+The completion condition of one Task, supplied by its requester, its Duty's procedure or the Agent that created it. When the Agent stops with an answer, the Goal judge returns met, not yet met or impossible. A Task without a Goal completes when its Agent says it is done.
+_Avoid_: Completion Condition, Duty Goal, Completion Policy, acceptance criteria
 
 **Scratch Space** (supersedes the earlier entry, #1019):
 A disposable place where Agents actually work: they install tools, download data and keep build output there across commands and Tasks. Every Node has one that its Threads, Duties and Subnodes share, and anyone who may give work to the Node can see it; a separate named one can be made in the Node for work that must be kept apart. Nothing in it is kept as a File version and nothing wipes it on a timer: its content goes only when someone clears it or its Node goes. What should outlive it is published to a Drive.
 _Avoid_: shared workspace, scratch (unqualified), temp folder, sandbox, desk (an analogy only)
 
 **Completion Message**:
-The Thread message a Task posts when it ends because its Goal was judged met or impossible, or, without a Goal, because its Agent said it was done. It carries the Agent's final answer, the verdict and the Task's Deliverable, and a Correction Request points at it.
-_Avoid_: completion report, Report (a person's periodic Report), artifact, result message
+The Thread message that records a Task's final answer, its verdict when it had a Goal, and its Deliverable. The Task posts it after a met or impossible verdict, or when its Agent finishes a Task that has no Goal.
+_Avoid_: completion report, Report, artifact, result message
 
 **Outside Version**:
 One exact version of something kept outside Aidash, such as a commit, a document revision or a sent message, that a Deliverable names. Aidash records it without asking the outside system whether it exists.

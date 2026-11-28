@@ -142,6 +142,7 @@ pub(crate) mod events;
 pub(crate) mod journal_query;
 pub mod tools;
 
+pub(crate) mod deliverables;
 pub mod store;
 
 pub(crate) mod capabilities;

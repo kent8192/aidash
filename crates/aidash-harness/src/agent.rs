@@ -1522,7 +1522,6 @@ impl<'a> Executor<'a> {
 					TaskScript::Gone => return Err(duty_script::gone()),
 					TaskScript::Model => {}
 				}
-				self.record_start_content(run, &agent).await?;
 				if !run.context.history.iter().any(|entry| {
 					matches!(entry.event, context::ContextEvent::MemoryRecall { .. })
 				}) {
@@ -2306,6 +2305,7 @@ impl<'a> Executor<'a> {
 					.map_err(|_| unreducible(guard))?;
 				let source_delivery = fit_source_delivery(&context,&pinned,&request,&source_instruction_slots,guard.is_some_and(|authority|authority.is_remote()) || run.context.binding_snapshot.as_ref().is_some_and(|snapshot|snapshot.remote))?;
                 let source_request_digest=aidash_domain::registry::rules::digest(&serde_json::to_value(&request)?);
+                let goal_transcript = Box::new(request.context.clone());
                 let provider_tools_enabled = !request.provider_tools.is_empty();
 				let request_estimate = request.request_estimate();
 				let request_tokens = request_estimate.tokens as usize;
@@ -2607,6 +2607,11 @@ impl<'a> Executor<'a> {
 				}
 				// Keys of an older response can never match the new one's.
 				run.recovery.declined_calls.clear();
+				context.goal_transcript = result.tool_calls.is_empty().then_some(goal_transcript);
+				if !result.tool_calls.is_empty() || !result.provider_activity.is_empty() {
+					context.goal_judging.consecutive_not_yet = 0;
+				}
+				run.context = context;
 				run.state = RunState::ToolCall(Box::new(ToolCallState {
 wait_result: None,
 connection: None,
@@ -2709,6 +2714,24 @@ connection: None,
 					run.state = RunState::Thinking(next_pending);
 					store.save_run(run, token, "execution.message_received").await?;
 					return Ok(());
+				}
+				if run.state.tool()?.finalizing
+					&& let Some(completion) = run.context.final_completion.clone()
+				{
+					let abandon = run.state.tool()?.abandoning.iter().map(|task| task.id).collect::<Vec<_>>();
+					match home.complete(&run.completion_key(), &completion, &abandon).await {
+						Ok(message) => {
+							let impossible = message.verdict.is_some_and(|judgment| judgment.verdict == aidash_domain::goal::Verdict::Impossible);
+							run.state = if impossible { RunState::Failed(TerminalState {}) } else { RunState::Completed(TerminalState {}) };
+							run.context.goal_transcript = None;
+							return store.save_run(run, token, if impossible {"execution.failed"} else { "execution.completed" }).await;
+						}
+						Err(Error::Conflict(_)) | Err(Error::Domain(aidash_domain::Error::Conflict(_))) => {
+							run.state.tool_mut()?.finalizing = false;
+							run.context.final_completion = None;
+						}
+						Err(error) => return Err(error),
+					}
 				}
 				let mut result = run.state.tool()?.response.clone();
 				if run.state.tool()?.deferred_human_media {
@@ -2956,28 +2979,21 @@ connection: None,
 								return Ok(());
 							}
 						};
-						// The Completion Gate: current Verification Evidence for the
-						// exact mounted content, or no applicable Check (#112).
-						if let completion::Gate::Saved = self
-							.completion_gate(run, token, &agent, home.as_ref(), guard)
-							.await?
-						{
+						let judged_goal = home.task().await?.goal;
+						let Some(verdict) = Box::pin(self.judge_goal(run, token, &agent, home.as_ref(), visibility, &result.text)).await? else {
 							return Ok(());
-						}
+						};
 						// What people and coordinating Agents read says what was
 						// abandoned. The Model Turn keeps the model's own words.
+						let answer = aidash_domain::deliverable::Answer::parse(&result.text)?;
 						let published = unassigned::completion_answer(
-							&result.text, &run.recovery.early_abandoned_tasks, &abandoning,
+							&answer.text, &run.recovery.early_abandoned_tasks, &abandoning,
 						);
-						let artifact = ArtifactInput {
-							kind: "text".into(),
-							name: result_artifact_name(&home.task().await?.title),
-							content: json!(published),
-						};
+						let key = run.completion_key();
+						let mut completion = aidash_domain::deliverable::Completion::new(run.task_id, &key, published, verdict);
+						self.environment.collect_deliverable(run, &mut completion, &answer.attachments).await?;
+						let impossible = completion.verdict.as_ref().is_some_and(|verdict| verdict.verdict == aidash_domain::goal::Verdict::Impossible);
 						if let Some(guard) = guard {
-							guard
-								.action("artifact.create", "artifact", run.task_id)
-								.await?;
 							guard.action("task.complete", "task", run.task_id).await?;
 							// A Run on another Node cannot name a Task but its own;
 							// its Home checks `task.abandon` for the chain instead.
@@ -2990,8 +3006,8 @@ connection: None,
 						// The completion's outcome is saved with it: a cancel after this
 						// point settles exactly these abandonments.
 						run.state.tool_mut()?.abandoning = abandoning.clone();
+						run.context.final_completion = Some(Box::new(completion.clone()));
 						if !store.begin_final_completion(run, token).await? {
-							run.context.completion.basis = None;
 							run.state = RunState::Thinking(ThinkingState::default());
 
 							store.save_run(run, token, "execution.message_received").await?;
@@ -3003,15 +3019,16 @@ connection: None,
 							&result.text,
 							&result.tool_calls,
 						)?;
-						self.publish_model_text(home.as_ref(), guard, run, token, &published)
-							.await?;
 						let abandon_ids: Vec<Uuid> = abandoning.iter().map(|task| task.id).collect();
 						if let Err(error) = home
-							.complete(&format!("{}:complete", run.id), &artifact, &abandon_ids)
+							.complete(&key, &completion, &abandon_ids)
 							.await
 						{
 							if matches!(error, Error::Conflict(_) | Error::Domain(aidash_domain::Error::Conflict(_))) {
-								// A child created or handed over since the check: the
+								if home.task().await?.goal != judged_goal {
+                                    return self.restart_after_goal_edit(run, token).await;
+                                }
+                                // A child created or handed over since the check: the
 								// same rules apply to what is there now.
 								let children = home.child_summary(run.task_id).await?;
 								let decision = unassigned::decide_children(
@@ -3023,12 +3040,11 @@ connection: None,
 									unassigned::ChildrenDecision::Finish
 										| unassigned::ChildrenDecision::FinishAbandoning(_)
 								) {
-									run.context.completion.basis = None;
 									// The answer was published above and is in the Model Turn.
 									let answer = Answer {
 										text: &result.text,
 										calls: &result.tool_calls,
-										delivered: true,
+										delivered: false,
 									};
 									self.hold_for_children(
 										home.as_ref(),
@@ -3045,9 +3061,15 @@ connection: None,
 							}
 							return Err(error);
 						}
-						run.state = RunState::Completed(TerminalState {});
-
-						store.save_run(run, token, "execution.completed").await?;
+						let event = if impossible {
+							run.state = RunState::Failed(TerminalState {});
+							"execution.failed"
+						} else {
+							run.state = RunState::Completed(TerminalState {});
+							"execution.completed"
+						};
+						run.context.goal_transcript = None;
+						store.save_run(run, token, event).await?;
 					} else {
 						run.step += 1;
 						let mut next = run.state.tool()?.deferred_reads.clone();
@@ -3656,16 +3678,7 @@ connection: None,
 			RunState::Waiting(waiting) => {
 				let mut waiting = *waiting;
 				let outage_resume = matches!(waiting, WaitingState::Outage { .. });
-				// A newer input ends a Completion Review without an answer: the
-				// candidate under review is stale.
-				let superseded = match waiting.request_id() {
-					Some(id) if completion::review_superseded(store, run, id).await? => {
-						completion::supersede_review(run, home.as_ref(), id).await?;
-						true
-					}
-					_ => false,
-				};
-				if let Some(id) = waiting.request_id().filter(|_| !superseded) {
+				if let Some(id) = waiting.request_id() {
 					if let Some(guard) = guard {
 						guard.human_read(id).await?;
 					}
@@ -3740,7 +3753,6 @@ connection: None,
 						_ => {}
 					}
                     let connection_answered = self.connection_answer(run, &mut waiting, id, &response, guard, visibility).await?;
-					completion::answer_review(run, id, Some(&response));
 					// MCP form data is disclosed to its server, not to the model.
 					if !connection_answered && h.kind != "MCP_ELICITATION"
 						&& !matches!(waiting, WaitingState::Reconciliation { .. })
@@ -4679,7 +4691,7 @@ fn settled_usage(result: &Result<provider::ModelResponse>) -> Option<&provider::
 }
 /// Whether the Summary Stage may absorb `event`. A message read is tracked
 /// and rechecked by its target. Other thread records, and observation
-/// pages that preview tasks, artifacts, events and messages together, are
+/// pages that preview tasks, events and messages together, are
 /// visible record by record, which a summary cannot recheck.
 fn summarizable(event: &ContextEvent, tools: &Tools) -> bool {
 	let ContextEvent::Tool { call, .. } = event else {

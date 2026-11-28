@@ -133,11 +133,6 @@ async fn the_next_final_answer_abandons_what_the_run_created_and_says_so(mut fix
 	);
 	let expected = unassigned::answer_with_abandoned("All done, twice.", &[task(1, true, false)]);
 	assert!(expected.contains("Task 1"));
-	// The artifact and the published message carry the sentence.
-	assert_eq!(
-		*fixture.backend.0.artifacts.lock().unwrap(),
-		[json!(expected)]
-	);
 	assert_eq!(*fixture.backend.0.published.lock().unwrap(), [expected]);
 }
 
@@ -341,13 +336,9 @@ async fn early_abandonment_is_named_in_the_final_answer(mut fixture: Fixture) {
 	set_children(&fixture, children(0, false, vec![]));
 	answer(&mut fixture.run, "Finished.");
 	advance_sources(&mut fixture).await.unwrap();
-	let artifact = fixture.backend.0.artifacts.lock().unwrap();
-	let text = artifact.last().unwrap().as_str().unwrap();
+	let published = fixture.backend.0.published.lock().unwrap();
+	let text = published.last().unwrap();
 	assert!(text.contains("Task 1"), "{text}");
-	assert_eq!(
-		fixture.backend.0.published.lock().unwrap().last().unwrap(),
-		text
-	);
 	assert_eq!(
 		*fixture.backend.0.completed_abandoning.lock().unwrap(),
 		[Vec::<Uuid>::new()]
@@ -386,8 +377,8 @@ async fn a_task_handed_over_before_abandonment_is_not_named_as_abandoned(mut fix
 	set_children(&fixture, children(0, false, vec![]));
 	answer(&mut fixture.run, "Finished.");
 	advance_sources(&mut fixture).await.unwrap();
-	let artifacts = fixture.backend.0.artifacts.lock().unwrap();
-	let text = artifacts.last().unwrap().as_str().unwrap();
+	let published = fixture.backend.0.published.lock().unwrap();
+	let text = published.last().unwrap();
 	assert!(text.contains("Task 1"), "{text}");
 	assert!(!text.contains("Task 2"), "{text}");
 }

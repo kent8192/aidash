@@ -7,7 +7,6 @@ export type {
   Thread,
   RunSummary as Run,
   HumanRequest,
-  Artifact,
   Conversation,
   Invocation,
   Discovery,

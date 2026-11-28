@@ -89,6 +89,7 @@ fn task() -> Task {
 		title: "old intent".into(),
 		description: "invalid producer context".into(),
 		status: TaskStatus::Running,
+		goal: None,
 		requirements: json!({}),
 		owner: Some("agent".into()),
 		created_by: "requester".into(),

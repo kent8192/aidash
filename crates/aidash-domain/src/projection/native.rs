@@ -713,7 +713,7 @@ fn render_history(
 					&& matches!(
 						marker,
 						ContextEvent::CitationCorrectionRequired { .. }
-							| ContextEvent::CompletionRepairRequired { .. }
+							| ContextEvent::GoalFeedback { .. }
 							| ContextEvent::UnassignedTasksTold { .. }
 					)
 			});
@@ -875,7 +875,7 @@ fn single<'a>(
 		| ContextEvent::RunMessageSummaryRequired { .. }
 		| ContextEvent::CitationCorrectionRequired { .. }
 		| ContextEvent::UnassignedTasksTold { .. }
-		| ContextEvent::CompletionRepairRequired { .. } => markers.push(&entry.event),
+		| ContextEvent::GoalFeedback { .. } => markers.push(&entry.event),
 		ContextEvent::StepState { .. } => {
 			history.extend(step_message(&entry.event));
 		}

@@ -19,6 +19,8 @@ pub(crate) struct ThreadInput {
 		deserialize_with = "crate::apps::workspaces::services::validation::optional_trimmed_text"
 	)]
 	pub(crate) request: Option<String>,
+	#[schemars(length(max = 4000))]
+	pub(crate) goal: Option<String>,
 	#[serde(default)]
 	pub(crate) target: Option<EntityRef>,
 	#[serde(default)]

@@ -51,14 +51,7 @@ async fn shared_bearer_is_refused_on_tenant_content_but_not_on_administered_rout
 		.unwrap();
 	assert_eq!(state.status_code(), 200, "{}", state.text());
 	let state = state.json_value().unwrap();
-	for collection in [
-		"threads",
-		"tasks",
-		"runs",
-		"events",
-		"artifacts",
-		"conversations",
-	] {
+	for collection in ["threads", "tasks", "runs", "events", "conversations"] {
 		assert_eq!(state[collection], serde_json::json!([]), "{collection}");
 	}
 }

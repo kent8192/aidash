@@ -647,6 +647,38 @@ function ConversationFeed({
                       <p className="whitespace-pre-wrap break-words text-[13px] leading-relaxed text-foreground">
                         <MessageText text={message.content} />
                       </p>
+                      {message.completion && (
+                        <div className="mt-2 grid gap-1 rounded-md border border-border px-3 py-2 text-xs">
+                          <strong>
+                            {locale === "ja-JP"
+                              ? "完了メッセージ"
+                              : "Completion Message"}
+                          </strong>
+                          {message.completion.verdict && (
+                            <p>
+                              {message.completion.verdict.verdict} ·{" "}
+                              {message.completion.verdict.reason}
+                            </p>
+                          )}
+                          {message.completion.deliverable.drive_versions.map(
+                            (version) => (
+                              <p key={`${version.drive_id}:${version.version}`}>
+                                Drive v{version.version} ·{" "}
+                                {version.paths.join(", ")}
+                              </p>
+                            ),
+                          )}
+                          {message.completion.deliverable.outside_versions.map(
+                            (version, index) => (
+                              <p key={index}>
+                                {version.system} · {version.item} ·{" "}
+                                {version.version}
+                                {version.url ? ` · ${version.url}` : ""}
+                              </p>
+                            ),
+                          )}
+                        </div>
+                      )}
                       {entry.citations && entry.citations.length > 0 && (
                         <MessageCitations citations={entry.citations} />
                       )}

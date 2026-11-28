@@ -521,7 +521,7 @@ async fn an_image_query_is_reauthorized_after_vector_search() {
 #[tokio::test]
 async fn native_memory_does_not_implicitly_enable_ordinary_thread_search(#[case] thread: bool) {
 	let (calls, mut scope, vector) = fixture();
-	scope.rows[0].source = json!({"kind":"artifact","id":Uuid::from_u128(90)});
+	scope.rows[0].source = json!({"kind":"message","id":Uuid::from_u128(90)});
 	let mut agent = controls(true, thread);
 	agent.memory = Some(aidash_domain::registry::EntityRef {
 		id: "native-memory".into(),
@@ -610,7 +610,6 @@ async fn malformed_persisted_json_is_not_hidden_by_filters(#[case] configuration
 }
 #[rstest]
 #[case::memory(json!({"kind":"memory","text":"private"}), false, true)]
-#[case::artifact(json!({"kind":"artifact","id":Uuid::from_u128(6)}), true, false)]
 #[case::message(json!({"kind":"message","id":Uuid::from_u128(7)}), true, false)]
 #[tokio::test]
 async fn agent_controls_filter_before_reading_source_content(

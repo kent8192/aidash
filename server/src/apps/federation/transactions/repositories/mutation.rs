@@ -10,8 +10,7 @@ use crate::apps::{
 };
 use aidash_application::{Result, ports::transactions::mutation::MutationScope};
 use aidash_domain::{
-	Artifact, ArtifactInput, Task, Thread as ThreadContract, provider::progress::ProgressOutcome,
-	run_state::RawRun,
+	Message, Task, Thread as ThreadContract, provider::progress::ProgressOutcome, run_state::RawRun,
 };
 use async_trait::async_trait;
 use reinhardt::db::backends::TransactionExecutor;
@@ -61,10 +60,10 @@ impl MutationScope for Scope<'_> {
 	async fn complete_task(
 		&mut self,
 		task: &Task,
-		artifact: &ArtifactInput,
+		text: &str,
 		key: &str,
-	) -> Result<(Task, Artifact)> {
-		TaskRecord::complete(self.0, task, artifact, key)
+	) -> Result<(Task, Message)> {
+		TaskRecord::complete(self.0, task, text, key)
 			.await
 			.map_err(Into::into)
 	}

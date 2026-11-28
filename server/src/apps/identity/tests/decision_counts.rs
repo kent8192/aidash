@@ -489,7 +489,6 @@ async fn state_node_scope_empty_cursors_and_administrator_collections(
 		"threads",
 		"tasks",
 		"runs",
-		"artifacts",
 		"human_requests",
 		"conversations",
 	] {
@@ -506,7 +505,6 @@ async fn state_node_scope_empty_cursors_and_administrator_collections(
 		"threads",
 		"tasks",
 		"runs",
-		"artifacts",
 		"human_requests",
 		"conversations",
 	] {
