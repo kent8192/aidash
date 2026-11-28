@@ -284,33 +284,6 @@ pub struct AreaPage {
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema, reinhardt::Validate)]
 #[serde(deny_unknown_fields)]
-pub struct Materialize {
-	pub idempotency_key: Uuid,
-	#[validate(range(min = 0))]
-	/// The working area revision: take it from the previous result's `revision`; a new area starts at 1.
-	pub expected_revision: i64,
-	pub source: MaterializeSource,
-	#[validate(length(min = 1, max = 4096))]
-	pub path: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-pub enum MaterializeSource {
-	File {
-		file_id: Uuid,
-		expected_digest: String,
-	},
-	Message {
-		message_id: Uuid,
-	},
-	ReferenceText {
-		index: usize,
-	},
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema, reinhardt::Validate)]
-#[serde(deny_unknown_fields)]
 pub struct Enqueue {
 	pub idempotency_key: Uuid,
 	#[validate(length(min = 1, max = 128))]

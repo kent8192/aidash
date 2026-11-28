@@ -84,8 +84,6 @@ pub mod skills;
 
 pub mod thread_lifecycle;
 
-pub mod sharing;
-
 pub mod transfer;
 
 pub mod projection;

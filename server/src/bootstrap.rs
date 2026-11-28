@@ -2190,12 +2190,7 @@ pub(crate) fn file_scope<'a>(
 	access: &'a mut crate::authorization::access::Access,
 	run: Option<&'a crate::domain::Run>,
 ) -> crate::apps::execution::repositories::files::Scope<'a> {
-	crate::apps::execution::repositories::files::Scope {
-		store,
-		access,
-		run,
-		pending: None,
-	}
+	crate::apps::execution::repositories::files::Scope { store, access, run }
 }
 
 pub(crate) fn capability_configuration_scope<'a>(

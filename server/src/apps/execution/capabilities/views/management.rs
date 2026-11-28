@@ -143,23 +143,6 @@ pub async fn shell_cancel(
 	crate::http::json(api::shell_cancel(service.runtime.clone(), actor, id, input).await)
 }
 
-#[post(
-	"/api/executions/{id}/files/materialize",
-	name = "!core_file_materialize",
-	auth = "protected"
-)]
-pub async fn materialize(
-	#[inject] service: Depends<CapabilitiesManagement>,
-	#[inject] actor: Actor,
-	Path(id): Path<Uuid>,
-	Json(input): Json<Materialize>,
-) -> ViewResult<Response> {
-	if let Err(error) = crate::http::validate(&input) {
-		return Ok(error.http_response());
-	}
-	crate::http::json(api::materialize(service.runtime.clone(), actor, id, input).await)
-}
-
 #[get(
 	"/api/working-areas/{id}/session",
 	name = "!core_session_status",
@@ -252,23 +235,6 @@ pub async fn skill_read(
 		return Ok(error.http_response());
 	}
 	crate::http::json(api::skill_read(service.runtime.clone(), actor, id, input).await)
-}
-
-#[post(
-	"/api/executions/{id}/files/share",
-	name = "!core_file_share",
-	auth = "protected"
-)]
-pub async fn file_share(
-	#[inject] service: Depends<CapabilitiesManagement>,
-	#[inject] actor: Actor,
-	Path(id): Path<Uuid>,
-	Json(input): Json<crate::capabilities::sharing::Share>,
-) -> ViewResult<Response> {
-	if let Err(error) = crate::http::validate(&input) {
-		return Ok(error.http_response());
-	}
-	crate::http::json(api::file_share(service.runtime.clone(), actor, id, input).await)
 }
 
 #[post(

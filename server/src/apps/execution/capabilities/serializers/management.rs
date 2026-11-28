@@ -12,13 +12,6 @@ pub struct ConfiguredAgent {
 }
 
 #[derive(Serialize, Deserialize, schemars::JsonSchema, reinhardt::Validate)]
-pub struct MaterializedFile {
-	pub area_id: Uuid,
-	pub revision: i64,
-	pub file: FileEntry,
-}
-
-#[derive(Serialize, Deserialize, schemars::JsonSchema, reinhardt::Validate)]
 pub struct ApprovalCard {
 	pub id: Uuid,
 	/// `outbound` (an outbound read), `tool_call` (a call of a Tenant's tool

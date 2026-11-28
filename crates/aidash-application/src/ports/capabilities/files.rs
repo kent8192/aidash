@@ -2,10 +2,7 @@
 use crate::Result;
 use aidash_domain::{
 	RunMetadata,
-	capabilities::{
-		operations::{FileScope, MountedFile},
-		sessions::Area,
-	},
+	capabilities::{operations::MountedFile, sessions::Area},
 	policy::Resource,
 	registry::{EntityRef, Entry},
 };
@@ -14,7 +11,6 @@ use serde_json::Value;
 use std::collections::BTreeSet;
 use uuid::Uuid;
 pub struct Limits {
-	pub working_bytes: u64,
 	pub patch_bytes: usize,
 	pub read_bytes: usize,
 	pub search_matches: usize,
@@ -23,7 +19,6 @@ pub struct Limits {
 }
 pub enum Action<'a> {
 	Outbound,
-	Share,
 	Skill(&'a str),
 	/// A Completion Gate Check: shell admission, no file publication (#112).
 	Verify,
@@ -53,27 +48,13 @@ pub trait FileScopePort: Send {
 		))
 	}
 	fn limits(&self) -> Result<Limits>;
-	/// Bytes the Area keeps beyond its manifest as Retained versions.
-	async fn retained_bytes(&mut self, _area: &Area) -> Result<u64> {
-		Ok(0)
-	}
 	fn policy_revision(&self) -> i64;
 	fn resource(&self, kind: &str, id: &str, attributes: Value) -> Resource;
 	async fn entry(&mut self, reference: &EntityRef, action: &str) -> Result<Entry>;
 	async fn check_pinned(&mut self, entry: &Entry) -> Result<()>;
 	async fn effective(&mut self, reference: &EntityRef) -> Result<Entry>;
 	async fn require(&mut self, resource: &Resource, action: &str) -> Result<()>;
-	async fn serialize_sharing(&mut self) -> Result<()>;
 	async fn for_run(&mut self, run: &RunMetadata) -> Result<Area>;
-	/// Read a creator-owned Subnode Area with the usual file and source checks.
-	async fn subnode_area(
-		&mut self,
-		_run: &RunMetadata,
-		_thread: Uuid,
-		_area: Uuid,
-	) -> Result<Area> {
-		Err(crate::Error::Forbidden)
-	}
 	/// The Execution Pod of the Run's Scratch Space, when this Deployment runs
 	/// Agent tools there (#745). None keeps the tools on the Runner's
 	/// per-command path.
@@ -91,8 +72,6 @@ pub trait FileScopePort: Send {
 		self.pod(run).await
 	}
 	async fn authorize(&mut self, area: &Area, action: &str) -> Result<()>;
-	async fn current_run(&mut self, area: &Area) -> Result<Option<Uuid>>;
-	async fn require_current(&mut self, area: &Area, run: &RunMetadata) -> Result<()>;
 	async fn execute(
 		&mut self,
 		action: Action<'_>,
@@ -129,20 +108,6 @@ pub trait FileScopePort: Send {
 			"Scratch patch settlement unavailable".into(),
 		))
 	}
-	async fn begin_pending(&mut self, area: Uuid, size: u64) -> Result<()>;
-	async fn read_chunk(&mut self, file: &MountedFile, offset: u64) -> Result<Vec<u8>>;
-	async fn write_pending(&mut self, bytes: &[u8]) -> Result<()>;
-	async fn finish_pending(&mut self, expected: &str) -> Result<(Uuid, String)>;
-	async fn message(&mut self, thread: Uuid, id: Uuid) -> Result<Value>;
-	async fn documents(&mut self, entry: &Entry) -> Result<Value>;
-	async fn text_file(
-		&mut self,
-		area: Uuid,
-		path: String,
-		text: &str,
-		scope: FileScope,
-		provenance: Value,
-	) -> Result<MountedFile>;
 	async fn previous_manifest(&mut self, area: &Area) -> Result<Value>;
 	async fn previous_generation(&mut self, area: &Area) -> Result<i64>;
 	async fn supersede(&mut self, area: &Area, file: Uuid) -> Result<()>;

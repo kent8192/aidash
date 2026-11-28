@@ -36,28 +36,6 @@ pub struct FileRead {
 	pub max_bytes: Option<usize>,
 	pub expected_digest: Option<String>,
 }
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Materialize {
-	pub idempotency_key: Uuid,
-	pub expected_revision: i64,
-	pub source: MaterializeSource,
-	pub path: String,
-}
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-pub enum MaterializeSource {
-	File {
-		file_id: Uuid,
-		expected_digest: String,
-	},
-	Message {
-		message_id: Uuid,
-	},
-	ReferenceText {
-		index: usize,
-	},
-}
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Cursor {

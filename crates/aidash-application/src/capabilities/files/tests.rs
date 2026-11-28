@@ -43,8 +43,7 @@ struct Scope {
 	/// `(kind, cancel, input)` of every operation control request.
 	polled: Vec<(String, bool, Value)>,
 	control_result: Option<Value>,
-	active_run: Option<Uuid>,
-	pending: Vec<u8>,
+
 	cache_entry: Option<(Uuid, String, Value)>,
 	references: Vec<FileEntry>,
 	pod: Option<PodContext>,
@@ -59,7 +58,6 @@ impl FileScopePort for Scope {
 	}
 	fn limits(&self) -> Result<Limits> {
 		Ok(Limits {
-			working_bytes: 1_000_000,
 			patch_bytes: 64000,
 			read_bytes: 16,
 			search_matches: 20,
@@ -112,9 +110,6 @@ impl FileScopePort for Scope {
 		assert!(self.snapshot.is_some());
 		Ok(())
 	}
-	async fn serialize_sharing(&mut self) -> Result<()> {
-		panic!("unexpected serialize_sharing effect")
-	}
 	async fn for_run(&mut self, _run: &RunMetadata) -> Result<Area> {
 		Ok(self.area.as_ref().expect("admitted area").clone())
 	}
@@ -126,13 +121,6 @@ impl FileScopePort for Scope {
 	}
 	async fn authorize(&mut self, _area: &Area, action: &str) -> Result<()> {
 		assert!(matches!(action, "file.read" | "file.write"));
-		Ok(())
-	}
-	async fn current_run(&mut self, _area: &Area) -> Result<Option<Uuid>> {
-		Ok(self.active_run)
-	}
-	async fn require_current(&mut self, _area: &Area, _run: &RunMetadata) -> Result<()> {
-		assert!(self.snapshot.is_some());
 		Ok(())
 	}
 	async fn execute(
@@ -186,36 +174,6 @@ impl FileScopePort for Scope {
 	async fn cache(&mut self, key: Uuid, digest: &str, result: &Value) -> Result<()> {
 		self.cache_entry = Some((key, digest.to_owned(), result.clone()));
 		Ok(())
-	}
-	async fn begin_pending(&mut self, _area: Uuid, _size: u64) -> Result<()> {
-		self.pending.clear();
-		Ok(())
-	}
-	async fn read_chunk(&mut self, _file: &FileEntry, _offset: u64) -> Result<Vec<u8>> {
-		panic!("unexpected read_chunk effect")
-	}
-	async fn write_pending(&mut self, bytes: &[u8]) -> Result<()> {
-		self.pending.extend_from_slice(bytes);
-		Ok(())
-	}
-	async fn finish_pending(&mut self, expected: &str) -> Result<(Uuid, String)> {
-		Ok((Uuid::new_v4(), expected.to_owned()))
-	}
-	async fn message(&mut self, _thread: Uuid, _id: Uuid) -> Result<Value> {
-		panic!("unexpected message effect")
-	}
-	async fn documents(&mut self, _entry: &Entry) -> Result<Value> {
-		panic!("unexpected documents effect")
-	}
-	async fn text_file(
-		&mut self,
-		_area: Uuid,
-		_path: String,
-		_text: &str,
-		_scope: FileScope,
-		_provenance: Value,
-	) -> Result<FileEntry> {
-		panic!("unexpected text_file effect")
 	}
 	async fn previous_manifest(&mut self, _area: &Area) -> Result<Value> {
 		Ok(self.previous.clone())
@@ -292,8 +250,7 @@ fn fixture(bytes: &[u8]) -> (Scope, Area, FileEntry) {
 			verified: vec![],
 			polled: vec![],
 			control_result: None,
-			active_run: None,
-			pending: vec![],
+
 			cache_entry: None,
 			references: Vec::new(),
 			pod: None,
@@ -602,9 +559,8 @@ fn reference_file(path: &str, record: Uuid) -> FileEntry {
 	}
 }
 #[tokio::test]
-async fn a_revoked_reference_file_is_neither_read_searched_nor_copied() {
-	let (mut scope, run, _) = invoke_fixture("file_read", json!({}));
-	scope.active_run = Some(run.id);
+async fn a_revoked_reference_file_is_neither_read_nor_searched() {
+	let (mut scope, _, _) = invoke_fixture("file_read", json!({}));
 	let (kept, gone) = (Uuid::new_v4(), Uuid::new_v4());
 	let (kept_file, gone_file) = (
 		reference_file("kept.md", kept),
@@ -673,24 +629,6 @@ async fn a_revoked_reference_file_is_neither_read_searched_nor_copied() {
 	.await
 	.unwrap();
 	assert_eq!(paths(&listed), ["references/kept.md"], "{listed}");
-
-	let refused = materialize(
-		&mut scope,
-		&run,
-		Materialize {
-			idempotency_key: Uuid::new_v4(),
-			expected_revision: area.revision,
-			path: "copy.md".into(),
-			source: MaterializeSource::File {
-				file_id: gone_file.file_id,
-				expected_digest: gone_file.digest.clone(),
-			},
-		},
-	)
-	.await
-	.unwrap_err();
-	assert!(matches!(refused, Error::NotFound(_)), "{refused}");
-	assert!(scope.pending.is_empty(), "nothing was copied");
 }
 #[tokio::test]
 async fn publication_tombstones_only_removed_working_objects() {

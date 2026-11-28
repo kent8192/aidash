@@ -1,10 +1,7 @@
 //! File adapters retain verified handles, pending-object guards and native publication statements.
 use crate::apps::execution::capabilities::{
-	serializers::contracts::{
-		Area as NativeArea, FileEntry, FileScope as NativeFileScope,
-		Materialize as NativeMaterialize, MaterializeSource as NativeMaterializeSource,
-	},
-	services::{approvals, objects::PendingObject, operations, sessions, sharing, skills},
+	serializers::contracts::{Area as NativeArea, FileEntry},
+	services::{approvals, operations, sessions, skills},
 };
 use crate::{
 	Error as NativeError, Result as NativeResult,
@@ -17,13 +14,9 @@ use aidash_application::{
 	Error, Result,
 	ports::capabilities::files::{Action, FileScopePort, Limits, VerifiedFile},
 };
-use aidash_domain::capabilities::files::{Materialize, MaterializeSource};
 use aidash_domain::{
 	RunMetadata,
-	capabilities::{
-		operations::{FileScope, MountedFile},
-		sessions::Area,
-	},
+	capabilities::{operations::MountedFile, sessions::Area},
 	policy::Resource,
 };
 use async_trait::async_trait;
@@ -38,7 +31,6 @@ pub(crate) struct Scope<'a> {
 	pub(crate) store: Option<&'a Store>,
 	pub(crate) access: &'a mut Access,
 	pub(crate) run: Option<&'a Run>,
-	pub(crate) pending: Option<PendingObject>,
 }
 struct Reader {
 	inner: Option<tokio::io::BufReader<aidash_application::ports::blob_store::BlobReader>>,
@@ -145,31 +137,7 @@ pub(crate) async fn record_revision(
 fn missing() -> Error {
 	Error::External("file repository scope invariant".into())
 }
-impl From<NativeMaterialize> for Materialize {
-	fn from(v: NativeMaterialize) -> Self {
-		Self {
-			idempotency_key: v.idempotency_key,
-			expected_revision: v.expected_revision,
-			path: v.path,
-			source: match v.source {
-				NativeMaterializeSource::File {
-					file_id,
-					expected_digest,
-				} => MaterializeSource::File {
-					file_id,
-					expected_digest,
-				},
-				NativeMaterializeSource::Message { message_id } => {
-					MaterializeSource::Message { message_id }
-				}
-				NativeMaterializeSource::ReferenceText { index } => {
-					MaterializeSource::ReferenceText { index }
-				}
-			},
-		}
-	}
-}
-#[async_trait]
+
 impl VerifiedFile for Reader {
 	async fn read_range(&mut self, offset: u64, limit: u64) -> Result<Vec<u8>> {
 		if offset > self.size {
@@ -238,18 +206,12 @@ impl FileScopePort for Scope<'_> {
 	fn limits(&self) -> Result<Limits> {
 		let p = &self.store.ok_or_else(missing)?.capabilities.0;
 		Ok(Limits {
-			working_bytes: p.working_bytes,
 			patch_bytes: p.limits.patch_bytes,
 			read_bytes: p.limits.read_bytes,
 			search_matches: p.limits.search_matches,
 			search_bytes: p.limits.search_bytes,
 			search_seconds: p.limits.search_seconds,
 		})
-	}
-	async fn retained_bytes(&mut self, area: &Area) -> Result<u64> {
-		super::retention::retained_bytes_of(&mut *self.access, area.id)
-			.await
-			.map_err(Into::into)
 	}
 	fn policy_revision(&self) -> i64 {
 		self.access.snapshot.revision
@@ -287,50 +249,12 @@ impl FileScopePort for Scope<'_> {
 			.await
 			.map_err(Into::into)
 	}
-	async fn serialize_sharing(&mut self) -> Result<()> {
-		sharing::serialize(self.access).await.map_err(Into::into)
-	}
 	async fn for_run(&mut self, run: &RunMetadata) -> Result<Area> {
 		aidash_application::capabilities::sessions::for_run(
 			&mut crate::bootstrap::session_scope(None, self.access),
 			run,
 		)
 		.await
-	}
-	async fn subnode_area(&mut self, run: &RunMetadata, thread: Uuid, area: Uuid) -> Result<Area> {
-		use crate::apps::execution::models::subnodes::SubnodeRecord;
-		use reinhardt::db::orm::Model;
-		if self.access.read_run != Some(run.id) {
-			return Err(Error::Forbidden);
-		}
-		let matches = SubnodeRecord::objects()
-			.filter(SubnodeRecord::field_tenant().eq(self.access.identity.tenant.clone()))
-			.filter(SubnodeRecord::field_thread_id().eq(thread))
-			.filter(SubnodeRecord::field_creator_run_id().eq(run.id))
-			.all_with_executor(self.access.tx.native_mut())
-			.await
-			.map_err(reinhardt::core::exception::Error::from)
-			.map_err(NativeError::from)?;
-		if matches.is_empty() {
-			return Err(Error::Forbidden);
-		}
-		// Narrow the inherited Thread only for this read. Session authorization
-		// still checks file.read and every source constraint against the creator.
-		let previous = std::mem::replace(
-			&mut self.access.context,
-			serde_json::json!({"thread_id": thread}),
-		);
-		let result = aidash_application::capabilities::sessions::load(
-			&mut crate::bootstrap::session_scope(None, self.access),
-			area,
-		)
-		.await;
-		self.access.context = previous;
-		let area = result?;
-		if area.thread_id != thread {
-			return Err(Error::Forbidden);
-		}
-		Ok(area)
 	}
 	async fn pod(
 		&mut self,
@@ -351,22 +275,6 @@ impl FileScopePort for Scope<'_> {
 			&mut crate::bootstrap::session_scope(None, self.access),
 			area,
 			action,
-		)
-		.await
-	}
-	async fn current_run(&mut self, area: &Area) -> Result<Option<Uuid>> {
-		aidash_application::capabilities::sessions::status(
-			&mut crate::bootstrap::session_scope(None, self.access),
-			area,
-		)
-		.await
-		.map(|s| s.active_run_id)
-	}
-	async fn require_current(&mut self, area: &Area, run: &RunMetadata) -> Result<()> {
-		aidash_application::capabilities::sessions::require_current_run(
-			&mut crate::bootstrap::session_scope(None, self.access),
-			area,
-			run,
 		)
 		.await
 	}
@@ -404,17 +312,6 @@ impl FileScopePort for Scope<'_> {
 						));
 					}
 					approvals::prepare(
-						store,
-						self.access,
-						run,
-						&native,
-						serde_json::from_value(input)
-							.map_err(|e| NativeError::Invalid(e.to_string()))?,
-					)
-					.await?
-				}
-				Action::Share => {
-					sharing::share(
 						store,
 						self.access,
 						run,
@@ -705,76 +602,6 @@ impl FileScopePort for Scope<'_> {
 			return Err(Error::Conflict("PATCH_CLAIM_CHANGED".into()));
 		}
 		Ok(())
-	}
-	async fn begin_pending(&mut self, area: Uuid, size: u64) -> Result<()> {
-		self.pending = Some(
-			self.store
-				.ok_or_else(missing)?
-				.capabilities
-				.begin_object(self.access, Some(area), "working", size)
-				.await?,
-		);
-		Ok(())
-	}
-	async fn read_chunk(&mut self, file: &MountedFile, offset: u64) -> Result<Vec<u8>> {
-		let row: FileEntry = file.clone().into();
-		self.store
-			.ok_or_else(missing)?
-			.capabilities
-			.read_chunk(self.access, &row, offset)
-			.await
-			.map_err(Into::into)
-	}
-	async fn write_pending(&mut self, bytes: &[u8]) -> Result<()> {
-		self.pending
-			.as_mut()
-			.ok_or_else(missing)?
-			.write_block(bytes)
-			.await
-			.map_err(Into::into)
-	}
-	async fn finish_pending(&mut self, expected: &str) -> Result<(Uuid, String)> {
-		self.pending
-			.take()
-			.ok_or_else(missing)?
-			.finish(self.access, Some(expected))
-			.await
-			.map_err(Into::into)
-	}
-	async fn message(&mut self, thread: Uuid, id: Uuid) -> Result<Value> {
-		self.access
-			.thread_record(thread, "message", id)
-			.await
-			.map_err(Into::into)
-	}
-	async fn documents(&mut self, entry: &Entry) -> Result<Value> {
-		let store = self.store.ok_or_else(missing)?;
-		let registry = crate::registry::Registry::new(store.pool.clone(), &store.deployment)?;
-		let tenant = aidash_domain::tenancy::TenantName::new(self.access.identity.tenant.clone())?;
-		crate::knowledge::load(&registry, &tenant, entry)
-			.await
-			.map_err(Into::into)
-	}
-	async fn text_file(
-		&mut self,
-		area: Uuid,
-		path: String,
-		text: &str,
-		scope: FileScope,
-		provenance: Value,
-	) -> Result<MountedFile> {
-		let scope = match scope {
-			FileScope::Working => NativeFileScope::Working,
-			FileScope::References => NativeFileScope::References,
-			FileScope::Received => NativeFileScope::Received,
-		};
-		self.store
-			.ok_or_else(missing)?
-			.capabilities
-			.text_file(self.access, area, path, text, scope, provenance)
-			.await
-			.map(Into::into)
-			.map_err(Into::into)
 	}
 	async fn event(&mut self, thread: Uuid, kind: &str, data: Value) -> Result<()> {
 		let store = self.store.ok_or_else(missing)?;

@@ -37,8 +37,6 @@ pub mod retention;
 pub(crate) mod service;
 #[path = "sessions.rs"]
 pub(crate) mod sessions;
-#[path = "sharing.rs"]
-pub(crate) mod sharing;
 #[path = "skills.rs"]
 pub(crate) mod skills;
 #[path = "thread_lifecycle.rs"]

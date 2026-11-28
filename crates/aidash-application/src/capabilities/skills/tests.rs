@@ -173,7 +173,6 @@ mod exposure {
 		}
 		fn limits(&self) -> Result<FileLimits> {
 			Ok(FileLimits {
-				working_bytes: 1_000_000,
 				patch_bytes: 64000,
 				read_bytes: 16,
 				search_matches: 20,
@@ -205,20 +204,11 @@ mod exposure {
 			self.required.push(format!("{}:{action}", resource.id));
 			Ok(())
 		}
-		async fn serialize_sharing(&mut self) -> Result<()> {
-			panic!("unexpected serialize_sharing effect")
-		}
 		async fn for_run(&mut self, _: &RunMetadata) -> Result<Area> {
 			panic!("unexpected for_run effect")
 		}
 		async fn authorize(&mut self, _: &Area, _: &str) -> Result<()> {
 			panic!("unexpected authorize effect")
-		}
-		async fn current_run(&mut self, _: &Area) -> Result<Option<Uuid>> {
-			panic!("unexpected current_run effect")
-		}
-		async fn require_current(&mut self, _: &Area, _: &RunMetadata) -> Result<()> {
-			panic!("unexpected require_current effect")
 		}
 		async fn execute(
 			&mut self,
@@ -243,34 +233,6 @@ mod exposure {
 		}
 		async fn cache(&mut self, _: Uuid, _: &str, _: &Value) -> Result<()> {
 			panic!("unexpected cache effect")
-		}
-		async fn begin_pending(&mut self, _: Uuid, _: u64) -> Result<()> {
-			panic!("unexpected begin_pending effect")
-		}
-		async fn read_chunk(&mut self, _: &FileEntry, _: u64) -> Result<Vec<u8>> {
-			panic!("unexpected read_chunk effect")
-		}
-		async fn write_pending(&mut self, _: &[u8]) -> Result<()> {
-			panic!("unexpected write_pending effect")
-		}
-		async fn finish_pending(&mut self, _: &str) -> Result<(Uuid, String)> {
-			panic!("unexpected finish_pending effect")
-		}
-		async fn message(&mut self, _: Uuid, _: Uuid) -> Result<Value> {
-			panic!("unexpected message effect")
-		}
-		async fn documents(&mut self, _: &Entry) -> Result<Value> {
-			panic!("unexpected documents effect")
-		}
-		async fn text_file(
-			&mut self,
-			_: Uuid,
-			_: String,
-			_: &str,
-			_: FileScope,
-			_: Value,
-		) -> Result<FileEntry> {
-			panic!("unexpected text_file effect")
 		}
 		async fn previous_manifest(&mut self, _: &Area) -> Result<Value> {
 			panic!("unexpected previous_manifest effect")

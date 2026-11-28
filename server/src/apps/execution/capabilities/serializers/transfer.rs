@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 // Serializable transfer contracts.
-use crate::apps::execution::capabilities::services::core::{contracts::*, sharing::Recipient};
+use crate::apps::execution::capabilities::serializers::{contracts::*, sharing::Recipient};
 use crate::registry::EntityRef;
 use chrono::{DateTime, Utc};
 

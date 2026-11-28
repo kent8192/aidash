@@ -1,13 +1,10 @@
 //! Native transfer contracts and peer headers adapt to shared protocol use cases.
 #[path = "transfer/receiver.rs"]
 pub(crate) mod receiver;
-use super::{contracts::Area, sharing::Share};
 pub use crate::apps::execution::capabilities::serializers::transfer::{
 	Chunk, Description, Identity, Requester,
 };
-use crate::{
-	Result, authorization::access::Access, domain::Run, federation::Federation, store::Store,
-};
+use crate::{Result, authorization::access::Access, federation::Federation};
 use aidash_application::federation::inbound::Admitted;
 pub(crate) use receiver::recipient_list;
 use serde_json::Value;
@@ -16,24 +13,6 @@ pub(crate) async fn view(access: &mut Access, id: Uuid) -> Result<Value> {
 	aidash_application::capabilities::transfer::view(
 		&mut crate::bootstrap::transfer_scope(None, access),
 		id,
-	)
-	.await
-	.map_err(Into::into)
-}
-pub(crate) async fn prepare(
-	store: &Store,
-	access: &mut Access,
-	run: &Run,
-	area: &Area,
-	input: Share,
-	digest: &str,
-) -> Result<Value> {
-	aidash_application::capabilities::transfer::prepare(
-		&mut crate::bootstrap::transfer_scope(Some(store), access),
-		&run.metadata(),
-		&area.into(),
-		input.into(),
-		digest,
 	)
 	.await
 	.map_err(Into::into)

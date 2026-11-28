@@ -233,24 +233,6 @@ pub(crate) async fn shell_cancel(
 	let value = dispatch(f, actor, id, "shell_cancel", json!(input)).await?;
 	Ok(serde_json::from_value(json!(value))?)
 }
-pub(crate) async fn materialize(
-	f: Federation,
-	actor: Actor,
-	id: Uuid,
-	input: Materialize,
-) -> Result<MaterializedFile> {
-	let (mut access, run) = run_access(&f, actor, id).await?;
-	let result = async {
-		crate::apps::execution::repositories::subnodes::require_writable(
-			access.tx.native_mut(),
-			run.thread_id,
-		)
-		.await?;
-		service::materialize(&f.store, &mut access, &run, input).await
-	}
-	.await;
-	typed(access.finish(result).await?)
-}
 pub(crate) async fn session(f: Federation, actor: Actor, id: Uuid) -> Result<SessionStatus> {
 	let mut access = access(&f, actor).await?;
 	let result = async {
@@ -447,15 +429,6 @@ pub(crate) async fn skill_read(
 	input: super::skills::SkillRead,
 ) -> Result<Envelope> {
 	dispatch(f, actor, id, "skill_read", json!(input)).await
-}
-
-pub(crate) async fn file_share(
-	f: Federation,
-	actor: Actor,
-	id: Uuid,
-	input: super::sharing::Share,
-) -> Result<Envelope> {
-	dispatch(f, actor, id, "file_share", json!(input)).await
 }
 
 /// Checks that `thread` is a live Thread the caller may read, holding
