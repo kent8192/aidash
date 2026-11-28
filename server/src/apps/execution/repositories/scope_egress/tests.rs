@@ -338,6 +338,7 @@ impl BudgetRig {
 						title: title.into(),
 						description: "Traffic budget".into(),
 						requirements: serde_json::json!({}),
+						goal: None,
 						dependencies: vec![],
 						parent_id: None,
 					},

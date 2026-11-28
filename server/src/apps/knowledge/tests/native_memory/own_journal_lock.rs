@@ -26,6 +26,7 @@ async fn journal_run(store: &crate::store::Store, thread: Uuid) -> Uuid {
 				title: "Own Journal".into(),
 				description: "Recall a fact learned here".into(),
 				requirements: json!({}),
+				goal: None,
 				dependencies: vec![],
 				parent_id: None,
 			},

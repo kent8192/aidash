@@ -652,9 +652,29 @@ fn omitted_rendering_pins_keep_the_definition_bytes() {
 fn unknown_harness_contract_versions_are_rejected() {
 	let mut input = serde_json::to_value(agent()).unwrap();
 	// structured@1 and structured@2 were removed by #532; nothing accepts them.
-	for contract in ["legacy@1", "structured@1", "structured@2", "structured@5"] {
+	for contract in ["structured@1", "structured@2", "structured@5"] {
 		input["harness_contract"] = json!(contract);
 		assert!(serde_json::from_value::<AgentBindings>(input.clone()).is_err());
+	}
+}
+
+#[test]
+fn retired_rendering_pins_keep_definition_bytes_and_refuse_execution() {
+	let mut input = serde_json::to_value(agent()).unwrap();
+	for (field, version) in [
+		("projection_version", "legacy"),
+		("projection_version", "ordered"),
+		("harness_contract", "legacy@1"),
+	] {
+		input[field] = json!(version);
+		let parsed: AgentBindings = serde_json::from_value(input.clone()).unwrap();
+		assert_eq!(serde_json::to_value(&parsed).unwrap(), input);
+		assert!(
+			crate::registry::execution_contract(parsed.projection_version, parsed.harness_contract)
+				.unwrap_err()
+				.contains(version)
+		);
+		input.as_object_mut().unwrap().remove(field);
 	}
 }
 
