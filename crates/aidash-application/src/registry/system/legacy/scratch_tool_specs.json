@@ -1,0 +1,301 @@
+{
+  "workspace_read": {
+    "name": "workspace_read",
+    "description": "Read an accessible workspace record or Thread Attachment, or open a matched File using its exact Area, generation, path and digest. Use representation=model_input to select an attachment or image for the next inference; use attachment_copy to save an attachment in the Working Area. To read a Subnode created by this Run, pass its workspace_id. Text records return bounded chunks with next_offset.",
+    "parameters": {
+      "type": "object",
+      "required": ["kind", "id"],
+      "properties": {
+        "kind": {
+          "enum": [
+            "workspace",
+            "task",
+            "artifact",
+            "message",
+            "event",
+            "file",
+            "attachment"
+          ]
+        },
+        "id": {
+          "type": "string"
+        },
+        "workspace_id": {
+          "type": "string"
+        },
+        "offset": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "max_chars": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 16000
+        },
+        "area_id": {
+          "type": "string"
+        },
+        "generation": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "path": {
+          "type": "string"
+        },
+        "expected_digest": {
+          "type": "string"
+        },
+        "representation": {
+          "enum": ["metadata", "model_input"]
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "workspace_search": {
+    "name": "workspace_search",
+    "description": "Search the Workspace index by text, or by an image you have seen: a File version in your own Working Area (area_id, generation, file_id, path, expected_digest), or a Thread Attachment you selected with workspace_read (pass the selection it returned). Image matches are pointers, never images: a Working Area match names its File version, and a Thread Attachment match names its message and attachment with the message text and Image Description. Open a match with workspace_read.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "query": {
+          "type": "string"
+        },
+        "image": {
+          "type": "object",
+          "required": ["expected_digest"],
+          "properties": {
+            "area_id": {
+              "type": "string"
+            },
+            "generation": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "file_id": {
+              "type": "string"
+            },
+            "path": {
+              "type": "string"
+            },
+            "attachment_id": {
+              "type": "string"
+            },
+            "message_id": {
+              "type": "string"
+            },
+            "wav": {
+              "type": "boolean"
+            },
+            "expected_digest": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 20
+        },
+        "max_tokens": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 32768
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "workspace_message": {
+    "name": "workspace_message",
+    "description": "Send a message to the human and other agents sharing this workspace. Optionally attach snapshots of up to eight current Working Area files by path (8 MiB total). Each attached image needs an Image Description in image_descriptions, keyed by its path: say what the image shows, so people and agents who cannot see it can find and understand it.",
+    "parameters": {
+      "type": "object",
+      "required": ["content"],
+      "properties": {
+        "content": {
+          "type": "string"
+        },
+        "files": {
+          "type": "array",
+          "maxItems": 8,
+          "items": {
+            "type": "string"
+          }
+        },
+        "image_descriptions": {
+          "type": "object",
+          "maxProperties": 8,
+          "additionalProperties": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2000
+          }
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "thread_read": {
+    "name": "thread_read",
+    "description": "Read an accessible record of this Thread or a Thread Attachment, or open a matched File using its exact Area, generation, path and digest. Use representation=model_input to select an attachment or image for the next inference; use attachment_copy to save an attachment in the Working Area. To read a record in a Subnode created by this Run, pass its thread_id. With kind=thread, the Subnode Thread ID alone also works. Members cannot read the creating Agent's Thread. Text records return bounded chunks with next_offset.",
+    "parameters": {
+      "type": "object",
+      "required": ["kind", "id"],
+      "properties": {
+        "kind": {
+          "enum": [
+            "thread",
+            "task",
+            "artifact",
+            "message",
+            "event",
+            "file",
+            "attachment"
+          ]
+        },
+        "id": {
+          "type": "string"
+        },
+        "thread_id": {
+          "type": "string"
+        },
+        "offset": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "max_chars": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 16000
+        },
+        "area_id": {
+          "type": "string"
+        },
+        "generation": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "path": {
+          "type": "string"
+        },
+        "expected_digest": {
+          "type": "string"
+        },
+        "representation": {
+          "enum": ["metadata", "model_input"]
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "thread_search": {
+    "name": "thread_search",
+    "description": "Search the Thread index by text, or by an image you have seen: a File version in your own Working Area (area_id, generation, file_id, path, expected_digest), or a Thread Attachment you selected with thread_read (pass the selection it returned). Image matches are pointers, never images: a Working Area match names its File version, and a Thread Attachment match names its message and attachment with the message text and Image Description. Open a match with thread_read.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "query": {
+          "type": "string"
+        },
+        "image": {
+          "type": "object",
+          "required": ["expected_digest"],
+          "properties": {
+            "area_id": {
+              "type": "string"
+            },
+            "generation": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "file_id": {
+              "type": "string"
+            },
+            "path": {
+              "type": "string"
+            },
+            "attachment_id": {
+              "type": "string"
+            },
+            "message_id": {
+              "type": "string"
+            },
+            "wav": {
+              "type": "boolean"
+            },
+            "expected_digest": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 20
+        },
+        "max_tokens": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 32768
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "thread_message": {
+    "name": "thread_message",
+    "description": "Send a message to the people and other agents in this Thread. Optionally attach snapshots of up to eight current Working Area files by path (8 MiB total). Each attached image needs an Image Description in image_descriptions, keyed by its path: say what the image shows, so people and agents who cannot see it can find and understand it.",
+    "parameters": {
+      "type": "object",
+      "required": ["content"],
+      "properties": {
+        "content": {
+          "type": "string"
+        },
+        "files": {
+          "type": "array",
+          "maxItems": 8,
+          "items": {
+            "type": "string"
+          }
+        },
+        "image_descriptions": {
+          "type": "object",
+          "maxProperties": 8,
+          "additionalProperties": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2000
+          }
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "attachment_copy": {
+    "name": "attachment_copy",
+    "description": "Copy a visible Thread Attachment into the Working Area, or, where commands run in an Execution Pod, into the Scratch Space at path. Supply the current area revision and a unique idempotency key. The File records its source message and attachment.",
+    "parameters": {
+      "type": "object",
+      "required": ["id", "path", "expected_revision", "idempotency_key"],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        },
+        "expected_revision": {
+          "type": "integer"
+        },
+        "idempotency_key": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

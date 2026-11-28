@@ -15,6 +15,10 @@ pub trait CoreToolCatalog: Send + Sync {
 	fn legacy_specifications(&self) -> BTreeMap<String, ToolSpec> {
 		BTreeMap::new()
 	}
+	/// Published versions of tools changed by Working Area retirement.
+	fn pre_scratch_specifications(&self) -> BTreeMap<String, ToolSpec> {
+		BTreeMap::new()
+	}
 	fn provider_available(
 		&self,
 		descriptor: &aidash_domain::tool::providers::ToolDescriptor,

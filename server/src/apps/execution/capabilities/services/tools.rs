@@ -104,6 +104,71 @@ pub(crate) fn legacy_specifications() -> BTreeMap<String, ToolSpec> {
 		),
 	])
 }
+/// The immutable file tool schemas published with Execution Pods.
+pub(crate) fn pre_scratch_specifications() -> BTreeMap<String, ToolSpec> {
+	use super::contracts::{Representation, SearchMode};
+
+	/// `file_read` as Agents call it: a Working Area or Reference file by
+	/// `file_id`, or a Scratch Space file by `path` (#745).
+	#[derive(schemars::JsonSchema)]
+	#[serde(deny_unknown_fields)]
+	#[allow(dead_code)]
+	struct ToolFileRead {
+		/// A Working Area or Reference file. Leave it out to read `path`.
+		file_id: Option<uuid::Uuid>,
+		/// A file in the Scratch Space, relative to its root. Leave out `file_id`.
+		path: Option<String>,
+		thread_id: Option<uuid::Uuid>,
+		area_id: Option<uuid::Uuid>,
+		representation: Option<Representation>,
+		offset: Option<usize>,
+		max_bytes: Option<usize>,
+		expected_digest: Option<String>,
+	}
+
+	/// Where `file_search` looks; `scratch` is the Run's Scratch Space (#745).
+	#[derive(schemars::JsonSchema)]
+	#[serde(rename_all = "snake_case")]
+	#[allow(dead_code)]
+	enum ToolFileScope {
+		Working,
+		References,
+		Received,
+		Scratch,
+	}
+
+	/// `file_search` as Agents call it (#745).
+	#[derive(schemars::JsonSchema)]
+	#[serde(deny_unknown_fields)]
+	#[allow(dead_code)]
+	struct ToolFileSearch {
+		/// May be empty in `path` mode, which then lists every path in the scope.
+		query: String,
+		mode: SearchMode,
+		scope: ToolFileScope,
+		path: Option<String>,
+		/// Scratch Space only: a glob such as `src/*.rs` the whole path must match.
+		glob: Option<String>,
+		cursor: Option<String>,
+		limit: Option<usize>,
+	}
+
+	[
+		(
+			"file_read",
+			"Read authorized text or metadata. Give file_id for a Working Area or Reference file, or path for a file in the Scratch Space your commands run in (text only, continue with next_offset). Set thread_id and area_id together to read a Subnode you created. Use model_input with an exact digest to include an image or audio file in the next model inference only.",
+			schema::<ToolFileRead>(),
+		),
+		(
+			"file_search",
+			"Search authorized files with located provenance and revision-bound continuation. In path mode an empty query lists every path in the scope. scope=scratch searches the Scratch Space your commands run in (literal, regex or path mode, optional glob); its results have no cursor.",
+			schema::<ToolFileSearch>(),
+		),
+	]
+	.into_iter()
+	.map(|(name, description, parameters)| (name.to_owned(), ToolSpec { name: name.into(), description: description.into(), parameters }))
+	.collect()
+}
 /// Provider implementation inventory; capability availability comes from Bindings.
 pub(crate) fn implementations() -> BTreeMap<String, Arc<dyn Tool>> {
 	let mut tools = BTreeMap::<String, Arc<dyn Tool>>::new();
