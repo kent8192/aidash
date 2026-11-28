@@ -40,10 +40,10 @@ async fn registration_rejects_retired_agent_pins(
 	let error = register_definition(&mut scope, &validation, &agent, NODE)
 		.await
 		.unwrap_err();
-	let message = error.to_string();
 	assert!(
-		message.contains(version) && message.contains("unknown variant"),
-		"{message}"
+		matches!(&error, Error::Invalid(message)
+		if message.contains(field) && message.contains(version) && message.contains("retired")),
+		"{error:?}"
 	);
 	assert!(!scope.entries.contains_key("agent@1.0.0"));
 }
