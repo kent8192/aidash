@@ -28,4 +28,4 @@ the Task's Deliverable. A Deliverable can include published Drive versions,
 Outside Versions recorded by the Agent, and up to 256 selected Scratch Space
 files totaling 4 GiB. Ordinary Thread messages retain their existing limits.
 
-See [ADR 0153](../adr/0153-a-goal-judged-by-a-separate-model-replaces-the-completion-gate.md).
+See [ADR 0161](../adr/0161-a-goal-judged-by-a-separate-model-replaces-the-completion-gate.md).

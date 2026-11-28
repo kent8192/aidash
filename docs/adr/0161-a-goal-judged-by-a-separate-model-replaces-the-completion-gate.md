@@ -1,4 +1,4 @@
-# 0153. A Goal judged by a separate model replaces the Completion Gate
+# 0161. A Goal judged by a separate model replaces the Completion Gate
 
 - Status: Accepted
 - Date: 2026-11-26
