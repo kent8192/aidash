@@ -727,24 +727,13 @@ async fn messages_accepted_during_and_after_inference_are_seen_before_completion
 		tracked,
 		"run-directed message must be tracked as an authorized source"
 	);
-	assert_eq!(
-		snapshot
-			.messages
-			.into_iter()
-			.filter(|message| message.completion.is_some())
-			.collect::<Vec<_>>()
-			.len(),
-		1
-	);
-	assert_eq!(
-		snapshot
-			.messages
-			.into_iter()
-			.filter(|message| message.completion.is_some())
-			.collect::<Vec<_>>()[0]
-			.content,
-		"answer with both corrections"
-	);
+	let completions = snapshot
+		.messages
+		.iter()
+		.filter(|message| message.completion.is_some())
+		.collect::<Vec<_>>();
+	assert_eq!(completions.len(), 1);
+	assert_eq!(completions[0].content, "answer with both corrections");
 	assert!(
 		snapshot
 			.messages
