@@ -136,8 +136,6 @@ impl SourceAuthorityScope for Scope {
 #[case("model", "model.infer")]
 #[case("tool", "tool.invoke")]
 #[case("skill", "skill.use")]
-#[case("cluster", "cluster.execute")]
-#[case("decider", "decision.invoke")]
 #[tokio::test]
 async fn exact_receiver_dependencies_require_read_and_execution_authority(
 	#[case] kind: &str,
@@ -175,6 +173,18 @@ async fn exact_receiver_dependencies_require_read_and_execution_authority(
 	assert_eq!(resource.attributes["digest"], json!("sha256:definition"));
 	assert_eq!(*context, json!({"thread_id":task().thread_id}));
 	assert!(scope.generation_checked);
+}
+
+#[rstest]
+#[case("cluster")]
+#[case("decider")]
+#[tokio::test]
+async fn a_retired_definition_cannot_authorize_federated_execution(#[case] kind: &str) {
+	let mut scope = Scope::new();
+	assert!(matches!(
+		authorize(&mut scope, &task(), "aidash://receiver", &inspection(kind)).await,
+		Err(Error::Forbidden)
+	));
 }
 #[rstest]
 #[case("thread.read")]
